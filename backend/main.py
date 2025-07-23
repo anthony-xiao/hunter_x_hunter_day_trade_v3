@@ -836,8 +836,8 @@ async def train_symbol_models(symbol: str):
                     # Check which timestamps already have features
                     existing_timestamps = await data_pipeline.check_existing_features(
                         symbol=symbol,
-                        start_date=start_date,
-                        end_date=end_date
+                        start_time=start_date,
+                        end_time=end_date
                     )
                     
                     total_timestamps = len(historical_data)
@@ -859,8 +859,8 @@ async def train_symbol_models(symbol: str):
                         # Load existing features from database
                         featured_data = await data_pipeline.load_features_from_db(
                             symbol=symbol,
-                            start_date=start_date,
-                            end_date=end_date
+                            start_time=start_date,
+                            end_time=end_date
                         )
                         if featured_data is not None and not featured_data.empty:
                             historical_data = featured_data
