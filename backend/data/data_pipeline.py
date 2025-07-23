@@ -495,15 +495,26 @@ class DataPipeline:
             return []
     
     async def load_features_from_db(self, symbol: str, start_time: datetime, end_time: datetime) -> pd.DataFrame:
-        """Load features from PostgreSQL for historical analysis"""
+        """Load features from PostgreSQL for historical analysis, including basic OHLCV data"""
         try:
             with self.Session() as session:
+                # Join features with market_data to get both engineered features and basic OHLCV columns
                 result = session.execute(text("""
-                    SELECT timestamp, features
-                    FROM features
-                    WHERE symbol = :symbol
-                    AND timestamp BETWEEN :start_time AND :end_time
-                    ORDER BY timestamp
+                    SELECT 
+                        f.timestamp, 
+                        f.features,
+                        m.open,
+                        m.high,
+                        m.low,
+                        m.close,
+                        m.volume,
+                        m.vwap,
+                        m.transactions
+                    FROM features f
+                    LEFT JOIN market_data m ON f.symbol = m.symbol AND f.timestamp = m.timestamp
+                    WHERE f.symbol = :symbol
+                    AND f.timestamp BETWEEN :start_time AND :end_time
+                    ORDER BY f.timestamp
                 """), {
                     'symbol': symbol,
                     'start_time': start_time,
@@ -518,14 +529,27 @@ class DataPipeline:
                 # Convert to DataFrame
                 data = []
                 for row in rows:
-                    feature_dict = json.loads(row.features)
-                    feature_dict['timestamp'] = row.timestamp
+                    # JSONB column returns dict directly, no need for json.loads()
+                    feature_dict = row.features if isinstance(row.features, dict) else json.loads(row.features)
+                    
+                    # Add basic OHLCV columns
+                    feature_dict.update({
+                        'timestamp': row.timestamp,
+                        'open': float(row.open) if row.open is not None else None,
+                        'high': float(row.high) if row.high is not None else None,
+                        'low': float(row.low) if row.low is not None else None,
+                        'close': float(row.close) if row.close is not None else None,
+                        'volume': int(row.volume) if row.volume is not None else None,
+                        'vwap': float(row.vwap) if row.vwap is not None else None,
+                        'transactions': int(row.transactions) if row.transactions is not None else None
+                    })
+                    
                     data.append(feature_dict)
                 
                 df = pd.DataFrame(data)
                 df.set_index('timestamp', inplace=True)
                 
-                logger.info(f"Loaded {len(df)} feature records for {symbol} from database")
+                logger.info(f"Loaded {len(df)} feature records with OHLCV data for {symbol} from database")
                 return df
                 
         except Exception as e:
