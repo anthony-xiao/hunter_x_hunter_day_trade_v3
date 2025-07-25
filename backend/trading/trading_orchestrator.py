@@ -202,7 +202,7 @@ class TradingOrchestrator:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=5)  # Get last 5 days for feature calculation
             
-            historical_data = await self.data_pipeline.load_historical_data(
+            historical_data = await self.data_pipeline.download_historical_data(
                 symbol=symbol,
                 start_date=start_date,
                 end_date=end_date
@@ -233,7 +233,7 @@ class TradingOrchestrator:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=30)
             
-            market_data = await self.data_pipeline.load_historical_data(
+            market_data = await self.data_pipeline.download_historical_data(
                 symbol=symbol,
                 start_date=start_date,
                 end_date=end_date
@@ -260,7 +260,7 @@ class TradingOrchestrator:
                 return
             
             # Get market data for risk management
-            market_data = await self.data_pipeline.load_historical_data(
+            market_data = await self.data_pipeline.download_historical_data(
                 symbol=signal.symbol,
                 start_date=datetime.now() - timedelta(days=30),
                 end_date=datetime.now()

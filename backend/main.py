@@ -51,7 +51,8 @@ async def lifespan(app: FastAPI):
         await initialize_trading_system()
         
         # Start background tasks
-        asyncio.create_task(background_model_training())
+        # asyncio.create_task(background_model_training())
+        
         # Temporarily disable background data collection to prevent API blocking
         # asyncio.create_task(background_data_collection())
         
@@ -213,7 +214,7 @@ async def background_model_training():
                     for symbol in trading_symbols:
                         try:
                             # Get historical data
-                            historical_data = await data_pipeline.load_historical_data(
+                            historical_data = await data_pipeline.download_historical_data(
                                 symbol=symbol,
                                 start_date=datetime.now() - timedelta(days=760),
                                 end_date=datetime.now()
@@ -306,7 +307,7 @@ async def trading_loop():
                 for symbol in trading_symbols:
                     try:
                         # Get recent historical data for analysis
-                        data = await data_pipeline.load_historical_data(
+                        data = await data_pipeline.download_historical_data(
                             symbol=symbol,
                             start_date=datetime.now() - timedelta(days=30),
                             end_date=datetime.now()
