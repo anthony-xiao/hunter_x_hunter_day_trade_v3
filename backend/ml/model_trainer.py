@@ -338,6 +338,14 @@ class ModelTrainer:
                                      train_ratio: float = 0.7, val_ratio: float = 0.15, test_ratio: float = 0.15) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Create proper train/validation/test splits with temporal ordering"""
         try:
+            # Validate input arrays
+            if X.size == 0 or y.size == 0:
+                raise ValueError(f"Empty input arrays - X: {X.shape}, y: {y.shape}")
+            
+            n_samples = len(X)
+            if n_samples < 3:
+                raise ValueError(f"Need at least 3 samples for train/val/test split, got {n_samples}")
+            
             # Ensure ratios sum to 1
             total_ratio = train_ratio + val_ratio + test_ratio
             if abs(total_ratio - 1.0) > 1e-6:
@@ -346,11 +354,15 @@ class ModelTrainer:
                 val_ratio /= total_ratio
                 test_ratio /= total_ratio
             
-            n_samples = len(X)
-            
             # Calculate split indices (temporal ordering preserved)
             train_end = int(n_samples * train_ratio)
             val_end = int(n_samples * (train_ratio + val_ratio))
+            
+            # Ensure each split has at least 1 sample
+            train_end = max(1, train_end)
+            val_end = max(train_end + 1, val_end)
+            if val_end >= n_samples:
+                val_end = n_samples - 1
             
             # Split the data
             X_train = X[:train_end]
@@ -361,6 +373,10 @@ class ModelTrainer:
             
             X_test = X[val_end:]
             y_test = y[val_end:]
+            
+            # Validate splits have data
+            if X_train.size == 0 or X_val.size == 0 or X_test.size == 0:
+                raise ValueError(f"One or more splits are empty - Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
             
             logger.info(f"Data splits - Train: {X_train.shape[0]}, Val: {X_val.shape[0]}, Test: {X_test.shape[0]}")
             
@@ -418,16 +434,51 @@ class ModelTrainer:
         """Prepare data for training"""
         # Align features and targets
         common_index = features_df.index.intersection(targets_df.index)
+        logger.info(f"Initial data alignment - Features: {len(features_df)}, Targets: {len(targets_df)}, Common: {len(common_index)}")
         
-        # Ensure all features are numeric and convert to float64
+        # Get aligned features
         features_aligned = features_df.loc[common_index]
+        logger.info(f"Features before filtering: {features_aligned.shape}")
         
-        # Convert all columns to numeric, coercing errors to NaN
+        # Identify and exclude non-numeric columns (like 'symbol')
+        non_numeric_cols = []
         for col in features_aligned.columns:
+            if not pd.api.types.is_numeric_dtype(features_aligned[col]):
+                non_numeric_cols.append(col)
+        
+        if non_numeric_cols:
+            logger.info(f"Excluding {len(non_numeric_cols)} non-numeric columns: {non_numeric_cols}")
+            # Drop non-numeric columns from features
+            features_aligned = features_aligned.drop(columns=non_numeric_cols)
+            logger.info(f"Features after excluding non-numeric columns: {features_aligned.shape}")
+        
+        # Ensure all remaining features are numeric and convert to float64
+        logger.info(f"Converting {len(features_aligned.columns)} numeric columns to float64")
+        
+        # Convert remaining columns to numeric, coercing errors to NaN
+        for col in features_aligned.columns:
+            original_nulls = features_aligned[col].isnull().sum()
             features_aligned[col] = pd.to_numeric(features_aligned[col], errors='coerce')
+            new_nulls = features_aligned[col].isnull().sum()
+            if new_nulls > original_nulls:
+                logger.warning(f"Column {col}: {new_nulls - original_nulls} values converted to NaN")
+        
+        # Check NaN counts before dropping
+        total_nulls_before = features_aligned.isnull().sum().sum()
+        rows_with_nulls = features_aligned.isnull().any(axis=1).sum()
+        logger.info(f"Before dropna - Total NaNs: {total_nulls_before}, Rows with NaNs: {rows_with_nulls}/{len(features_aligned)}")
         
         # Drop any rows with NaN values after conversion
         features_aligned = features_aligned.dropna()
+        logger.info(f"After dropna - Remaining rows: {len(features_aligned)}")
+        
+        # Check if we have any data left
+        if len(features_aligned) == 0:
+            logger.error("All rows were dropped due to NaN values. Checking data quality...")
+            # Sample some original data for debugging
+            sample_features = features_df.head(10)
+            logger.error(f"Sample original features:\n{sample_features}")
+            raise ValueError("All data was filtered out due to NaN values. Check feature engineering pipeline.")
         
         # Re-align targets with cleaned features
         common_index = features_aligned.index.intersection(targets_df.index)
@@ -443,8 +494,19 @@ class ModelTrainer:
             X.append(features[i-config.lookback_window:i])
             y.append(targets[i])
         
+        # Validate that we have enough data to create sequences
+        if len(X) == 0:
+            raise ValueError(f"Not enough data to create sequences. Need at least {config.lookback_window + 1} samples, got {len(features)}")
+        
         X_array = np.array(X, dtype=np.float64)
         y_array = np.array(y, dtype=np.float64)
+        
+        # Validate final array shapes
+        if X_array.size == 0 or y_array.size == 0:
+            raise ValueError(f"Empty arrays created - X: {X_array.shape}, y: {y_array.shape}")
+        
+        if len(X_array.shape) < 3:
+            raise ValueError(f"X_array must have 3 dimensions for sequence models, got shape: {X_array.shape}")
         
         logger.info(f"Final sequence shapes - X: {X_array.shape}, y: {y_array.shape}")
         logger.info(f"Final data types - X: {X_array.dtype}, y: {y_array.dtype}")
@@ -455,6 +517,16 @@ class ModelTrainer:
                          X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> Sequential:
         """Train LSTM model"""
         logger.info(f"Starting LSTM training with {config.parameters['epochs']} epochs, batch size {config.parameters['batch_size']}")
+        
+        # Validate input shapes
+        if len(X_train.shape) < 3:
+            raise ValueError(f"X_train must have 3 dimensions, got shape: {X_train.shape}")
+        if X_train.shape[0] == 0:
+            raise ValueError("X_train is empty")
+        if len(X_train.shape) < 3 or X_train.shape[1] == 0 or X_train.shape[2] == 0:
+            raise ValueError(f"Invalid X_train shape for LSTM: {X_train.shape}")
+        
+        logger.info(f"LSTM input shape validation passed: {X_train.shape}")
         
         model = Sequential([
             LSTM(128, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
@@ -503,6 +575,16 @@ class ModelTrainer:
         epochs = config.parameters.get('epochs', 80)
         batch_size = config.parameters.get('batch_size', 128)
         logger.info(f"Starting CNN training with {epochs} epochs, batch size {batch_size}")
+        
+        # Validate input shapes
+        if len(X_train.shape) < 3:
+            raise ValueError(f"X_train must have 3 dimensions, got shape: {X_train.shape}")
+        if X_train.shape[0] == 0:
+            raise ValueError("X_train is empty")
+        if len(X_train.shape) < 3 or X_train.shape[1] == 0 or X_train.shape[2] == 0:
+            raise ValueError(f"Invalid X_train shape for CNN: {X_train.shape}")
+        
+        logger.info(f"CNN input shape validation passed: {X_train.shape}")
         
         # Reshape for CNN (treat as 2D image)
         X_train_cnn = X_train.reshape(X_train.shape[0], X_train.shape[1], X_train.shape[2], 1)
@@ -699,7 +781,16 @@ class ModelTrainer:
         if model_name in ["random_forest", "xgboost"]:
             X_test_flat = X_test.reshape(X_test.shape[0], -1)
             X_test_scaled = self.scalers[model_name].transform(X_test_flat)
-            y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+            
+            # Get prediction probabilities with safety check for single class
+            pred_proba = model.predict_proba(X_test_scaled)
+            if pred_proba.shape[1] == 1:
+                # Only one class present, use the single probability
+                y_pred_proba = pred_proba[:, 0]
+                logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
+            else:
+                # Normal binary classification with two classes
+                y_pred_proba = pred_proba[:, 1]
         elif model_name == "cnn":
             X_test_cnn = X_test.reshape(X_test.shape[0], X_test.shape[1], X_test.shape[2], 1)
             y_pred_proba = model.predict(X_test_cnn).flatten()
@@ -1141,7 +1232,16 @@ class ModelTrainer:
             if model_name in ["random_forest", "xgboost"]:
                 features_flat = features.reshape(1, -1)
                 features_scaled = self.scalers[model_name].transform(features_flat)
-                prediction_proba = model.predict_proba(features_scaled)[0, 1]
+                
+                # Get prediction probabilities with safety check for single class
+                pred_proba = model.predict_proba(features_scaled)
+                if pred_proba.shape[1] == 1:
+                    # Only one class present, use the single probability
+                    prediction_proba = pred_proba[0, 0]
+                    logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
+                else:
+                    # Normal binary classification with two classes
+                    prediction_proba = pred_proba[0, 1]
             elif model_name == "cnn":
                 features_cnn = features.reshape(1, features.shape[0], features.shape[1], 1)
                 prediction_proba = model.predict(features_cnn)[0, 0]
@@ -1324,7 +1424,16 @@ class ModelTrainer:
             else:
                 scaler = StandardScaler()
                 X_test_scaled = scaler.fit_transform(X_test_flat)
-            y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+            
+            # Get prediction probabilities with safety check for single class
+            pred_proba = model.predict_proba(X_test_scaled)
+            if pred_proba.shape[1] == 1:
+                # Only one class present, use the single probability
+                y_pred_proba = pred_proba[:, 0]
+                logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
+            else:
+                # Normal binary classification with two classes
+                y_pred_proba = pred_proba[:, 1]
         elif model_name == "cnn":
             X_test_cnn = X_test.reshape(X_test.shape[0], X_test.shape[1], X_test.shape[2], 1)
             y_pred_proba = model.predict(X_test_cnn).flatten()
@@ -1532,9 +1641,21 @@ class ModelTrainer:
                     feature_flat = feature_window.flatten().reshape(1, -1)
                     if model_name in self.scalers:
                         feature_scaled = self.scalers[model_name].transform(feature_flat)
-                        pred_proba = model.predict_proba(feature_scaled)[0, 1]
+                        # Get prediction probabilities with safety check for single class
+                        pred_proba_result = model.predict_proba(feature_scaled)
+                        if pred_proba_result.shape[1] == 1:
+                            pred_proba = pred_proba_result[0, 0]
+                            logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
+                        else:
+                            pred_proba = pred_proba_result[0, 1]
                     else:
-                        pred_proba = model.predict_proba(feature_flat)[0, 1]
+                        # Get prediction probabilities with safety check for single class
+                        pred_proba_result = model.predict_proba(feature_flat)
+                        if pred_proba_result.shape[1] == 1:
+                            pred_proba = pred_proba_result[0, 0]
+                            logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
+                        else:
+                            pred_proba = pred_proba_result[0, 1]
                 elif model_name == "cnn":
                     # Reshape for CNN
                     feature_cnn = feature_window.reshape(1, feature_window.shape[0], feature_window.shape[1], 1)
