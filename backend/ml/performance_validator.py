@@ -8,6 +8,10 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+# Import required modules for walk-forward testing
+from data.data_pipeline import DataPipeline
+from ml.model_trainer import ModelTrainer
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -38,12 +42,28 @@ class ValidationResult:
     recommendations: List[str]
     risk_warnings: List[str]
 
+@dataclass
+class WalkForwardValidationResult:
+    """Result of walk-forward testing validation for system readiness"""
+    system_ready: bool
+    ml_results: Dict[str, Any]  # Results from model_trainer.walk_forward_test
+    trading_validation: Dict[str, Any]  # Trading system validation results
+    overall_score: float
+    recommendations: List[str]
+    risk_warnings: List[str]
+    data_period: Tuple[datetime, datetime]
+    models_tested: List[str]
+
 class PerformanceValidator:
     """Advanced performance validation system"""
     
     def __init__(self, db_url: str):
         self.engine = create_engine(db_url)
         self.Session = sessionmaker(bind=self.engine)
+        
+        # Initialize data pipeline and model trainer for walk-forward testing
+        self.data_pipeline = DataPipeline()
+        self.model_trainer = ModelTrainer()
         
         # Performance targets from requirements
         self.targets = {
@@ -117,6 +137,307 @@ class PerformanceValidator:
                 recommendations=['Fix validation system errors'],
                 risk_warnings=['Performance validation system failure']
             )
+    
+    async def walk_forward_test(self, start_date: datetime, end_date: datetime, 
+                               symbol: str = 'AAPL') -> WalkForwardValidationResult:
+        """Walk-forward testing for system readiness validation
+        
+        This method bridges execution_engine and model_trainer by:
+        1. Loading data from PostgreSQL using data_pipeline.load_features_from_db()
+        2. Calling model_trainer.walk_forward_test() with the loaded dataframes
+        3. Validating results against trading system requirements (30-60% returns, 2.0-3.5 Sharpe)
+        4. Returning system readiness assessment for live trading
+        
+        Args:
+            start_date: Start date for walk-forward testing
+            end_date: End date for walk-forward testing
+            symbol: Symbol to test (default: AAPL)
+            
+        Returns:
+            WalkForwardValidationResult with system readiness assessment
+        """
+        try:
+            logger.info(f"Starting walk-forward testing validation from {start_date} to {end_date} for {symbol}")
+            
+            # Step 1: Load data from PostgreSQL using data_pipeline
+            logger.info("Loading features and market data from PostgreSQL...")
+            features_df = await self.data_pipeline.load_features_from_db(symbol, start_date, end_date)
+            
+            if features_df.empty:
+                logger.error(f"No features data found for {symbol} in the specified period")
+                return WalkForwardValidationResult(
+                    system_ready=False,
+                    ml_results={},
+                    trading_validation={'error': 'No features data available'},
+                    overall_score=0.0,
+                    recommendations=['Ensure features are engineered and stored for the specified period'],
+                    risk_warnings=['Cannot perform walk-forward testing without features data'],
+                    data_period=(start_date, end_date),
+                    models_tested=[]
+                )
+            
+            # Extract targets from features data (predict next period price direction)
+            logger.info("Extracting targets from features data...")
+            targets_df = self._extract_targets_from_features(features_df)
+            
+            if targets_df.empty:
+                logger.error("Failed to extract valid targets from features data")
+                return WalkForwardValidationResult(
+                    system_ready=False,
+                    ml_results={},
+                    trading_validation={'error': 'Failed to extract targets'},
+                    overall_score=0.0,
+                    recommendations=['Check data quality and target extraction logic'],
+                    risk_warnings=['Cannot perform walk-forward testing without valid targets'],
+                    data_period=(start_date, end_date),
+                    models_tested=[]
+                )
+            
+            logger.info(f"Loaded {len(features_df)} feature records and {len(targets_df)} targets")
+            
+            # Step 2: Call model_trainer.walk_forward_test() with loaded dataframes
+            logger.info("Running ML walk-forward testing...")
+            ml_results = await self.model_trainer.walk_forward_test(features_df, targets_df)
+            
+            if not ml_results:
+                logger.error("ML walk-forward testing returned no results")
+                return WalkForwardValidationResult(
+                    system_ready=False,
+                    ml_results={},
+                    trading_validation={'error': 'ML testing failed'},
+                    overall_score=0.0,
+                    recommendations=['Check model training configuration and data quality'],
+                    risk_warnings=['ML models failed walk-forward testing'],
+                    data_period=(start_date, end_date),
+                    models_tested=[]
+                )
+            
+            # Step 3: Validate results against trading system requirements
+            logger.info("Validating ML results against trading system requirements...")
+            trading_validation = self._validate_trading_system_requirements(ml_results)
+            
+            # Step 4: Generate system readiness assessment
+            system_readiness = self._assess_system_readiness(ml_results, trading_validation)
+            
+            logger.info(f"Walk-forward testing validation complete. System ready: {system_readiness['ready']}")
+            
+            return WalkForwardValidationResult(
+                system_ready=system_readiness['ready'],
+                ml_results=ml_results,
+                trading_validation=trading_validation,
+                overall_score=system_readiness['score'],
+                recommendations=system_readiness['recommendations'],
+                risk_warnings=system_readiness['warnings'],
+                data_period=(start_date, end_date),
+                models_tested=list(ml_results.keys())
+            )
+            
+        except Exception as e:
+            logger.error(f"Walk-forward testing validation failed: {e}")
+            return WalkForwardValidationResult(
+                system_ready=False,
+                ml_results={},
+                trading_validation={'error': str(e)},
+                overall_score=0.0,
+                recommendations=['Fix walk-forward testing system errors'],
+                risk_warnings=['Walk-forward testing system failure'],
+                data_period=(start_date, end_date),
+                models_tested=[]
+            )
+    
+    def _extract_targets_from_features(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """Extract trading targets from features dataframe"""
+        try:
+            # Ensure we have close price data
+            if 'close' not in features_df.columns:
+                logger.error("No 'close' price column found in features data")
+                return pd.DataFrame()
+            
+            # Create target: predict if next period's close will be higher than current close
+            targets = (features_df['close'].shift(-1) > features_df['close']).astype(int)
+            targets = targets.dropna()
+            
+            # Return as DataFrame with proper index alignment
+            targets_df = pd.DataFrame({'target': targets}, index=targets.index)
+            
+            logger.info(f"Extracted {len(targets_df)} targets from features data")
+            return targets_df
+            
+        except Exception as e:
+            logger.error(f"Failed to extract targets: {e}")
+            return pd.DataFrame()
+    
+    def _validate_trading_system_requirements(self, ml_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate ML results against trading system requirements (30-60% returns, 2.0-3.5 Sharpe)"""
+        try:
+            validation_results = {
+                'models_validated': {},
+                'overall_validation': {},
+                'requirements_met': False,
+                'critical_failures': []
+            }
+            
+            models_passing = 0
+            total_models = len(ml_results)
+            
+            for model_name, walk_forward_result in ml_results.items():
+                model_validation = {
+                    'sharpe_ratio': walk_forward_result.avg_sharpe,
+                    'consistency_score': walk_forward_result.consistency_score,
+                    'total_periods': walk_forward_result.total_periods,
+                    'meets_sharpe_requirement': False,
+                    'meets_consistency_requirement': False,
+                    'overall_pass': False
+                }
+                
+                # Check Sharpe ratio requirement (2.0-3.5)
+                if self.targets['min_sharpe_ratio'] <= walk_forward_result.avg_sharpe <= self.targets['max_sharpe_ratio']:
+                    model_validation['meets_sharpe_requirement'] = True
+                else:
+                    validation_results['critical_failures'].append(
+                        f"{model_name}: Sharpe ratio {walk_forward_result.avg_sharpe:.2f} outside target range {self.targets['min_sharpe_ratio']}-{self.targets['max_sharpe_ratio']}"
+                    )
+                
+                # Check consistency requirement (at least 70% of periods should pass)
+                if walk_forward_result.consistency_score >= 0.70:
+                    model_validation['meets_consistency_requirement'] = True
+                else:
+                    validation_results['critical_failures'].append(
+                        f"{model_name}: Consistency score {walk_forward_result.consistency_score:.1%} below 70% threshold"
+                    )
+                
+                # Overall model pass/fail
+                model_validation['overall_pass'] = (
+                    model_validation['meets_sharpe_requirement'] and 
+                    model_validation['meets_consistency_requirement']
+                )
+                
+                if model_validation['overall_pass']:
+                    models_passing += 1
+                
+                validation_results['models_validated'][model_name] = model_validation
+            
+            # Overall system validation
+            passing_percentage = models_passing / total_models if total_models > 0 else 0
+            validation_results['overall_validation'] = {
+                'models_passing': models_passing,
+                'total_models': total_models,
+                'passing_percentage': passing_percentage,
+                'min_models_required': 3  # At least 3 models should pass
+            }
+            
+            # System requirements met if at least 3 models pass (60% of 5 models)
+            validation_results['requirements_met'] = models_passing >= 3
+            
+            return validation_results
+            
+        except Exception as e:
+            logger.error(f"Failed to validate trading system requirements: {e}")
+            return {
+                'models_validated': {},
+                'overall_validation': {},
+                'requirements_met': False,
+                'critical_failures': [f'Validation error: {str(e)}']
+            }
+    
+    def _assess_system_readiness(self, ml_results: Dict[str, Any], 
+                                trading_validation: Dict[str, Any]) -> Dict[str, Any]:
+        """Assess overall system readiness for live trading"""
+        try:
+            recommendations = []
+            warnings = []
+            
+            # Calculate overall score based on multiple factors
+            score_components = {
+                'models_passing': 0.0,
+                'sharpe_quality': 0.0,
+                'consistency': 0.0,
+                'data_sufficiency': 0.0
+            }
+            
+            # Models passing score (40% weight)
+            if trading_validation['requirements_met']:
+                passing_pct = trading_validation['overall_validation']['passing_percentage']
+                score_components['models_passing'] = min(passing_pct * 1.2, 1.0) * 0.4
+            else:
+                warnings.append("Insufficient models meeting performance requirements")
+            
+            # Sharpe ratio quality score (30% weight)
+            sharpe_scores = []
+            for model_name, result in ml_results.items():
+                # Normalize Sharpe ratio to 0-1 scale (target range 2.0-3.5)
+                normalized_sharpe = min(max((result.avg_sharpe - 2.0) / 1.5, 0), 1)
+                sharpe_scores.append(normalized_sharpe)
+            
+            if sharpe_scores:
+                avg_sharpe_score = np.mean(sharpe_scores)
+                score_components['sharpe_quality'] = avg_sharpe_score * 0.3
+            
+            # Consistency score (20% weight)
+            consistency_scores = [result.consistency_score for result in ml_results.values()]
+            if consistency_scores:
+                avg_consistency = np.mean(consistency_scores)
+                score_components['consistency'] = avg_consistency * 0.2
+            
+            # Data sufficiency score (10% weight)
+            total_periods = [result.total_periods for result in ml_results.values()]
+            if total_periods:
+                avg_periods = np.mean(total_periods)
+                # Target: at least 50 periods for robust testing
+                data_score = min(avg_periods / 50.0, 1.0)
+                score_components['data_sufficiency'] = data_score * 0.1
+            
+            # Calculate overall score
+            overall_score = sum(score_components.values())
+            
+            # Determine system readiness
+            system_ready = (
+                overall_score >= 0.75 and  # At least 75% overall score
+                trading_validation['requirements_met'] and  # Core requirements met
+                len(trading_validation['critical_failures']) == 0  # No critical failures
+            )
+            
+            # Generate recommendations
+            if not system_ready:
+                if overall_score < 0.75:
+                    recommendations.append(f"Improve overall system performance (current score: {overall_score:.1%})")
+                
+                if not trading_validation['requirements_met']:
+                    recommendations.append("Ensure at least 3 models meet Sharpe ratio and consistency requirements")
+                
+                if trading_validation['critical_failures']:
+                    recommendations.extend([
+                        "Address critical model failures:",
+                        *trading_validation['critical_failures']
+                    ])
+            else:
+                recommendations.append("System ready for live trading deployment")
+                recommendations.append("Monitor performance continuously during live trading")
+            
+            # Generate warnings
+            if overall_score < 0.6:
+                warnings.append("CRITICAL: Overall system score below 60% - high risk deployment")
+            
+            if len(ml_results) < 5:
+                warnings.append(f"WARNING: Only {len(ml_results)} models tested, recommend testing all 5 models")
+            
+            return {
+                'ready': system_ready,
+                'score': overall_score,
+                'score_components': score_components,
+                'recommendations': recommendations,
+                'warnings': warnings
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to assess system readiness: {e}")
+            return {
+                'ready': False,
+                'score': 0.0,
+                'score_components': {},
+                'recommendations': ['Fix system readiness assessment'],
+                'warnings': ['System readiness assessment failed']
+            }
     
     async def _get_trades_data(self, start_date: datetime, end_date: datetime) -> List[Dict]:
         """Get trading data for performance analysis"""

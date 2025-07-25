@@ -369,8 +369,8 @@ class FeatureEngineer:
         # Replace infinite values
         df = df.replace([np.inf, -np.inf], np.nan)
         
-        # Forward fill then backward fill
-        df = df.fillna(method='ffill').fillna(method='bfill')
+        # Forward fill then backward fill (using modern pandas syntax)
+        df = df.ffill().bfill()
         
         # Remove any remaining NaN rows
         df = df.dropna()
