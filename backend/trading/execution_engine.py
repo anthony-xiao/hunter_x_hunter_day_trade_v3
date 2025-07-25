@@ -1427,21 +1427,21 @@ class ExecutionEngine:
                 },
                 'walk_forward_results': walk_forward_results,
                 'performance_validation': {
-                    'passed': validation_result.get('passed', False),
+                    'passed': validation_result.passed if validation_result else False,
                     'metrics': {
-                        'annual_return': validation_result.get('annual_return', 0),
-                        'sharpe_ratio': validation_result.get('sharpe_ratio', 0),
-                        'max_drawdown': validation_result.get('max_drawdown', 0),
-                        'win_rate': validation_result.get('win_rate', 0),
-                        'trades_per_day': validation_result.get('trades_per_day', 0)
+                        'annual_return': validation_result.metrics.annual_return if validation_result else 0,
+                        'sharpe_ratio': validation_result.metrics.sharpe_ratio if validation_result else 0,
+                        'max_drawdown': validation_result.metrics.max_drawdown if validation_result else 0,
+                        'win_rate': validation_result.metrics.win_rate if validation_result else 0,
+                        'trades_per_day': validation_result.metrics.trades_per_day if validation_result else 0
                     },
-                    'recommendations': validation_result.get('recommendations', []),
-                    'risk_warnings': validation_result.get('risk_warnings', [])
+                    'recommendations': validation_result.recommendations if validation_result else [],
+                    'risk_warnings': validation_result.risk_warnings if validation_result else []
                 },
                 'drift_analysis': drift_results,
                 'system_readiness': {
                     'ready_for_live_trading': (
-                        validation_result.get('passed', False) and 
+                        (validation_result.passed if validation_result else False) and 
                         walk_forward_results.get('overall_sharpe', 0) > 1.5 and
                         not any(metrics.get('drift_detected', False) for metrics in drift_results.values())
                     ),
