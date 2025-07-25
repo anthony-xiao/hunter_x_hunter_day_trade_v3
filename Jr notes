@@ -1,0 +1,7 @@
+Jr notes
+
+System run order
+
+cd backend, venv, python run.py 
+curl -X POST "http://localhost:8000/models/train/AAPL"
+

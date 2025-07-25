@@ -133,7 +133,6 @@ class ModelTrainer:
                     'max_depth': 15,
                     'min_samples_split': 10,
                     'random_state': 42,
-                    'n_jobs': -1,  # Use all CPU cores
                     'oob_score': True
                 },
                 training_window=18,
@@ -149,8 +148,7 @@ class ModelTrainer:
                     'learning_rate': 0.1,
                     'max_depth': 8,
                     'random_state': 42,
-                    'tree_method': 'hist',  # GPU acceleration if available
-                    'eval_metric': 'logloss'
+                    'tree_method': 'hist'  # GPU acceleration if available
                 },
                 training_window=18,
                 validation_window=6,
@@ -196,9 +194,22 @@ class ModelTrainer:
         self.min_win_rate = 0.52
         self.max_drawdown = 0.15
         
-        # Create models directory
-        Path('models').mkdir(exist_ok=True)
-        self.model_dir = Path('models')
+        # Create models directory with timestamp for versioning
+        base_models_dir = Path('models')
+        base_models_dir.mkdir(exist_ok=True)
+        
+        # Create timestamped directory for this training run
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.model_dir = base_models_dir / timestamp
+        self.model_dir.mkdir(exist_ok=True)
+        
+        # Also maintain a 'latest' symlink for easy access to most recent models
+        latest_link = base_models_dir / 'latest'
+        if latest_link.exists() or latest_link.is_symlink():
+            latest_link.unlink()
+        latest_link.symlink_to(timestamp, target_is_directory=True)
+        
+        logger.info(f"Models will be saved to: {self.model_dir}")
         
         # Walk-forward testing parameters
         self.training_months = 18
@@ -260,11 +271,13 @@ class ModelTrainer:
                     data[col] = pd.to_numeric(data[col], errors='coerce')
             
             # Create target: predict if next period's close will be higher than current close
-            targets = (data['close'].shift(-1) > data['close']).astype(int)
-            targets = targets.dropna()
+            # Note: shift(-1) creates NaN at the last row, so we need to handle this properly
+            targets_series = (data['close'].shift(-1) > data['close']).astype(int)
             
-            # Features are all columns except basic OHLCV (assuming feature engineering was done)
-            feature_cols = [col for col in data.columns if col not in basic_cols]
+            # Features are all columns except basic OHLCV and non-numeric columns
+            # Exclude symbol and other non-numeric identifier columns
+            exclude_cols = basic_cols + ['symbol', 'timestamp']
+            feature_cols = [col for col in data.columns if col not in exclude_cols]
             
             if not feature_cols:
                 # If no engineered features, use basic price features
@@ -278,25 +291,42 @@ class ModelTrainer:
             else:
                 features_df = data[feature_cols].copy()
             
-            # Ensure all feature columns are numeric
+            # Ensure all feature columns are numeric (but be more careful about conversion)
             for col in features_df.columns:
-                features_df[col] = pd.to_numeric(features_df[col], errors='coerce')
+                if features_df[col].dtype == 'object':
+                    # Only convert object columns, and log any issues
+                    original_count = len(features_df[col].dropna())
+                    features_df[col] = pd.to_numeric(features_df[col], errors='coerce')
+                    new_count = len(features_df[col].dropna())
+                    if new_count < original_count:
+                        logger.warning(f"Column {col}: Lost {original_count - new_count} values during numeric conversion")
+                elif not pd.api.types.is_numeric_dtype(features_df[col]):
+                    # Convert non-numeric, non-object columns
+                    features_df[col] = pd.to_numeric(features_df[col], errors='coerce')
             
             # Log data types before processing
             logger.info(f"Feature data types before cleaning: {features_df.dtypes.value_counts()}")
             
-            # Align features and targets by index
-            common_index = features_df.index.intersection(targets.index)
-            features_df = features_df.loc[common_index]
-            targets_df = pd.DataFrame({'target': targets.loc[common_index]})
-            
-            # Remove any rows with NaN values
+            # Remove rows with NaN values from features first
             features_df = features_df.dropna()
-            targets_df = targets_df.loc[features_df.index]
+            
+            # Now align targets with cleaned features, ensuring we don't include the last row
+            # since targets.shift(-1) creates NaN there
+            valid_target_index = targets_series.dropna().index
+            common_index = features_df.index.intersection(valid_target_index)
+            
+            # Final alignment
+            features_df = features_df.loc[common_index]
+            targets_df = pd.DataFrame({'target': targets_series.loc[common_index]})
             
             # Final data type check
             logger.info(f"Final feature data types: {features_df.dtypes.value_counts()}")
             logger.info(f"Features shape: {features_df.shape}, Targets shape: {targets_df.shape}")
+            
+            # Ensure we have valid data
+            if features_df.empty or targets_df.empty:
+                logger.error(f"Empty DataFrames after processing - Features: {features_df.shape}, Targets: {targets_df.shape}")
+                return pd.DataFrame(), pd.DataFrame()
             
             return features_df, targets_df
             
@@ -523,6 +553,8 @@ class ModelTrainer:
     async def _train_random_forest(self, X_train: np.ndarray, y_train: np.ndarray, 
                                   X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> RandomForestClassifier:
         """Train Random Forest model"""
+        logger.info(f"Starting Random Forest training with {config.parameters['n_estimators']} estimators, max_depth={config.parameters['max_depth']}")
+        
         # Flatten sequences for traditional ML
         X_train_flat = X_train.reshape(X_train.shape[0], -1)
         X_val_flat = X_val.reshape(X_val.shape[0], -1)
@@ -535,20 +567,33 @@ class ModelTrainer:
         self.scalers["random_forest"] = scaler
         
         model = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=15,
-            min_samples_split=10,
-            random_state=42,
-            n_jobs=-1
+            n_estimators=config.parameters['n_estimators'],
+            max_depth=config.parameters['max_depth'],
+            min_samples_split=config.parameters['min_samples_split'],
+            random_state=config.parameters['random_state'],
+            oob_score=config.parameters['oob_score']
         )
         
+        logger.info("Random Forest training started...")
         model.fit(X_train_scaled, y_train.ravel())
+        
+        # Calculate validation accuracy
+        y_val_pred = model.predict(X_val_scaled)
+        val_accuracy = accuracy_score(y_val.ravel(), y_val_pred)
+        
+        # Log out-of-bag score if available
+        if hasattr(model, 'oob_score_') and model.oob_score_ is not None:
+            logger.info(f"Random Forest OOB Score: {model.oob_score_:.4f}")
+        
+        logger.info(f"Random Forest training completed. Final validation accuracy: {val_accuracy:.4f}")
         
         return model
     
     async def _train_xgboost(self, X_train: np.ndarray, y_train: np.ndarray, 
                             X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> xgb.XGBClassifier:
         """Train XGBoost model"""
+        logger.info(f"Starting XGBoost training with {config.parameters['n_estimators']} estimators, learning_rate={config.parameters['learning_rate']}, max_depth={config.parameters['max_depth']}")
+        
         # Flatten sequences for traditional ML
         X_train_flat = X_train.reshape(X_train.shape[0], -1)
         X_val_flat = X_val.reshape(X_val.shape[0], -1)
@@ -561,18 +606,26 @@ class ModelTrainer:
         self.scalers["xgboost"] = scaler
         
         model = xgb.XGBClassifier(
-            n_estimators=500,
-            learning_rate=config.learning_rate,
-            max_depth=8,
-            random_state=42,
-            eval_metric='logloss'
+            n_estimators=config.parameters['n_estimators'],
+            learning_rate=config.parameters['learning_rate'],
+            max_depth=config.parameters['max_depth'],
+            random_state=config.parameters['random_state'],
+            tree_method=config.parameters.get('tree_method', 'hist')
         )
         
+        logger.info("XGBoost training started...")
         model.fit(
             X_train_scaled, y_train.ravel(),
-            eval_set=[(X_val_scaled, y_val.ravel())],
-            verbose=False
+            verbose=True  # Enable verbose output to show training progress
         )
+        
+        # Calculate final validation accuracy
+        y_val_pred = model.predict(X_val_scaled)
+        val_accuracy = accuracy_score(y_val.ravel(), y_val_pred)
+        
+        # Get best iteration info
+        best_iteration = getattr(model, 'best_iteration', config.parameters['n_estimators'])
+        logger.info(f"XGBoost training completed. Best iteration: {best_iteration}, Final validation accuracy: {val_accuracy:.4f}")
         
         return model
     
@@ -840,50 +893,242 @@ class ModelTrainer:
         return None
     
     async def _save_models(self):
-        """Save trained models to disk"""
-        for model_name, model in self.models.items():
-            model_path = self.model_dir / f"{model_name}_model.pkl"
-            
-            if model_name in ["lstm", "cnn", "transformer"]:
-                # Save Keras models
-                model.save(self.model_dir / f"{model_name}_model.h5")
-            else:
-                # Save sklearn/xgboost models
-                with open(model_path, 'wb') as f:
-                    pickle.dump(model, f)
-        
-        # Save scalers
-        scalers_path = self.model_dir / "scalers.pkl"
-        with open(scalers_path, 'wb') as f:
-            pickle.dump(self.scalers, f)
-        
-        logger.info("Models saved successfully")
-    
-    async def load_models(self):
-        """Load trained models from disk"""
+        """Save trained models to disk with versioning"""
         try:
-            # Load scalers
+            # Save each model
+            for model_name, model in self.models.items():
+                model_path = self.model_dir / f"{model_name}_model.pkl"
+                
+                if model_name in ["lstm", "cnn", "transformer"]:
+                    # Save Keras models
+                    model.save(self.model_dir / f"{model_name}_model.h5")
+                else:
+                    # Save sklearn/xgboost models
+                    with open(model_path, 'wb') as f:
+                        pickle.dump(model, f)
+            
+            # Save scalers
             scalers_path = self.model_dir / "scalers.pkl"
+            with open(scalers_path, 'wb') as f:
+                pickle.dump(self.scalers, f)
+            
+            # Save training metadata (convert numpy types to JSON-serializable types)
+            def convert_to_json_serializable(obj):
+                """Convert numpy types to JSON-serializable types"""
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                elif isinstance(obj, np.floating):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_to_json_serializable(item) for item in obj]
+                else:
+                    return obj
+            
+            metadata = {
+                'timestamp': datetime.now().isoformat(),
+                'model_configs': {name: {
+                    'name': config.name,
+                    'model_type': config.model_type,
+                    'parameters': convert_to_json_serializable(config.parameters),
+                    'training_window': int(config.training_window),
+                    'validation_window': int(config.validation_window),
+                    'lookback_window': int(config.lookback_window),
+                    'feature_count': int(config.feature_count)
+                } for name, config in self.model_configs.items()},
+                'performance_metrics': {name: {
+                    'accuracy': float(perf.accuracy),
+                    'precision': float(perf.precision),
+                    'recall': float(perf.recall),
+                    'sharpe_ratio': float(perf.sharpe_ratio),
+                    'max_drawdown': float(perf.max_drawdown),
+                    'win_rate': float(perf.win_rate),
+                    'total_trades': int(perf.total_trades),
+                    'validation_score': float(perf.validation_score),
+                    'overfitting_score': float(perf.overfitting_score),
+                    'profit_factor': float(perf.profit_factor),
+                    'last_updated': perf.last_updated.isoformat()
+                } for name, perf in self.performance_metrics.items()},
+                'ensemble_weights': convert_to_json_serializable(self.ensemble_weights),
+                'trained_models': list(self.models.keys())
+            }
+            
+            metadata_path = self.model_dir / "training_metadata.json"
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            
+            logger.info(f"Models and metadata saved successfully to {self.model_dir}")
+            logger.info(f"Trained models: {list(self.models.keys())}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save models: {e}")
+            raise
+    
+    async def load_models(self, version: str = "latest"):
+        """Load trained models from disk
+        
+        Args:
+            version: Model version to load. Can be 'latest' or a specific timestamp (e.g., '20241201_143022')
+        """
+        try:
+            # Determine model directory based on version
+            base_models_dir = Path('models')
+            if version == "latest":
+                # Use the latest symlink
+                load_dir = base_models_dir / 'latest'
+                if not load_dir.exists():
+                    logger.warning("No 'latest' models found, looking for most recent timestamped directory")
+                    # Find the most recent timestamped directory
+                    timestamped_dirs = [d for d in base_models_dir.iterdir() 
+                                      if d.is_dir() and d.name != 'latest' and len(d.name) == 15]
+                    if timestamped_dirs:
+                        load_dir = max(timestamped_dirs, key=lambda x: x.name)
+                    else:
+                        logger.error("No model versions found")
+                        return
+            else:
+                # Load specific version
+                load_dir = base_models_dir / version
+                if not load_dir.exists():
+                    logger.error(f"Model version {version} not found")
+                    return
+            
+            # Update model_dir to the directory we're loading from
+            self.model_dir = load_dir
+            
+            # Load scalers
+            scalers_path = load_dir / "scalers.pkl"
             if scalers_path.exists():
                 with open(scalers_path, 'rb') as f:
                     self.scalers = pickle.load(f)
             
             # Load models
+            loaded_models = []
             for model_name in self.model_configs.keys():
                 if model_name in ["lstm", "cnn", "transformer"]:
-                    model_path = self.model_dir / f"{model_name}_model.h5"
+                    model_path = load_dir / f"{model_name}_model.h5"
                     if model_path.exists():
                         self.models[model_name] = tf.keras.models.load_model(model_path)
+                        loaded_models.append(model_name)
                 else:
-                    model_path = self.model_dir / f"{model_name}_model.pkl"
+                    model_path = load_dir / f"{model_name}_model.pkl"
                     if model_path.exists():
                         with open(model_path, 'rb') as f:
                             self.models[model_name] = pickle.load(f)
+                        loaded_models.append(model_name)
             
-            logger.info(f"Loaded {len(self.models)} models")
+            # Load metadata if available
+            metadata_path = load_dir / "training_metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                logger.info(f"Loaded models from version: {metadata.get('timestamp', 'unknown')}")
+            
+            logger.info(f"Loaded {len(loaded_models)} models from {load_dir}: {loaded_models}")
             
         except Exception as e:
             logger.error(f"Failed to load models: {e}")
+    
+    def list_model_versions(self) -> List[Dict[str, Any]]:
+        """List all available model versions with their metadata
+        
+        Returns:
+            List of dictionaries containing version info
+        """
+        try:
+            base_models_dir = Path('models')
+            if not base_models_dir.exists():
+                return []
+            
+            versions = []
+            
+            # Find all timestamped directories
+            for version_dir in base_models_dir.iterdir():
+                if version_dir.is_dir() and version_dir.name != 'latest' and len(version_dir.name) == 15:
+                    version_info = {
+                        'version': version_dir.name,
+                        'path': str(version_dir),
+                        'created': datetime.strptime(version_dir.name, "%Y%m%d_%H%M%S").isoformat()
+                    }
+                    
+                    # Load metadata if available
+                    metadata_path = version_dir / "training_metadata.json"
+                    if metadata_path.exists():
+                        try:
+                            with open(metadata_path, 'r') as f:
+                                metadata = json.load(f)
+                            version_info.update({
+                                'trained_models': metadata.get('trained_models', []),
+                                'performance_metrics': metadata.get('performance_metrics', {}),
+                                'ensemble_weights': metadata.get('ensemble_weights', {})
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to load metadata for version {version_dir.name}: {e}")
+                    
+                    # Check which model files exist
+                    model_files = []
+                    for model_name in ['lstm', 'cnn', 'transformer', 'random_forest', 'xgboost']:
+                        h5_path = version_dir / f"{model_name}_model.h5"
+                        pkl_path = version_dir / f"{model_name}_model.pkl"
+                        if h5_path.exists() or pkl_path.exists():
+                            model_files.append(model_name)
+                    
+                    version_info['available_models'] = model_files
+                    versions.append(version_info)
+            
+            # Sort by creation time (newest first)
+            versions.sort(key=lambda x: x['created'], reverse=True)
+            
+            return versions
+            
+        except Exception as e:
+            logger.error(f"Failed to list model versions: {e}")
+            return []
+    
+    def get_current_version(self) -> Optional[str]:
+        """Get the current model version being used
+        
+        Returns:
+            Current version string or None if not set
+        """
+        if hasattr(self, 'model_dir') and self.model_dir:
+            return self.model_dir.name
+        return None
+    
+    async def delete_model_version(self, version: str) -> bool:
+        """Delete a specific model version
+        
+        Args:
+            version: Version timestamp to delete
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if version == "latest":
+                logger.error("Cannot delete 'latest' - it's a symlink")
+                return False
+            
+            base_models_dir = Path('models')
+            version_dir = base_models_dir / version
+            
+            if not version_dir.exists():
+                logger.error(f"Version {version} not found")
+                return False
+            
+            # Remove all files in the version directory
+            import shutil
+            shutil.rmtree(version_dir)
+            
+            logger.info(f"Deleted model version: {version}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to delete model version {version}: {e}")
+            return False
     
     async def predict(self, model_name: str, features: np.ndarray) -> Tuple[float, float]:
         """Make prediction with a specific model"""

@@ -108,6 +108,10 @@ class Trades(Base):
     id = Column(Integer, primary_key=True)
     symbol = Column(String(10), nullable=False, index=True)
     timestamp = Column(DateTime, nullable=False, index=True)
+    entry_time = Column(DateTime, nullable=True, index=True)  # Trade entry time
+    exit_time = Column(DateTime, nullable=True, index=True)   # Trade exit time
+    entry_price = Column(Numeric(10, 4), nullable=True)       # Entry price
+    exit_price = Column(Numeric(10, 4), nullable=True)        # Exit price
     side = Column(String(10), nullable=False)  # 'buy' or 'sell'
     quantity = Column(Integer, nullable=False)
     price = Column(Numeric(10, 4), nullable=False)
@@ -115,12 +119,16 @@ class Trades(Base):
     status = Column(String(20), nullable=False)  # 'pending', 'filled', 'cancelled', 'rejected'
     commission = Column(Numeric(8, 4), nullable=True)
     pnl = Column(Numeric(10, 4), nullable=True)
+    strategy = Column(String(50), nullable=True)  # Trading strategy used
     created_at = Column(DateTime, default=datetime.utcnow)
     
     __table_args__ = (
         Index('idx_trades_symbol_timestamp', 'symbol', 'timestamp'),
+        Index('idx_trades_entry_time', 'entry_time'),
+        Index('idx_trades_exit_time', 'exit_time'),
         Index('idx_trades_order_id', 'order_id'),
         Index('idx_trades_status', 'status'),
+        Index('idx_trades_strategy', 'strategy'),
     )
     
     def to_dict(self) -> Dict[str, Any]:
@@ -128,6 +136,10 @@ class Trades(Base):
             'id': self.id,
             'symbol': self.symbol,
             'timestamp': self.timestamp.isoformat() if self.timestamp else None,
+            'entry_time': self.entry_time.isoformat() if self.entry_time else None,
+            'exit_time': self.exit_time.isoformat() if self.exit_time else None,
+            'entry_price': float(self.entry_price) if self.entry_price else None,
+            'exit_price': float(self.exit_price) if self.exit_price else None,
             'side': self.side,
             'quantity': self.quantity,
             'price': float(self.price),
@@ -135,6 +147,7 @@ class Trades(Base):
             'status': self.status,
             'commission': float(self.commission) if self.commission else None,
             'pnl': float(self.pnl) if self.pnl else None,
+            'strategy': self.strategy,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
@@ -296,6 +309,61 @@ class RiskMetrics(Base):
             'beta': float(self.beta) if self.beta else None,
             'active_positions': self.active_positions,
             'sector_exposure': self.sector_exposure,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+class DailyPerformance(Base):
+    """Daily performance tracking"""
+    __tablename__ = 'daily_performance'
+    
+    id = Column(Integer, primary_key=True)
+    date = Column(DateTime, nullable=False, index=True)
+    daily_pnl = Column(Numeric(10, 4), nullable=False)
+    total_trades = Column(Integer, nullable=False, default=0)
+    winning_trades = Column(Integer, nullable=False, default=0)
+    portfolio_value = Column(Numeric(12, 4), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('idx_daily_performance_date', 'date'),
+    )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'date': self.date.isoformat() if self.date else None,
+            'daily_pnl': float(self.daily_pnl),
+            'total_trades': self.total_trades,
+            'winning_trades': self.winning_trades,
+            'portfolio_value': float(self.portfolio_value),
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+class ModelPredictions(Base):
+    """Model predictions tracking"""
+    __tablename__ = 'model_predictions'
+    
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(10), nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    model_name = Column(String(50), nullable=False, index=True)
+    prediction = Column(Numeric(6, 4), nullable=False)
+    confidence = Column(Numeric(6, 4), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('idx_model_predictions_symbol_timestamp', 'symbol', 'timestamp'),
+        Index('idx_model_predictions_model_timestamp', 'model_name', 'timestamp'),
+    )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'symbol': self.symbol,
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
+            'model_name': self.model_name,
+            'prediction': float(self.prediction),
+            'confidence': float(self.confidence),
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 

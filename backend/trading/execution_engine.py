@@ -1494,7 +1494,7 @@ class ExecutionEngine:
             # Compile readiness assessment
             readiness_checks = {
                 'walk_forward_test': walk_forward_results['system_readiness']['ready_for_live_trading'],
-                'current_performance': current_validation.get('passed', False),
+                'current_performance': current_validation.passed if current_validation else False,
                 'drift_status': not any(metrics.get('drift_detected', False) for metrics in drift_check.values()),
                 'infrastructure': infrastructure_check,
                 'risk_management': risk_check,
@@ -1548,7 +1548,7 @@ class ExecutionEngine:
                 scores.append(0.4)
             
             # Performance validation score
-            if validation_result.get('passed', False):
+            if validation_result and hasattr(validation_result, 'passed') and validation_result.passed:
                 scores.append(1.0)
             else:
                 scores.append(0.3)
