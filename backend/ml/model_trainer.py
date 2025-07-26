@@ -48,6 +48,7 @@ class ModelConfig:
     feature_count: int
     train_test_split: float = 0.8
     learning_rate: float = 0.001
+    prediction_threshold: float = 0.5  # Configurable prediction threshold for more aggressive trading
 
 @dataclass
 class ModelPerformance:
@@ -92,11 +93,11 @@ class ModelTrainer:
                 name='lstm',
                 model_type='neural_network',
                 parameters={
-                    'units': [128, 64, 32],  # 3-layer LSTM
-                    'dropout': 0.2,
-                    'epochs': 2, #100,
-                    'batch_size': 256,
-                    'learning_rate': 0.001,
+                    'units': [256, 128, 64],  # Increased complexity: 3-layer LSTM with more units
+                    'dropout': 0.1,  # Reduced dropout for more aggressive predictions
+                    'epochs': 2,  # Increased from 2 to 50 for proper training
+                    'batch_size': 128,  # Reduced batch size for better gradient updates
+                    'learning_rate': 0.002,  # Increased learning rate
                     'optimizer': 'adam',
                     'loss': 'binary_crossentropy'
                 },
@@ -104,26 +105,28 @@ class ModelTrainer:
                 validation_window=6,  # 6 months
                 lookback_window=60,  # 60-minute lookback
                 feature_count=feature_count,
-                learning_rate=0.001
+                learning_rate=0.002,
+                prediction_threshold=0.35  # More aggressive threshold
             ),
             'cnn': ModelConfig(
                 name='cnn',
                 model_type='neural_network',
                 parameters={
-                    'filters': [32, 64],  # Conv2D layers
+                    'filters': [64, 128],  # Increased filter complexity
                     'kernel_size': (3, 3),
-                    'dropout': 0.3,
-                    'l2_reg': 0.01,
-                    'epochs': 2, #80,
+                    'dropout': 0.15,  # Reduced dropout for more aggressive predictions
+                    'l2_reg': 0.005,  # Reduced regularization
+                    'epochs': 2,  # Increased from 2 to 40 for proper training
                     'batch_size': 128,
-                    'learning_rate': 0.0005,
+                    'learning_rate': 0.001,  # Increased learning rate
                     'optimizer': 'rmsprop'
                 },
                 training_window=18,
                 validation_window=6,
                 lookback_window=30,  # 30x20 matrix (30 minutes × 20 features)
                 feature_count=20,
-                learning_rate=0.0005
+                learning_rate=0.001,
+                prediction_threshold=0.35  # More aggressive threshold
             ),
             'random_forest': ModelConfig(
                 name='random_forest',
@@ -160,19 +163,20 @@ class ModelTrainer:
                 name='transformer',
                 model_type='neural_network',
                 parameters={
-                    'num_heads': 4,  # 4-head attention
-                    'num_layers': 2,  # 2 encoder layers
-                    'dropout': 0.1,
-                    'epochs': 2, #60,
+                    'num_heads': 8,  # Increased from 4 to 8 attention heads
+                    'num_layers': 3,  # Increased from 2 to 3 encoder layers
+                    'dropout': 0.05,  # Reduced dropout for more aggressive predictions
+                    'epochs': 2,  # Increased from 2 to 60 for proper training
                     'batch_size': 64,
-                    'learning_rate': 0.001,
+                    'learning_rate': 0.002,  # Increased learning rate
                     'warmup_steps': 1000
                 },
                 training_window=18,
                 validation_window=6,
                 lookback_window=120,  # 120-minute sequence
                 feature_count=feature_count,
-                learning_rate=0.001
+                learning_rate=0.002,
+                prediction_threshold=0.3  # Most aggressive threshold
             )
         }
         
@@ -797,7 +801,12 @@ class ModelTrainer:
         else:
             y_pred_proba = model.predict(X_test).flatten()
         
-        y_pred = (y_pred_proba > 0.5).astype(int)
+        # Use model-specific prediction threshold for more aggressive trading
+        model_config = self.model_configs.get(model_name)
+        threshold = model_config.prediction_threshold if model_config else 0.5
+        y_pred = (y_pred_proba > threshold).astype(int)
+        
+        logger.info(f"{model_name}: Using prediction threshold {threshold} (predicted {np.sum(y_pred)} trades out of {len(y_pred)} samples)")
         
         # Calculate metrics
         accuracy = accuracy_score(y_test, y_pred)
@@ -1249,9 +1258,16 @@ class ModelTrainer:
                 features_reshaped = features.reshape(1, features.shape[0], features.shape[1])
                 prediction_proba = model.predict(features_reshaped)[0, 0]
             
-            # Convert probability to prediction (-1 to 1)
-            prediction = (prediction_proba - 0.5) * 2
-            confidence = abs(prediction_proba - 0.5) * 2
+            # Use model-specific threshold for binary decision
+            model_config = self.model_configs.get(model_name)
+            threshold = model_config.prediction_threshold if model_config else 0.5
+            
+            # Convert probability to prediction (-1 to 1) using model-specific threshold
+            prediction = (prediction_proba - threshold) * 2
+            confidence = abs(prediction_proba - threshold) * 2
+            
+            # Ensure confidence is between 0 and 1
+            confidence = min(confidence, 1.0)
             
             return prediction, confidence
             
@@ -1363,13 +1379,14 @@ class ModelTrainer:
                 passing_periods = sum(1 for p in period_performances if p.sharpe_ratio >= self.min_sharpe_threshold)
                 consistency_score = passing_periods / len(period_performances)
                 
+                # Convert numpy types to native Python types for JSON serialization
                 walk_forward_results[model_name] = WalkForwardResult(
                     model_name=model_name,
-                    total_periods=len(period_performances),
-                    avg_accuracy=avg_accuracy,
-                    avg_sharpe=avg_sharpe,
-                    avg_drawdown=avg_drawdown,
-                    consistency_score=consistency_score,
+                    total_periods=int(len(period_performances)),
+                    avg_accuracy=float(avg_accuracy),
+                    avg_sharpe=float(avg_sharpe),
+                    avg_drawdown=float(avg_drawdown),
+                    consistency_score=float(consistency_score),
                     performance_by_period=period_performances
                 )
                 
@@ -1491,20 +1508,21 @@ class ModelTrainer:
         negative_returns = returns[returns < 0]
         profit_factor = (np.sum(positive_returns) / (abs(np.sum(negative_returns)) + 1e-8)) if len(negative_returns) > 0 else 0
         
+        # Convert numpy types to native Python types for JSON serialization
         return ModelPerformance(
             model_name=model_name,
-            accuracy=accuracy,
-            precision=precision,
-            recall=recall,
-            sharpe_ratio=sharpe_ratio,
-            max_drawdown=max_drawdown,
-            win_rate=win_rate,
-            total_trades=total_trades,
+            accuracy=float(accuracy),
+            precision=float(precision),
+            recall=float(recall),
+            sharpe_ratio=float(sharpe_ratio),
+            max_drawdown=float(max_drawdown),
+            win_rate=float(win_rate),
+            total_trades=int(total_trades),
             returns=returns.tolist(),
             timestamp=datetime.now(),
-            validation_score=accuracy,  # Use accuracy as validation score
-            overfitting_score=abs(accuracy - 0.5) * 2,  # Simple overfitting measure
-            profit_factor=profit_factor,
+            validation_score=float(accuracy),  # Use accuracy as validation score
+            overfitting_score=float(abs(accuracy - 0.5) * 2),  # Simple overfitting measure
+            profit_factor=float(profit_factor),
             last_updated=datetime.now()
          )
     
@@ -1554,8 +1572,23 @@ class ModelTrainer:
                 if i < len(normalized_weights):
                     ensemble_pred += normalized_weights[i] * model_predictions[model_name]
             
-            # Convert to binary predictions
-            binary_pred = (ensemble_pred > 0.5).astype(int)
+            # Convert to binary predictions using weighted average of model thresholds
+            # Calculate weighted threshold based on ensemble weights
+            weighted_threshold = 0
+            total_weight = 0
+            for i, model_name in enumerate(model_names):
+                if i < len(normalized_weights):
+                    model_config = self.model_configs.get(model_name)
+                    model_threshold = model_config.prediction_threshold if model_config else 0.5
+                    weighted_threshold += normalized_weights[i] * model_threshold
+                    total_weight += normalized_weights[i]
+            
+            if total_weight > 0:
+                weighted_threshold /= total_weight
+            else:
+                weighted_threshold = 0.5
+            
+            binary_pred = (ensemble_pred > weighted_threshold).astype(int)
             
             # Calculate returns (simplified)
             returns = []

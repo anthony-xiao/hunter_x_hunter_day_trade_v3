@@ -370,28 +370,28 @@ class PerformanceValidator:
                 sharpe_scores.append(normalized_sharpe)
             
             if sharpe_scores:
-                avg_sharpe_score = np.mean(sharpe_scores)
+                avg_sharpe_score = float(np.mean(sharpe_scores))
                 score_components['sharpe_quality'] = avg_sharpe_score * 0.3
             
             # Consistency score (20% weight)
             consistency_scores = [result.consistency_score for result in ml_results.values()]
             if consistency_scores:
-                avg_consistency = np.mean(consistency_scores)
+                avg_consistency = float(np.mean(consistency_scores))
                 score_components['consistency'] = avg_consistency * 0.2
             
             # Data sufficiency score (10% weight)
             total_periods = [result.total_periods for result in ml_results.values()]
             if total_periods:
-                avg_periods = np.mean(total_periods)
+                avg_periods = float(np.mean(total_periods))
                 # Target: at least 50 periods for robust testing
                 data_score = min(avg_periods / 50.0, 1.0)
                 score_components['data_sufficiency'] = data_score * 0.1
             
             # Calculate overall score
-            overall_score = sum(score_components.values())
+            overall_score = float(sum(score_components.values()))
             
             # Determine system readiness
-            system_ready = (
+            system_ready = bool(
                 overall_score >= 0.75 and  # At least 75% overall score
                 trading_validation['requirements_met'] and  # Core requirements met
                 len(trading_validation['critical_failures']) == 0  # No critical failures
