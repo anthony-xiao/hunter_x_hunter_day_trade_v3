@@ -1442,7 +1442,7 @@ class ExecutionEngine:
                 'system_readiness': {
                     'ready_for_live_trading': (
                         (validation_result.passed if validation_result else False) and 
-                        walk_forward_results.get('overall_sharpe', 0) > 1.5 and
+                        (walk_forward_results.overall_score > 0.6 if walk_forward_results else False) and
                         not any(metrics.get('drift_detected', False) for metrics in drift_results.values())
                     ),
                     'confidence_score': self._calculate_confidence_score(
@@ -1493,7 +1493,7 @@ class ExecutionEngine:
             
             # Compile readiness assessment
             readiness_checks = {
-                'walk_forward_test': walk_forward_results['system_readiness']['ready_for_live_trading'],
+                'walk_forward_test': walk_forward_results.get('system_readiness', {}).get('ready_for_live_trading', False) if walk_forward_results else False,
                 'current_performance': current_validation.passed if current_validation else False,
                 'drift_status': not any(metrics.get('drift_detected', False) for metrics in drift_check.values()),
                 'infrastructure': infrastructure_check,
@@ -1534,20 +1534,28 @@ class ExecutionEngine:
                 'timestamp': datetime.now().isoformat()
             }
     
-    def _calculate_confidence_score(self, walk_forward_results: Dict, validation_result: Dict, drift_results: Dict) -> float:
+    def _calculate_confidence_score(self, walk_forward_results, validation_result, drift_results: Dict) -> float:
         """Calculate overall confidence score for system readiness"""
         try:
             scores = []
             
-            # Walk-forward test score
-            if walk_forward_results.get('overall_sharpe', 0) > 2.0:
-                scores.append(1.0)
-            elif walk_forward_results.get('overall_sharpe', 0) > 1.5:
-                scores.append(0.8)
+            # Walk-forward test score - handle WalkForwardValidationResult object
+            if walk_forward_results and hasattr(walk_forward_results, 'overall_score'):
+                overall_score = walk_forward_results.overall_score
+                if overall_score > 0.8:
+                    scores.append(1.0)
+                elif overall_score > 0.6:
+                    scores.append(0.8)
+                else:
+                    scores.append(0.4)
+            elif walk_forward_results and isinstance(walk_forward_results, dict):
+                # Handle dictionary case - extract from nested structure
+                confidence_score = walk_forward_results.get('system_readiness', {}).get('confidence_score', 0.4)
+                scores.append(confidence_score)
             else:
                 scores.append(0.4)
             
-            # Performance validation score
+            # Performance validation score - handle ValidationResult object
             if validation_result and hasattr(validation_result, 'passed') and validation_result.passed:
                 scores.append(1.0)
             else:
