@@ -667,19 +667,107 @@ async def get_drift_detection():
 async def optimize_ensemble_weights():
     """Optimize ensemble weights using Bayesian optimization"""
     try:
-        # Get recent validation data for optimization
+        if not model_trainer or not data_pipeline:
+            raise HTTPException(status_code=500, detail="Model trainer or data pipeline not initialized")
+        
+        # Get recent validation data for optimization (last 30 days)
         end_date = datetime.now()
         start_date = end_date - timedelta(days=30)
         
-        optimization_result = await execution_engine.model_trainer.optimize_ensemble_weights(
-            start_date=start_date,
-            end_date=end_date
+        # Get trading universe for multi-symbol ensemble optimization
+        trading_universe = data_pipeline.get_ticker_universe()
+        
+        # Select representative symbols from different sectors for optimization
+        # Prioritize high-volume, high-volatility stocks as per requirements
+        priority_symbols = [
+            "NVDA", "TSLA", "AAPL", "MSFT", "META",  # Technology
+            "MRNA", "GILD", "BIIB",                    # Biotechnology
+            "XOM", "CVX",                              # Energy
+            "MARA", "COIN",                            # Crypto-related
+            "AMZN", "NFLX"                             # Consumer Discretionary
+        ]
+        
+        # Select symbols that are in both priority list and trading universe
+        selected_symbols = [symbol for symbol in priority_symbols if symbol in trading_universe]
+        
+        # If we don't have enough priority symbols, add more from trading universe
+        if len(selected_symbols) < 8:
+            additional_symbols = [symbol for symbol in trading_universe[:20] if symbol not in selected_symbols]
+            selected_symbols.extend(additional_symbols[:8-len(selected_symbols)])
+        
+        # Limit to 10 symbols for optimization efficiency
+        selected_symbols = selected_symbols[:10]
+        
+        logger.info(f"Using {len(selected_symbols)} symbols for ensemble optimization: {selected_symbols}")
+        
+        # Aggregate validation data from multiple symbols
+        all_validation_features = []
+        all_validation_targets = []
+        successful_symbols = []
+        
+        for symbol in selected_symbols:
+            try:
+                # Load features from database for each symbol
+                symbol_data = await data_pipeline.load_features_from_db(
+                    symbol=symbol,
+                    start_time=start_date,
+                    end_time=end_date
+                )
+                
+                if symbol_data is not None and not symbol_data.empty:
+                    # Extract features and targets for this symbol
+                    features, targets = model_trainer._extract_features_and_targets(symbol_data)
+                    
+                    if not features.empty and not targets.empty:
+                        all_validation_features.append(features)
+                        all_validation_targets.append(targets)
+                        successful_symbols.append(symbol)
+                        logger.info(f"Loaded {len(features)} samples for {symbol}")
+                    else:
+                        logger.warning(f"Failed to extract features/targets for {symbol}")
+                else:
+                    logger.warning(f"No data available for {symbol}")
+                    
+            except Exception as e:
+                logger.warning(f"Error loading data for {symbol}: {e}")
+                continue
+        
+        if not all_validation_features:
+            raise HTTPException(status_code=400, detail="No validation data available from any symbols")
+        
+        # Combine all features and targets
+        import pandas as pd
+        validation_features = pd.concat(all_validation_features, ignore_index=True)
+        validation_targets = pd.concat(all_validation_targets, ignore_index=True)
+        
+        # Ensure we have sufficient data for optimization (minimum 500 samples as per requirements)
+        if len(validation_features) < 500:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Insufficient validation data: {len(validation_features)} samples (minimum 500 required)"
+            )
+        
+        logger.info(f"Combined validation dataset: {len(validation_features)} samples from {len(successful_symbols)} symbols")
+        logger.info(f"Feature dimensions: {validation_features.shape}, Target dimensions: {validation_targets.shape}")
+        
+        # Call optimize_ensemble_weights with correct parameters
+        optimization_result = await model_trainer.optimize_ensemble_weights(
+            validation_features=validation_features,
+            validation_targets=validation_targets
         )
         
         return {
             "status": "success",
-            "message": "Ensemble weights optimized",
-            "optimization_result": optimization_result
+            "message": "Ensemble weights optimized using multi-symbol validation data",
+            "optimization_result": optimization_result,
+            "validation_period": {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "symbols_used": successful_symbols,
+                "total_symbols": len(successful_symbols),
+                "samples_count": len(validation_features),
+                "features_count": len(validation_features.columns)
+            }
         }
         
     except Exception as e:
