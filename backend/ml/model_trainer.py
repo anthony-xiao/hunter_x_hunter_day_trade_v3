@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 import asyncio
+import concurrent.futures
 import os
 import json
 from pathlib import Path
@@ -197,6 +198,12 @@ class ModelTrainer:
         self.min_sharpe_ratio = 1.5
         self.min_win_rate = 0.52
         self.max_drawdown = 0.15
+        self.min_sharpe_threshold = 1.5  # Minimum Sharpe ratio threshold for validation
+        
+        # Walk-forward testing configuration
+        self.training_months = 18  # 18-month training window
+        self.validation_months = 6  # 6-month validation window
+        self.rolling_weeks = 4  # 4-week rolling period
         
         # Create models directory with timestamp for versioning
         base_models_dir = Path('models')
@@ -561,14 +568,20 @@ class ModelTrainer:
         ]
         
         logger.info("LSTM training started...")
-        history = model.fit(
-            X_train, y_train,
-            batch_size=config.parameters['batch_size'],
-            epochs=config.parameters['epochs'],
-            validation_data=(X_val, y_val),  # Use separate validation data
-            callbacks=callbacks,
-            verbose=1  # Show progress bar
-        )
+        # Use thread executor to make blocking model.fit() truly asynchronous
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            history = await loop.run_in_executor(
+                executor,
+                lambda: model.fit(
+                    X_train, y_train,
+                    batch_size=config.parameters['batch_size'],
+                    epochs=config.parameters['epochs'],
+                    validation_data=(X_val, y_val),
+                    callbacks=callbacks,
+                    verbose=1
+                )
+            )
         
         logger.info(f"LSTM training completed. Final validation accuracy: {history.history['val_accuracy'][-1]:.4f}")
         return model
@@ -624,14 +637,20 @@ class ModelTrainer:
         ]
         
         logger.info("CNN training started...")
-        history = model.fit(
-            X_train_cnn, y_train,
-            batch_size=batch_size,
-            epochs=epochs,
-            validation_data=(X_val_cnn, y_val),  # Use separate validation data
-            callbacks=callbacks,
-            verbose=1  # Show progress bar
-        )
+        # Use thread executor to make blocking model.fit() truly asynchronous
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            history = await loop.run_in_executor(
+                executor,
+                lambda: model.fit(
+                    X_train_cnn, y_train,
+                    batch_size=batch_size,
+                    epochs=epochs,
+                    validation_data=(X_val_cnn, y_val),
+                    callbacks=callbacks,
+                    verbose=1
+                )
+            )
         
         logger.info(f"CNN training completed. Final validation accuracy: {history.history['val_accuracy'][-1]:.4f}")
         return model
@@ -661,7 +680,13 @@ class ModelTrainer:
         )
         
         logger.info("Random Forest training started...")
-        model.fit(X_train_scaled, y_train.ravel())
+        # Use thread executor to make blocking model.fit() truly asynchronous
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            await loop.run_in_executor(
+                executor,
+                lambda: model.fit(X_train_scaled, y_train.ravel())
+            )
         
         # Calculate validation accuracy
         y_val_pred = model.predict(X_val_scaled)
@@ -700,10 +725,16 @@ class ModelTrainer:
         )
         
         logger.info("XGBoost training started...")
-        model.fit(
-            X_train_scaled, y_train.ravel(),
-            verbose=True  # Enable verbose output to show training progress
-        )
+        # Use thread executor to make blocking model.fit() truly asynchronous
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            await loop.run_in_executor(
+                executor,
+                lambda: model.fit(
+                    X_train_scaled, y_train.ravel(),
+                    verbose=True
+                )
+            )
         
         # Calculate final validation accuracy
         y_val_pred = model.predict(X_val_scaled)
@@ -767,14 +798,20 @@ class ModelTrainer:
         ]
         
         logger.info("Transformer training started...")
-        history = model.fit(
-            X_train, y_train,
-            batch_size=batch_size,
-            epochs=epochs,
-            validation_data=(X_val, y_val),  # Use separate validation data
-            callbacks=callbacks,
-            verbose=1  # Show progress bar
-        )
+        # Use thread executor to make blocking model.fit() truly asynchronous
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            history = await loop.run_in_executor(
+                executor,
+                lambda: model.fit(
+                    X_train, y_train,
+                    batch_size=batch_size,
+                    epochs=epochs,
+                    validation_data=(X_val, y_val),
+                    callbacks=callbacks,
+                    verbose=1
+                )
+            )
         
         logger.info(f"Transformer training completed. Final validation accuracy: {history.history['val_accuracy'][-1]:.4f}")
         return model
@@ -1294,8 +1331,8 @@ class ModelTrainer:
         return status
     
     async def walk_forward_test(self, features_df: pd.DataFrame, targets_df: pd.DataFrame) -> Dict[str, WalkForwardResult]:
-        """Comprehensive walk-forward testing framework as per requirements"""
-        logger.info("Starting walk-forward testing with 18-month training, 6-month validation")
+        """Comprehensive walk-forward testing framework with parallelized time periods"""
+        logger.info("Starting parallelized walk-forward testing with 18-month training, 6-month validation")
         
         # Ensure data is sorted by timestamp
         features_df = features_df.sort_index()
@@ -1314,84 +1351,122 @@ class ModelTrainer:
         if total_days < (training_days + validation_days):
             raise ValueError(f"Insufficient data: need {training_days + validation_days} days, have {total_days}")
         
+        # Pre-calculate all time periods for parallelization
+        time_periods = []
+        current_date = start_date + timedelta(days=training_days)
+        period_count = 0
+        
+        while current_date + timedelta(days=validation_days) <= end_date:
+            period_count += 1
+            
+            # Define training and validation windows
+            train_start = current_date - timedelta(days=training_days)
+            train_end = current_date
+            val_start = current_date
+            val_end = current_date + timedelta(days=validation_days)
+            
+            # Extract training data
+            train_features = features_df[train_start:train_end]
+            train_targets = targets_df[train_start:train_end]
+            
+            # Extract validation data
+            val_features = features_df[val_start:val_end]
+            val_targets = targets_df[val_start:val_end]
+            
+            if len(train_features) >= 1000 and len(val_features) >= 100:
+                time_periods.append({
+                    'period_id': period_count,
+                    'train_features': train_features,
+                    'train_targets': train_targets,
+                    'val_features': val_features,
+                    'val_targets': val_targets,
+                    'train_start': train_start,
+                    'train_end': train_end
+                })
+            else:
+                logger.warning(f"Insufficient data for period {period_count}, skipping")
+            
+            # Advance by rolling period
+            current_date += timedelta(days=rolling_days)
+        
+        logger.info(f"Prepared {len(time_periods)} time periods for parallel processing")
+        
         # Initialize results
         walk_forward_results = {}
         
+        # Process each model sequentially (since neural networks can't be easily parallelized)
+        # but parallelize the time periods within each model
         for model_name in self.model_configs.keys():
-            logger.info(f"Walk-forward testing {model_name}")
+            logger.info(f"Walk-forward testing {model_name} with {len(time_periods)} parallel periods")
             
-            period_performances = []
-            current_date = start_date + timedelta(days=training_days)
-            period_count = 0
+            # Create tasks for parallel execution of time periods
+            period_tasks = []
+            for period_data in time_periods:
+                task = self._train_and_validate_period_with_id(
+                    model_name=model_name,
+                    period_id=period_data['period_id'],
+                    train_features=period_data['train_features'],
+                    train_targets=period_data['train_targets'],
+                    val_features=period_data['val_features'],
+                    val_targets=period_data['val_targets'],
+                    train_start=period_data['train_start'],
+                    train_end=period_data['train_end']
+                )
+                period_tasks.append(task)
             
-            while current_date + timedelta(days=validation_days) <= end_date:
-                period_count += 1
-                logger.info(f"Period {period_count}: Training on {current_date - timedelta(days=training_days)} to {current_date}")
+            # Execute periods in batches of 3 to prevent memory issues
+            batch_size = 2
+            valid_performances = []
+            
+            try:
+                logger.info(f"Starting batched execution of {len(period_tasks)} periods for {model_name} (batch size: {batch_size})")
                 
-                # Define training and validation windows
-                train_start = current_date - timedelta(days=training_days)
-                train_end = current_date
-                val_start = current_date
-                val_end = current_date + timedelta(days=validation_days)
-                
-                # Extract training data
-                train_features = features_df[train_start:train_end]
-                train_targets = targets_df[train_start:train_end]
-                
-                # Extract validation data
-                val_features = features_df[val_start:val_end]
-                val_targets = targets_df[val_start:val_end]
-                
-                if len(train_features) < 1000 or len(val_features) < 100:
-                    logger.warning(f"Insufficient data for period {period_count}, skipping")
-                    current_date += timedelta(days=rolling_days)
-                    continue
-                
-                try:
-                    # Train model for this period
-                    performance = await self._train_and_validate_period(
-                        model_name, train_features, train_targets, val_features, val_targets
-                    )
+                for batch_start in range(0, len(period_tasks), batch_size):
+                    batch_end = min(batch_start + batch_size, len(period_tasks))
+                    batch_tasks = period_tasks[batch_start:batch_end]
                     
-                    # Check performance threshold
-                    if performance.sharpe_ratio >= self.min_sharpe_threshold:
-                        performance.validation_score = 1.0
-                        logger.info(f"{model_name} Period {period_count}: Sharpe {performance.sharpe_ratio:.3f} ✓")
-                    else:
-                        performance.validation_score = 0.0
-                        logger.warning(f"{model_name} Period {period_count}: Sharpe {performance.sharpe_ratio:.3f} ✗")
+                    logger.info(f"Processing batch {batch_start//batch_size + 1}: periods {batch_start + 1}-{batch_end} for {model_name}")
                     
-                    period_performances.append(performance)
+                    # Execute current batch in parallel
+                    batch_performances = await asyncio.gather(*batch_tasks, return_exceptions=True)
                     
-                except Exception as e:
-                    logger.error(f"Failed to train {model_name} for period {period_count}: {e}")
+                    # Filter out exceptions and log errors for this batch
+                    for i, result in enumerate(batch_performances):
+                        period_index = batch_start + i
+                        if isinstance(result, Exception):
+                            logger.error(f"Failed to train {model_name} for period {time_periods[period_index]['period_id']}: {result}")
+                        else:
+                            valid_performances.append(result)
                 
-                # Advance by rolling period
-                current_date += timedelta(days=rolling_days)
+                logger.info(f"Completed {len(valid_performances)}/{len(period_tasks)} periods successfully for {model_name}")
+                
+            except Exception as e:
+                logger.error(f"Critical error in batched execution for {model_name}: {e}")
+                valid_performances = []
             
             # Calculate aggregate walk-forward results
-            if period_performances:
-                avg_accuracy = np.mean([p.accuracy for p in period_performances])
-                avg_sharpe = np.mean([p.sharpe_ratio for p in period_performances])
-                avg_drawdown = np.mean([p.max_drawdown for p in period_performances])
+            if valid_performances:
+                avg_accuracy = np.mean([p.accuracy for p in valid_performances])
+                avg_sharpe = np.mean([p.sharpe_ratio for p in valid_performances])
+                avg_drawdown = np.mean([p.max_drawdown for p in valid_performances])
                 
                 # Consistency score: percentage of periods meeting threshold
-                passing_periods = sum(1 for p in period_performances if p.sharpe_ratio >= self.min_sharpe_threshold)
-                consistency_score = passing_periods / len(period_performances)
+                passing_periods = sum(1 for p in valid_performances if p.sharpe_ratio >= self.min_sharpe_threshold)
+                consistency_score = passing_periods / len(valid_performances)
                 
                 # Convert numpy types to native Python types for JSON serialization
                 walk_forward_results[model_name] = WalkForwardResult(
                     model_name=model_name,
-                    total_periods=int(len(period_performances)),
+                    total_periods=int(len(valid_performances)),
                     avg_accuracy=float(avg_accuracy),
                     avg_sharpe=float(avg_sharpe),
                     avg_drawdown=float(avg_drawdown),
                     consistency_score=float(consistency_score),
-                    performance_by_period=period_performances
+                    performance_by_period=valid_performances
                 )
                 
                 logger.info(f"{model_name} Walk-Forward Results:")
-                logger.info(f"  Periods: {len(period_performances)}")
+                logger.info(f"  Periods: {len(valid_performances)}")
                 logger.info(f"  Avg Sharpe: {avg_sharpe:.3f}")
                 logger.info(f"  Consistency: {consistency_score:.1%}")
             else:
@@ -1428,6 +1503,67 @@ class ModelTrainer:
         performance = await self._evaluate_model_detailed(model_name, model, X_val, y_val, val_targets.index)
         
         return performance
+    
+    async def _train_and_validate_period_with_id(self, model_name: str, period_id: int,
+                                                train_features: pd.DataFrame, train_targets: pd.DataFrame,
+                                                val_features: pd.DataFrame, val_targets: pd.DataFrame,
+                                                train_start: pd.Timestamp, train_end: pd.Timestamp) -> ModelPerformance:
+        """Train and validate a single model for a specific time period with enhanced logging for parallel execution"""
+        try:
+            logger.info(f"Period {period_id}: Training {model_name} on {train_start.date()} to {train_end.date()}")
+            
+            config = self.model_configs[model_name]
+            
+            # Prepare data
+            X_train, y_train = self._prepare_data(train_features, train_targets, config)
+            X_val, y_val = self._prepare_data(val_features, val_targets, config)
+            
+            # Train model
+            if model_name == "lstm":
+                model = await self._train_lstm(X_train, y_train, X_val, y_val, config)
+            elif model_name == "cnn":
+                model = await self._train_cnn(X_train, y_train, X_val, y_val, config)
+            elif model_name == "random_forest":
+                model = await self._train_random_forest(X_train, y_train, X_val, y_val, config)
+            elif model_name == "xgboost":
+                model = await self._train_xgboost(X_train, y_train, X_val, y_val, config)
+            elif model_name == "transformer":
+                model = await self._train_transformer(X_train, y_train, X_val, y_val, config)
+            else:
+                raise ValueError(f"Unknown model: {model_name}")
+            
+            # Evaluate on validation set
+            performance = await self._evaluate_model_detailed(model_name, model, X_val, y_val, val_targets.index)
+            
+            # Check performance threshold and log results
+            if performance.sharpe_ratio >= self.min_sharpe_threshold:
+                performance.validation_score = 1.0
+                logger.info(f"{model_name} Period {period_id}: Sharpe {performance.sharpe_ratio:.3f} ✓")
+            else:
+                performance.validation_score = 0.0
+                logger.warning(f"{model_name} Period {period_id}: Sharpe {performance.sharpe_ratio:.3f} ✗")
+            
+            return performance
+            
+        except Exception as e:
+            logger.error(f"Error in _train_and_validate_period_with_id for {model_name} period {period_id}: {e}")
+            # Return default performance with poor metrics
+            return ModelPerformance(
+                model_name=model_name,
+                accuracy=0.0,
+                precision=0.0,
+                recall=0.0,
+                sharpe_ratio=-1.0,
+                max_drawdown=1.0,
+                win_rate=0.0,
+                total_trades=0,
+                returns=[],
+                timestamp=datetime.now(),
+                validation_score=0.0,
+                overfitting_score=1.0,
+                profit_factor=0.0,
+                last_updated=datetime.now()
+            )
     
     async def _evaluate_model_detailed(self, model_name: str, model: any, X_test: np.ndarray, 
                                      y_test: np.ndarray, timestamps: pd.DatetimeIndex) -> ModelPerformance:
