@@ -159,7 +159,7 @@ async def initialize_system():
         
         # Initialize ML models
         logger.info("Initializing ML models...")
-        model_trainer = ModelTrainer()
+        model_trainer = ModelTrainer(feature_count=50, create_model_dir=False)
         await model_trainer.load_models()
         
         logger.info("System initialization complete")
