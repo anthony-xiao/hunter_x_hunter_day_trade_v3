@@ -41,7 +41,7 @@ def get_directory_size(path):
 
 async def list_versions():
     """List all available model versions"""
-    trainer = ModelTrainer()
+    trainer = ModelTrainer(feature_count=50, create_model_dir=False)
     versions = trainer.list_model_versions()
     
     if not versions:
@@ -79,7 +79,7 @@ async def list_versions():
 
 async def show_version_details(version):
     """Show detailed information about a specific version"""
-    trainer = ModelTrainer()
+    trainer = ModelTrainer(feature_count=50, create_model_dir=False)
     versions = trainer.list_model_versions()
     
     version_info = next((v for v in versions if v['version'] == version), None)
@@ -110,7 +110,7 @@ async def show_version_details(version):
 
 async def load_version(version):
     """Load a specific model version"""
-    trainer = ModelTrainer()
+    trainer = ModelTrainer(feature_count=50, create_model_dir=False)
     
     print(f"Loading model version: {version}")
     await trainer.load_models(version)
@@ -134,7 +134,7 @@ async def delete_version(version):
         print("Deletion cancelled.")
         return
     
-    trainer = ModelTrainer()
+    trainer = ModelTrainer(feature_count=50, create_model_dir=False)
     success = await trainer.delete_model_version(version)
     
     if success:
@@ -144,7 +144,7 @@ async def delete_version(version):
 
 async def cleanup_old_versions(keep_count=5):
     """Keep only the most recent N versions"""
-    trainer = ModelTrainer()
+    trainer = ModelTrainer(feature_count=50, create_model_dir=False)
     versions = trainer.list_model_versions()
     
     if len(versions) <= keep_count:

@@ -63,7 +63,7 @@ class PerformanceValidator:
         
         # Initialize data pipeline and model trainer for walk-forward testing
         self.data_pipeline = DataPipeline()
-        self.model_trainer = ModelTrainer()
+        self.model_trainer = ModelTrainer(create_model_dir=False)  # Don't create directories for walk-forward testing
         
         # Performance targets from requirements
         self.targets = {

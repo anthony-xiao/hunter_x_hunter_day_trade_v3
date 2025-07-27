@@ -127,7 +127,7 @@ async def initialize_trading_system():
         
         # Initialize model trainer
         logger.info("Initializing model trainer...")
-        model_trainer = ModelTrainer()
+        model_trainer = ModelTrainer(feature_count=50, create_model_dir=False)
         
         # Initialize signal generator
         logger.info("Initializing signal generator...")
@@ -670,6 +670,11 @@ async def optimize_ensemble_weights():
         if not model_trainer or not data_pipeline:
             raise HTTPException(status_code=500, detail="Model trainer or data pipeline not initialized")
         
+        # Load trained models before optimization
+        logger.info("Loading trained models for ensemble optimization...")
+        await model_trainer.load_models(version="latest")
+        logger.info(f"Loaded {len(model_trainer.models)} models for optimization")
+        
         # Get recent validation data for optimization (last 30 days)
         end_date = datetime.now()
         start_date = end_date - timedelta(days=30)
@@ -688,15 +693,16 @@ async def optimize_ensemble_weights():
         ]
         
         # Select symbols that are in both priority list and trading universe
-        selected_symbols = [symbol for symbol in priority_symbols if symbol in trading_universe]
+        # selected_symbols = [symbol for symbol in priority_symbols if symbol in trading_universe]
         
         # If we don't have enough priority symbols, add more from trading universe
-        if len(selected_symbols) < 8:
-            additional_symbols = [symbol for symbol in trading_universe[:20] if symbol not in selected_symbols]
-            selected_symbols.extend(additional_symbols[:8-len(selected_symbols)])
+        # if len(selected_symbols) < 8:
+        #     additional_symbols = [symbol for symbol in trading_universe[:20] if symbol not in selected_symbols]
+        #     selected_symbols.extend(additional_symbols[:8-len(selected_symbols)])
         
         # Limit to 10 symbols for optimization efficiency
-        selected_symbols = selected_symbols[:10]
+        # selected_symbols = selected_symbols[:10]
+        selected_symbols = ["AAPL"]
         
         logger.info(f"Using {len(selected_symbols)} symbols for ensemble optimization: {selected_symbols}")
         

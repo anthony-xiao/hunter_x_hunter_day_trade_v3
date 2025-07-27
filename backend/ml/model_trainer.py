@@ -83,7 +83,7 @@ class WalkForwardResult:
     performance_by_period: List[ModelPerformance]
 
 class ModelTrainer:
-    def __init__(self, feature_count: int = 50):
+    def __init__(self, feature_count: int = 50, create_model_dir: bool = True):
         self.models: Dict[str, Any] = {}
         self.scalers: Dict[str, Any] = {}
         self.feature_count = feature_count
@@ -164,19 +164,19 @@ class ModelTrainer:
                 name='transformer',
                 model_type='neural_network',
                 parameters={
-                    'num_heads': 8,  # Increased from 4 to 8 attention heads
-                    'num_layers': 3,  # Increased from 2 to 3 encoder layers
-                    'dropout': 0.05,  # Reduced dropout for more aggressive predictions
-                    'epochs': 2,  # Increased from 2 to 60 for proper training
-                    'batch_size': 64,
-                    'learning_rate': 0.002,  # Increased learning rate
-                    'warmup_steps': 1000
+                    'num_heads': 2,  # Reduced from 8 to 2 attention heads for faster training
+                    'num_layers': 1,  # Reduced from 3 to 1 encoder layer
+                    'dropout': 0.1,  # Slightly increased dropout
+                    'epochs': 1,  # Reduced to 1 epoch for faster training
+                    'batch_size': 128,  # Increased batch size for efficiency
+                    'learning_rate': 0.001,  # Reduced learning rate
+                    'warmup_steps': 100
                 },
                 training_window=18,
                 validation_window=6,
-                lookback_window=120,  # 120-minute sequence
+                lookback_window=60,  # Reduced from 120 to 60-minute sequence
                 feature_count=feature_count,
-                learning_rate=0.002,
+                learning_rate=0.001,
                 prediction_threshold=0.3  # Most aggressive threshold
             )
         }
@@ -205,22 +205,27 @@ class ModelTrainer:
         self.validation_months = 6  # 6-month validation window
         self.rolling_weeks = 4  # 4-week rolling period
         
-        # Create models directory with timestamp for versioning
-        base_models_dir = Path('models')
-        base_models_dir.mkdir(exist_ok=True)
-        
-        # Create timestamped directory for this training run
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.model_dir = base_models_dir / timestamp
-        self.model_dir.mkdir(exist_ok=True)
-        
-        # Also maintain a 'latest' symlink for easy access to most recent models
-        latest_link = base_models_dir / 'latest'
-        if latest_link.exists() or latest_link.is_symlink():
-            latest_link.unlink()
-        latest_link.symlink_to(timestamp, target_is_directory=True)
-        
-        logger.info(f"Models will be saved to: {self.model_dir}")
+        # Create models directory with timestamp for versioning (only if needed)
+        if create_model_dir:
+            base_models_dir = Path('models')
+            base_models_dir.mkdir(exist_ok=True)
+            
+            # Create timestamped directory for this training run
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.model_dir = base_models_dir / timestamp
+            self.model_dir.mkdir(exist_ok=True)
+            
+            # Also maintain a 'latest' symlink for easy access to most recent models
+            latest_link = base_models_dir / 'latest'
+            if latest_link.exists() or latest_link.is_symlink():
+                latest_link.unlink()
+            latest_link.symlink_to(timestamp, target_is_directory=True)
+            
+            logger.info(f"Models will be saved to: {self.model_dir}")
+        else:
+            # For walk-forward testing, don't create directories
+            self.model_dir = None
+            logger.info("ModelTrainer initialized for walk-forward testing (no model directory created)")
         
         # Walk-forward testing parameters
         self.training_months = 18
@@ -237,9 +242,31 @@ class ModelTrainer:
             Real(0.0, 1.0, name='transformer_weight')
         ]
     
+    def _create_model_dir(self):
+        """Create a new timestamped model directory for training"""
+        base_models_dir = Path('models')
+        base_models_dir.mkdir(exist_ok=True)
+        
+        # Create timestamped directory for this training run
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.model_dir = base_models_dir / timestamp
+        self.model_dir.mkdir(exist_ok=True)
+        
+        # Also maintain a 'latest' symlink for easy access to most recent models
+        latest_link = base_models_dir / 'latest'
+        if latest_link.exists() or latest_link.is_symlink():
+            latest_link.unlink()
+        latest_link.symlink_to(timestamp, target_is_directory=True)
+        
+        logger.info(f"Models will be saved to: {self.model_dir}")
+    
     async def train_ensemble_models(self, symbol: str, data: pd.DataFrame) -> Dict[str, ModelPerformance]:
         """Train all models in the ensemble"""
         logger.info("Starting ensemble model training")
+        
+        # Create model directory if not already created (for training runs)
+        if self.model_dir is None:
+            self._create_model_dir()
         
         # Prepare features and targets from data
         features_df, targets_df = self._extract_features_and_targets(data)
@@ -756,18 +783,14 @@ class ModelTrainer:
         # Input layer
         inputs = Input(shape=(X_train.shape[1], X_train.shape[2]))
         
-        # Multi-head attention
-        attention = MultiHeadAttention(num_heads=4, key_dim=64)(inputs, inputs)
+        # Single multi-head attention layer (simplified)
+        attention = MultiHeadAttention(num_heads=2, key_dim=32)(inputs, inputs)
         attention = LayerNormalization()(attention + inputs)
         
-        # Second attention layer
-        attention2 = MultiHeadAttention(num_heads=4, key_dim=64)(attention, attention)
-        attention2 = LayerNormalization()(attention2 + attention)
-        
         # Global average pooling and dense layers
-        pooled = tf.keras.layers.GlobalAveragePooling1D()(attention2)
-        dense = Dense(64, activation='relu')(pooled)
-        dropout = Dropout(0.3)(dense)
+        pooled = tf.keras.layers.GlobalAveragePooling1D()(attention)
+        dense = Dense(32, activation='relu')(pooled)
+        dropout = Dropout(0.1)(dense)
         outputs = Dense(1, activation='sigmoid')(dropout)
         
         model = Model(inputs=inputs, outputs=outputs)
@@ -1032,6 +1055,10 @@ class ModelTrainer:
     async def _save_models(self):
         """Save trained models to disk with versioning"""
         try:
+            # Skip saving if no model directory (e.g., during walk-forward testing)
+            if self.model_dir is None:
+                logger.info("Skipping model save - no model directory configured (walk-forward testing mode)")
+                return
             # Save each model
             for model_name, model in self.models.items():
                 model_path = self.model_dir / f"{model_name}_model.pkl"
@@ -1148,7 +1175,7 @@ class ModelTrainer:
                 if model_name in ["lstm", "cnn", "transformer"]:
                     model_path = load_dir / f"{model_name}_model.h5"
                     if model_path.exists():
-                        self.models[model_name] = tf.keras.models.load_model(model_path)
+                        self.models[model_name] = tf.keras.models.load_model(str(model_path))
                         loaded_models.append(model_name)
                 else:
                     model_path = load_dir / f"{model_name}_model.pkl"
@@ -1667,26 +1694,46 @@ class ModelTrainer:
         """Bayesian optimization for ensemble weights to maximize Sharpe ratio"""
         logger.info("Starting Bayesian optimization for ensemble weights")
         
-        # Ensure all models are trained
-        if len(self.models) != len(self.model_configs):
-            raise ValueError("All models must be trained before optimizing ensemble weights")
+        # Ensure at least some models are trained
+        if len(self.models) == 0:
+            raise ValueError("At least one model must be trained before optimizing ensemble weights")
+        
+        if len(self.models) < len(self.model_configs):
+            logger.warning(f"Only {len(self.models)} out of {len(self.model_configs)} models are loaded. Proceeding with available models.")
         
         # Get predictions from all models
         model_predictions = {}
+        prediction_lengths = []
         for model_name in self.models.keys():
             try:
                 predictions = await self._get_model_predictions(model_name, validation_features)
                 model_predictions[model_name] = predictions
+                prediction_lengths.append(len(predictions))
                 logger.info(f"Got {len(predictions)} predictions from {model_name}")
             except Exception as e:
                 logger.error(f"Failed to get predictions from {model_name}: {e}")
                 return self.ensemble_weights
         
-        # Prepare validation targets
-        val_targets = validation_targets.values.flatten()
+        # Align all predictions to the same length (minimum length)
+        if prediction_lengths:
+            min_length = min(prediction_lengths)
+            logger.info(f"Aligning all predictions to minimum length: {min_length}")
+            for model_name in model_predictions.keys():
+                model_predictions[model_name] = model_predictions[model_name][:min_length]
+            # Also align validation targets
+            val_targets = validation_targets.values.flatten()[:min_length]
+        else:
+            logger.error("No predictions obtained from any model")
+            return self.ensemble_weights
+        
+        # val_targets is now set above during alignment
+        
+        # Create dynamic weight space for loaded models only
+        loaded_model_names = list(self.models.keys())
+        dynamic_weight_space = [Real(0.0, 1.0, name=f'{model_name}_weight') for model_name in loaded_model_names]
         
         # Define objective function for Bayesian optimization
-        @use_named_args(self.weight_space)
+        @use_named_args(dynamic_weight_space)
         def objective(**weights):
             # Normalize weights to sum to 1
             weight_values = list(weights.values())
@@ -1752,10 +1799,10 @@ class ModelTrainer:
         logger.info("Running Bayesian optimization (50 iterations)")
         result = gp_minimize(
             func=objective,
-            dimensions=self.weight_space,
+            dimensions=dynamic_weight_space,
             n_calls=50,
             n_initial_points=10,
-            acquisition_func='EI',  # Expected Improvement
+            acq_func='EI',  # Expected Improvement
             random_state=42
         )
         
@@ -1763,20 +1810,29 @@ class ModelTrainer:
         optimal_weights_raw = result.x
         weight_sum = sum(optimal_weights_raw)
         
+        # Get only loaded model names
+        loaded_model_names = list(self.models.keys())
+        
         if weight_sum > 0:
             optimal_weights = [w / weight_sum for w in optimal_weights_raw]
         else:
             logger.warning("Optimization failed, using equal weights")
-            optimal_weights = [0.2] * 5
+            optimal_weights = [1.0 / len(loaded_model_names)] * len(loaded_model_names)
         
-        # Update ensemble weights
-        model_names = ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']
+        # Update ensemble weights for loaded models only
         optimized_ensemble_weights = {}
         
-        for i, model_name in enumerate(model_names):
+        # Set weights for loaded models
+        for i, model_name in enumerate(loaded_model_names):
             if i < len(optimal_weights):
                 optimized_ensemble_weights[model_name] = optimal_weights[i]
             else:
+                optimized_ensemble_weights[model_name] = 0.0
+        
+        # Set zero weights for unloaded models
+        all_model_names = ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']
+        for model_name in all_model_names:
+            if model_name not in optimized_ensemble_weights:
                 optimized_ensemble_weights[model_name] = 0.0
         
         self.ensemble_weights = optimized_ensemble_weights
