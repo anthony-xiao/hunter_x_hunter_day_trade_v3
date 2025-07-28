@@ -665,10 +665,14 @@ async def get_drift_detection():
 
 @app.post("/api/models/optimize-ensemble")
 async def optimize_ensemble_weights():
-    """Optimize ensemble weights using Bayesian optimization"""
+    """Optimize ensemble weights using Bayesian optimization with enhanced tracking"""
     try:
         if not model_trainer or not data_pipeline:
             raise HTTPException(status_code=500, detail="Model trainer or data pipeline not initialized")
+        
+        # Import ensemble configuration manager
+        from ensemble.ensemble_config import EnsembleConfigManager
+        ensemble_config = EnsembleConfigManager()
         
         # Load trained models before optimization
         logger.info("Loading trained models for ensemble optimization...")
@@ -762,10 +766,103 @@ async def optimize_ensemble_weights():
             validation_targets=validation_targets
         )
         
+        # Extract optimized weights and performance metrics
+        optimized_weights = optimization_result
+        
+        # Calculate individual model performance metrics
+        model_performance_metrics = {}
+        for model_name in model_trainer.models.keys():
+            try:
+                # Get individual model predictions for performance calculation
+                predictions = await model_trainer._get_model_predictions(model_name, validation_features)
+                if len(predictions) > 0:
+                    # Calculate basic performance metrics
+                    accuracy = sum(1 for i, pred in enumerate(predictions) if 
+                                 (pred > 0.5 and validation_targets.iloc[i, 0] == 1) or 
+                                 (pred <= 0.5 and validation_targets.iloc[i, 0] == 0)) / len(predictions)
+                    
+                    model_performance_metrics[model_name] = {
+                        'accuracy': float(accuracy),
+                        'predictions_count': int(len(predictions)),
+                        'weight': float(optimized_weights.get(model_name, 0.0))
+                    }
+            except Exception as e:
+                logger.warning(f"Error calculating performance for {model_name}: {e}")
+                model_performance_metrics[model_name] = {
+                    'accuracy': 0.0,
+                    'predictions_count': 0,
+                    'weight': float(optimized_weights.get(model_name, 0.0))
+                }
+        
+        # Calculate ensemble Sharpe ratio (simplified)
+        ensemble_sharpe = 0.0
+        try:
+            # Get ensemble predictions
+            ensemble_predictions = []
+            for i in range(len(validation_features)):
+                ensemble_pred = 0.0
+                total_weight = 0.0
+                for model_name, weight in optimized_weights.items():
+                    if model_name in model_trainer.models and weight > 0:
+                        try:
+                            model_pred = await model_trainer._get_model_predictions(model_name, validation_features.iloc[i:i+1])
+                            if len(model_pred) > 0:
+                                ensemble_pred += weight * model_pred[0]
+                                total_weight += weight
+                        except:
+                            continue
+                if total_weight > 0:
+                    ensemble_predictions.append(ensemble_pred / total_weight)
+                else:
+                    ensemble_predictions.append(0.0)
+            
+            # Calculate returns and Sharpe ratio
+            if len(ensemble_predictions) > 0:
+                returns = []
+                for i, pred in enumerate(ensemble_predictions):
+                    if i < len(validation_targets):
+                        actual = validation_targets.iloc[i, 0]
+                        if (pred > 0.5 and actual == 1) or (pred <= 0.5 and actual == 0):
+                            returns.append(0.001)  # Correct prediction return
+                        else:
+                            returns.append(-0.001)  # Wrong prediction return
+                
+                if len(returns) > 1:
+                    import numpy as np
+                    mean_return = np.mean(returns)
+                    std_return = np.std(returns)
+                    if std_return > 0:
+                        ensemble_sharpe = float((mean_return / std_return) * np.sqrt(252 * 390))  # Annualized
+        except Exception as e:
+            logger.warning(f"Error calculating ensemble Sharpe ratio: {e}")
+        
+        # Save optimized weights using ensemble configuration manager
+        validation_period = {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat()
+        }
+        
+        save_success = ensemble_config.save_optimized_weights(
+            weights=optimized_weights,
+            performance_metrics=model_performance_metrics,
+            validation_period=validation_period,
+            symbols_used=successful_symbols,
+            samples_count=len(validation_features),
+            sharpe_ratio=ensemble_sharpe
+        )
+        
+        # Compare with previous optimization
+        comparison = ensemble_config.compare_with_previous(ensemble_sharpe)
+        
         return {
             "status": "success",
-            "message": "Ensemble weights optimized using multi-symbol validation data",
-            "optimization_result": optimization_result,
+            "message": "Ensemble weights optimized and saved with enhanced tracking",
+            "optimization_result": {
+                "optimized_weights": optimized_weights,
+                "ensemble_sharpe_ratio": float(ensemble_sharpe),
+                "model_performance": model_performance_metrics,
+                "weights_saved": bool(save_success)
+            },
             "validation_period": {
                 "start_date": start_date.isoformat(),
                 "end_date": end_date.isoformat(),
@@ -773,7 +870,8 @@ async def optimize_ensemble_weights():
                 "total_symbols": len(successful_symbols),
                 "samples_count": len(validation_features),
                 "features_count": len(validation_features.columns)
-            }
+            },
+            "performance_comparison": comparison
         }
         
     except Exception as e:

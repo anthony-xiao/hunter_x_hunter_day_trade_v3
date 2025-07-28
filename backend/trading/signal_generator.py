@@ -97,9 +97,26 @@ class SignalGenerator:
     def __init__(self):
         self.models: Dict[str, Dict[ModelType, Any]] = {}  # symbol -> model_type -> model
         self.scalers: Dict[str, StandardScaler] = {}  # symbol -> scaler
-        self.ensemble_weights: Dict[str, Dict[ModelType, float]] = {}  # symbol -> model_type -> weight
         
-        # Performance tracking
+        # Initialize ensemble weights - will be loaded from optimization results
+        self.ensemble_weights: Dict[str, Dict[ModelType, float]] = {}  # symbol -> model_type -> weight
+        self.default_ensemble_weights = {
+            ModelType.LSTM: 0.2,
+            ModelType.CNN: 0.15,
+            ModelType.TRANSFORMER: 0.2,
+            ModelType.RANDOM_FOREST: 0.15,
+            ModelType.XGBOOST: 0.15,
+            ModelType.LIGHTGBM: 0.15
+        }
+        
+        # Initialize ensemble configuration manager
+        from ensemble.ensemble_config import EnsembleConfigManager
+        self.ensemble_config = EnsembleConfigManager()
+        
+        # Load optimized weights on startup
+        self._load_optimized_ensemble_weights()
+        
+        # Performance tracking (simplified - no longer used for weight optimization)
         self.model_performance: Dict[str, Dict[ModelType, Dict]] = defaultdict(lambda: defaultdict(dict))
         self.prediction_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
         self.signal_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=500))
@@ -116,6 +133,61 @@ class SignalGenerator:
         # Market regime detection
         self.current_market_regime: Optional[MarketRegime] = None
         self.regime_history: deque = deque(maxlen=100)
+    
+    def _load_optimized_ensemble_weights(self) -> None:
+        """Load optimized ensemble weights from shared configuration"""
+        try:
+            # Load optimized weights from ensemble configuration
+            optimized_weights = self.ensemble_config.load_optimized_weights()
+            
+            # Convert string keys to ModelType enum for internal use
+            converted_weights = {}
+            for model_name, weight in optimized_weights.items():
+                try:
+                    model_type = ModelType(model_name)
+                    converted_weights[model_type] = weight
+                except ValueError:
+                    logger.warning(f"Unknown model type: {model_name}")
+                    continue
+            
+            # Set default weights for all symbols (will be used until symbol-specific weights are available)
+            self.default_ensemble_weights = converted_weights
+            
+            logger.info(f"Loaded optimized ensemble weights: {optimized_weights}")
+            
+            # Get metadata about the optimization
+            metadata = self.ensemble_config.get_ensemble_metadata()
+            if metadata:
+                logger.info(f"Ensemble optimization from: {metadata.get('optimization_timestamp', 'unknown')}")
+                logger.info(f"Sharpe ratio: {metadata.get('sharpe_ratio', 'unknown')}")
+                
+        except Exception as e:
+            logger.error(f"Error loading optimized ensemble weights: {e}")
+            # Fallback to default equal weights
+            self.default_ensemble_weights = {
+                ModelType.LSTM: 0.2,
+                ModelType.CNN: 0.2,
+                ModelType.RANDOM_FOREST: 0.2,
+                ModelType.XGBOOST: 0.2,
+                ModelType.TRANSFORMER: 0.2
+            }
+            logger.info("Using default equal ensemble weights as fallback")
+    
+    def refresh_ensemble_weights(self) -> bool:
+        """Refresh ensemble weights from latest optimization results"""
+        try:
+            self._load_optimized_ensemble_weights()
+            
+            # Update weights for all active symbols
+            for symbol in self.ensemble_weights.keys():
+                self.ensemble_weights[symbol] = self.default_ensemble_weights.copy()
+            
+            logger.info("Successfully refreshed ensemble weights from optimization results")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error refreshing ensemble weights: {e}")
+            return False
         
         # Feature engineering parameters
         self.lookback_periods = [5, 10, 20, 50]
@@ -410,18 +482,28 @@ class SignalGenerator:
             if not individual_predictions:
                 return None
             
-            # Calculate ensemble prediction
+            # Calculate ensemble prediction using optimized weights
+            # Use optimized weights if available, otherwise use default weights for this symbol
+            if symbol not in self.ensemble_weights:
+                self.ensemble_weights[symbol] = self.default_ensemble_weights.copy()
+            
             weights = self.ensemble_weights[symbol]
             weighted_predictions = []
             total_weight = 0
             
             for pred in individual_predictions:
-                weight = weights.get(pred.model_type, 0.1)
-                weighted_predictions.append(pred.prediction * weight)
-                total_weight += weight
+                weight = weights.get(pred.model_type, 0.0)  # Use 0.0 for unknown models
+                if weight > 0:  # Only include models with positive weights
+                    weighted_predictions.append(pred.prediction * weight)
+                    total_weight += weight
             
             if total_weight == 0:
-                return None
+                # Fallback to equal weights if no optimized weights available
+                logger.warning(f"No valid weights found for {symbol}, using equal weights")
+                equal_weight = 1.0 / len(individual_predictions)
+                for pred in individual_predictions:
+                    weighted_predictions.append(pred.prediction * equal_weight)
+                total_weight = 1.0
             
             final_prediction = sum(weighted_predictions) / total_weight
             
@@ -829,39 +911,14 @@ class SignalGenerator:
             logger.error(f"Error updating model performance: {e}")
     
     async def _update_ensemble_weights(self, symbol: str) -> None:
-        """Update ensemble weights based on model performance"""
-        try:
-            if symbol not in self.model_performance:
-                return
-            
-            # Calculate performance scores
-            performance_scores = {}
-            total_score = 0
-            
-            for model_type, perf in self.model_performance[symbol].items():
-                if perf['total_predictions'] < 10:  # Need minimum predictions
-                    score = 0.1  # Default low weight
-                else:
-                    # Combine accuracy and Sharpe ratio
-                    accuracy_score = perf['accuracy']
-                    sharpe_score = max(0, min(2, perf['sharpe_ratio'])) / 2  # Normalize to 0-1
-                    score = 0.7 * accuracy_score + 0.3 * sharpe_score
-                
-                performance_scores[model_type] = score
-                total_score += score
-            
-            # Update weights (with smoothing to prevent dramatic changes)
-            if total_score > 0:
-                alpha = 0.1  # Smoothing factor
-                for model_type in self.ensemble_weights[symbol]:
-                    new_weight = performance_scores.get(model_type, 0.1) / total_score
-                    current_weight = self.ensemble_weights[symbol][model_type]
-                    self.ensemble_weights[symbol][model_type] = (1 - alpha) * current_weight + alpha * new_weight
-            
-            logger.debug(f"Updated ensemble weights for {symbol}: {self.ensemble_weights[symbol]}")
-            
-        except Exception as e:
-            logger.error(f"Error updating ensemble weights: {e}")
+        """Legacy method - weights are now managed centrally via ensemble optimization"""
+        # This method is kept for compatibility but no longer performs weight updates
+        # Weights are now loaded from the centralized ensemble optimization results
+        logger.debug(f"Ensemble weights for {symbol} are managed centrally - no local updates performed")
+        
+        # Optionally refresh weights from latest optimization if needed
+        # This could be called periodically or triggered by external events
+        pass
     
     async def _log_signal(self, signal: TradeSignal, ensemble_pred: EnsemblePrediction) -> None:
         """Log signal details"""
