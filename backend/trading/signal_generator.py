@@ -133,6 +133,9 @@ class SignalGenerator:
         # Market regime detection
         self.current_market_regime: Optional[MarketRegime] = None
         self.regime_history: deque = deque(maxlen=100)
+        
+        # Initialize additional attributes
+        self._initialize_attributes()
     
     def _load_optimized_ensemble_weights(self) -> None:
         """Load optimized ensemble weights from shared configuration"""
@@ -188,7 +191,9 @@ class SignalGenerator:
         except Exception as e:
             logger.error(f"Error refreshing ensemble weights: {e}")
             return False
-        
+    
+    def _initialize_attributes(self):
+        """Initialize class attributes - called from __init__"""
         # Feature engineering parameters
         self.lookback_periods = [5, 10, 20, 50]
         self.technical_indicators = [
