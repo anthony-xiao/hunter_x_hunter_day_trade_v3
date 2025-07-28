@@ -148,8 +148,8 @@ async def initialize_trading_system():
         logger.info("Trading system basic initialization complete")
         logger.info("Model initialization and data download will continue in background...")
         
-        # Temporarily disable background initialization to test API responsiveness
-        # asyncio.create_task(delayed_background_initialization(signal_generator, trading_symbols))
+        # Start background initialization for models and data
+        asyncio.create_task(delayed_background_initialization(signal_generator, trading_symbols))
         
     except Exception as e:
         logger.error(f"Error initializing trading system: {e}")

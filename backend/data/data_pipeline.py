@@ -49,16 +49,17 @@ class DataPipeline:
         
         # Trading universe
         self.trading_universe = [
+            'AAPL'
             # Technology
-            'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META',
+            # 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META',
             # Biotechnology
-            'MRNA', 'GILD', 'BIIB', 'VRTX',
+            # 'MRNA', 'GILD', 'BIIB', 'VRTX',
             # Energy
-            'XOM', 'CVX', 'SLB', 'HAL',
+            # 'XOM', 'CVX', 'SLB', 'HAL',
             # Crypto-Related
-            'MARA', 'COIN', 'RIOT',
+            # 'MARA', 'COIN', 'RIOT',
             # Consumer Discretionary
-            'AMZN', 'NFLX', 'DIS'
+            # 'AMZN', 'NFLX', 'DIS'
         ]
     
     def get_ticker_universe(self) -> List[str]:

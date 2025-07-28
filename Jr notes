@@ -5,3 +5,12 @@ System run order
 cd backend, venv, python run.py 
 curl -X POST "http://localhost:8000/models/train/AAPL"
 
+curl -X POST "http://localhost:8000/api/models/walk-forward-test?start_date=2024-01-01&end_date=2024-12-31"
+
+curl -X POST "http://localhost:8000/api/models/optimize-ensemble"
+
+curl -X POST http://localhost:8000/trading/start 
+
+self.enable_polling_backup = False  needs to be true when live
+
+trading_universe needs to be back to full ticker count for live
