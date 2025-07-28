@@ -72,6 +72,40 @@ class ConceptDriftDetector:
         # Model performance history
         self.performance_history = {}
         self.drift_alerts = []
+        
+        # Baseline initialization flag
+        self.baseline_initialized = False
+        self.baseline_data = {}
+    
+    async def initialize_baseline(self) -> bool:
+        """Initialize baseline performance data for all active models"""
+        try:
+            logger.info("Initializing baseline performance data for drift detection")
+            
+            # Get list of active models
+            active_models = await self._get_active_models()
+            
+            if not active_models:
+                logger.warning("No active models found for baseline initialization")
+                return False
+            
+            # Initialize baseline for each model
+            for model_name in active_models:
+                baseline_data = await self._get_baseline_performance(model_name)
+                if baseline_data:
+                    self.baseline_data[model_name] = baseline_data
+                    logger.info(f"Baseline initialized for model: {model_name}")
+                else:
+                    logger.warning(f"Failed to initialize baseline for model: {model_name}")
+            
+            self.baseline_initialized = True
+            logger.info(f"Baseline initialization completed for {len(self.baseline_data)} models")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize baseline: {e}")
+            self.baseline_initialized = False
+            return False
     
     async def detect_drift(self, model_name: str, force_check: bool = False) -> DriftMetrics:
         """Detect concept drift for a specific model"""

@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 import json
+import os
 from pathlib import Path
 import pickle
 from collections import defaultdict, deque
@@ -109,9 +110,10 @@ class SignalGenerator:
             ModelType.LIGHTGBM: 0.15
         }
         
-        # Initialize ensemble configuration manager
+        # Initialize ensemble configuration manager with absolute path
         from ensemble.ensemble_config import EnsembleConfigManager
-        self.ensemble_config = EnsembleConfigManager()
+        ensemble_config_dir = "/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/ensemble"
+        self.ensemble_config = EnsembleConfigManager(config_dir=ensemble_config_dir)
         
         # Load optimized weights on startup
         self._load_optimized_ensemble_weights()
@@ -213,12 +215,13 @@ class SignalGenerator:
         self.model_update_frequency = 24
         self.last_model_update: Dict[str, datetime] = {}
         
-        # Create directories
-        Path('models').mkdir(exist_ok=True)
-        Path('models/lstm').mkdir(exist_ok=True)
-        Path('models/cnn').mkdir(exist_ok=True)
-        Path('models/transformer').mkdir(exist_ok=True)
-        Path('models/ensemble').mkdir(exist_ok=True)
+        # Create directories with absolute paths
+        models_base_dir = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models')
+        models_base_dir.mkdir(exist_ok=True)
+        (models_base_dir / 'lstm').mkdir(exist_ok=True)
+        (models_base_dir / 'cnn').mkdir(exist_ok=True)
+        (models_base_dir / 'transformer').mkdir(exist_ok=True)
+        (models_base_dir / 'ensemble').mkdir(exist_ok=True)
         Path('logs/signals').mkdir(parents=True, exist_ok=True)
         Path('logs/predictions').mkdir(parents=True, exist_ok=True)
         
@@ -268,45 +271,161 @@ class SignalGenerator:
         try:
             self.models[symbol] = {}
             
-            # Try to load existing models
-            for model_type in ModelType:
-                model_path = f"models/{model_type.value}/{symbol}_model"
+            # Find the latest timestamped model directory
+            latest_model_dir = self._find_latest_model_directory()
+            
+            if latest_model_dir:
+                logger.info(f"Loading models from {latest_model_dir}")
                 
-                try:
-                    if model_type == ModelType.LSTM:
-                        self.models[symbol][model_type] = load_model(f"{model_path}.h5")
-                    elif model_type == ModelType.CNN:
-                        self.models[symbol][model_type] = load_model(f"{model_path}.h5")
-                    elif model_type == ModelType.TRANSFORMER:
-                        # Load TensorFlow model instead of PyTorch
-                        try:
-                            # Try loading with custom objects for compatibility
-                            custom_objects = {
-                                'MultiHeadAttention': tf.keras.layers.MultiHeadAttention,
-                                'LayerNormalization': tf.keras.layers.LayerNormalization,
-                                'GlobalAveragePooling1D': tf.keras.layers.GlobalAveragePooling1D
-                            }
-                            self.models[symbol][model_type] = tf.keras.models.load_model(
-                                f"{model_path}.h5", 
-                                custom_objects=custom_objects
-                            )
-                        except Exception as load_error:
-                            logger.warning(f"Failed to load transformer model for {symbol}: {load_error}")
-                            # Create new model if loading fails
-                            self.models[symbol][model_type] = self._create_transformer_model()
-                    elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST, ModelType.LIGHTGBM]:
-                        with open(f"{model_path}.pkl", 'rb') as f:
-                            self.models[symbol][model_type] = pickle.load(f)
-                    
-                    logger.info(f"Loaded {model_type.value} model for {symbol}")
-                    
-                except FileNotFoundError:
-                    # Create new model if not found
-                    logger.info(f"Creating new {model_type.value} model for {symbol}")
+                # Try to load existing models from the latest directory
+                for model_type in ModelType:
+                    try:
+                        if model_type == ModelType.LSTM:
+                            model_path = os.path.join(latest_model_dir, "lstm_model.h5")
+                            if os.path.exists(model_path):
+                                self.models[symbol][model_type] = load_model(model_path)
+                                logger.info(f"Loaded {model_type.value} model for {symbol}")
+                            else:
+                                self.models[symbol][model_type] = await self._create_model(model_type, symbol)
+                                
+                        elif model_type == ModelType.CNN:
+                            model_path = os.path.join(latest_model_dir, "cnn_model.h5")
+                            if os.path.exists(model_path):
+                                self.models[symbol][model_type] = load_model(model_path)
+                                logger.info(f"Loaded {model_type.value} model for {symbol}")
+                            else:
+                                self.models[symbol][model_type] = await self._create_model(model_type, symbol)
+                                
+                        elif model_type == ModelType.TRANSFORMER:
+                            model_path = os.path.join(latest_model_dir, "transformer_model.h5")
+                            if os.path.exists(model_path):
+                                try:
+                                    # Try loading with custom objects for compatibility
+                                    custom_objects = {
+                                        'MultiHeadAttention': tf.keras.layers.MultiHeadAttention,
+                                        'LayerNormalization': tf.keras.layers.LayerNormalization,
+                                        'GlobalAveragePooling1D': tf.keras.layers.GlobalAveragePooling1D
+                                    }
+                                    self.models[symbol][model_type] = tf.keras.models.load_model(
+                                        model_path, 
+                                        custom_objects=custom_objects
+                                    )
+                                    logger.info(f"Loaded {model_type.value} model for {symbol}")
+                                except Exception as load_error:
+                                    logger.warning(f"Failed to load transformer model for {symbol}: {load_error}")
+                                    self.models[symbol][model_type] = self._create_transformer_model()
+                            else:
+                                self.models[symbol][model_type] = self._create_transformer_model()
+                                
+                        elif model_type == ModelType.RANDOM_FOREST:
+                            model_path = os.path.join(latest_model_dir, "random_forest_model.pkl")
+                            if os.path.exists(model_path):
+                                with open(model_path, 'rb') as f:
+                                    self.models[symbol][model_type] = pickle.load(f)
+                                logger.info(f"Loaded {model_type.value} model for {symbol}")
+                            else:
+                                self.models[symbol][model_type] = await self._create_model(model_type, symbol)
+                                
+                        elif model_type == ModelType.XGBOOST:
+                            model_path = os.path.join(latest_model_dir, "xgboost_model.pkl")
+                            if os.path.exists(model_path):
+                                with open(model_path, 'rb') as f:
+                                    self.models[symbol][model_type] = pickle.load(f)
+                                logger.info(f"Loaded {model_type.value} model for {symbol}")
+                            else:
+                                self.models[symbol][model_type] = await self._create_model(model_type, symbol)
+                                
+                        elif model_type == ModelType.LIGHTGBM:
+                            # LightGBM models might not be in all directories, create new one
+                            self.models[symbol][model_type] = await self._create_model(model_type, symbol)
+                            
+                    except Exception as e:
+                        logger.warning(f"Error loading {model_type.value} model for {symbol}: {e}")
+                        # Create new model if loading fails
+                        self.models[symbol][model_type] = await self._create_model(model_type, symbol)
+                
+                # Load scalers if available
+                scalers_path = os.path.join(latest_model_dir, "scalers.pkl")
+                if os.path.exists(scalers_path):
+                    try:
+                        with open(scalers_path, 'rb') as f:
+                            self.scalers[symbol] = pickle.load(f)
+                        logger.info(f"Loaded scalers for {symbol}")
+                    except Exception as e:
+                        logger.warning(f"Failed to load scalers for {symbol}: {e}")
+                        # Create default scaler
+                        from sklearn.preprocessing import StandardScaler
+                        self.scalers[symbol] = StandardScaler()
+                else:
+                    # Create default scaler
+                    from sklearn.preprocessing import StandardScaler
+                    self.scalers[symbol] = StandardScaler()
+            else:
+                # No trained models found, create new ones
+                logger.info(f"No trained models found, creating new models for {symbol}")
+                for model_type in ModelType:
                     self.models[symbol][model_type] = await self._create_model(model_type, symbol)
+                
+                # Create default scaler
+                from sklearn.preprocessing import StandardScaler
+                self.scalers[symbol] = StandardScaler()
                     
         except Exception as e:
             logger.error(f"Error loading/creating models for {symbol}: {e}")
+    
+    def _find_latest_model_directory(self) -> Optional[str]:
+        """Find the latest timestamped model directory with all required models"""
+        try:
+            # Use absolute path to models directory
+            models_dir = "/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models"
+            if not os.path.exists(models_dir):
+                logger.error(f"Models directory not found: {models_dir}")
+                return None
+            
+            # Required model files for a complete model set
+            required_models = {
+                "lstm_model.h5",
+                "cnn_model.h5", 
+                "transformer_model.h5",
+                "random_forest_model.pkl",
+                "xgboost_model.pkl",
+                "scalers.pkl"
+            }
+            
+            # Get all timestamped directories (format: YYYYMMDD_HHMMSS)
+            timestamped_dirs = []
+            for item in os.listdir(models_dir):
+                item_path = os.path.join(models_dir, item)
+                if os.path.isdir(item_path) and len(item) == 15 and item[8] == '_':
+                    try:
+                        # Validate timestamp format
+                        datetime.strptime(item, "%Y%m%d_%H%M%S")
+                        
+                        # Check if this directory has all required models
+                        dir_files = set(os.listdir(item_path))
+                        if required_models.issubset(dir_files):
+                            timestamped_dirs.append(item)
+                            logger.info(f"Found complete model set in: {item}")
+                        else:
+                            missing = required_models - dir_files
+                            logger.warning(f"Directory {item} missing models: {missing}")
+                    except ValueError:
+                        continue
+            
+            if not timestamped_dirs:
+                logger.error("No complete model directories found")
+                return None
+            
+            # Sort by timestamp (latest first)
+            timestamped_dirs.sort(reverse=True)
+            latest_dir = os.path.join(models_dir, timestamped_dirs[0])
+            
+            logger.info(f"Using latest complete model directory: {latest_dir}")
+            return latest_dir
+            
+        except Exception as e:
+            logger.error(f"Error finding latest model directory: {e}")
+            return None
     
     async def _create_model(self, model_type: ModelType, symbol: str) -> Any:
         """Create a new model of specified type"""
