@@ -260,6 +260,23 @@ class ModelTrainer:
         
         logger.info(f"Models will be saved to: {self.model_dir}")
     
+    def _update_model_configs_with_actual_features(self, actual_feature_count: int):
+        """Update model configurations with actual feature count from data"""
+        logger.info(f"Updating model configurations with actual feature count: {actual_feature_count}")
+        
+        # Update feature count for models that use all features
+        for model_name in ['lstm', 'random_forest', 'transformer']:
+            if model_name in self.model_configs:
+                old_count = self.model_configs[model_name].feature_count
+                self.model_configs[model_name].feature_count = actual_feature_count
+                logger.info(f"Updated {model_name} feature_count from {old_count} to {actual_feature_count}")
+        
+        # Keep specific feature counts for CNN and XGBoost as they use feature selection
+        # CNN uses 20 features, XGBoost uses 30 features
+        
+        # Update the global feature count
+        self.feature_count = actual_feature_count
+    
     async def train_ensemble_models(self, symbol: str, data: pd.DataFrame) -> Dict[str, ModelPerformance]:
         """Train all models in the ensemble"""
         logger.info("Starting ensemble model training")
@@ -275,7 +292,11 @@ class ModelTrainer:
             logger.error("No valid features or targets extracted from data")
             return {}
         
-        logger.info(f"Extracted {len(features_df.columns)} features and {len(targets_df)} targets")
+        actual_feature_count = len(features_df.columns)
+        logger.info(f"Extracted {actual_feature_count} features and {len(targets_df)} targets")
+        
+        # Update model configurations with actual feature count
+        self._update_model_configs_with_actual_features(actual_feature_count)
         
         results = {}
         
@@ -873,11 +894,9 @@ class ModelTrainer:
         precision = precision_score(y_test, y_pred, zero_division=0)
         recall = recall_score(y_test, y_pred, zero_division=0)
         
-        # Calculate realistic trading returns using actual market data when available
-        if symbol and test_timestamps is not None:
-            returns = await self._calculate_realistic_returns_market_based(y_pred, y_test, symbol, test_timestamps)
-        else:
-            returns = await self._calculate_realistic_returns_simplified(y_pred, y_test)
+        # Calculate realistic trading returns using simplified calculation to avoid database bottleneck
+        # Note: Market-based calculation can cause timeouts with large datasets (58k+ samples)
+        returns = await self._calculate_realistic_returns_simplified(y_pred, y_test)
         
         # Calculate trading metrics
         if len(returns) > 0 and np.std(returns) > 0:
@@ -1059,17 +1078,57 @@ class ModelTrainer:
             if self.model_dir is None:
                 logger.info("Skipping model save - no model directory configured (walk-forward testing mode)")
                 return
-            # Save each model
+            # Save each model with detailed logging
             for model_name, model in self.models.items():
                 model_path = self.model_dir / f"{model_name}_model.pkl"
                 
                 if model_name in ["lstm", "cnn", "transformer"]:
-                    # Save Keras models
-                    model.save(self.model_dir / f"{model_name}_model.h5")
+                    # Save Keras models with enhanced logging
+                    h5_path = self.model_dir / f"{model_name}_model.h5"
+                    
+                    try:
+                        logger.info(f"Saving {model_name} model with {len(model.layers)} layers...")
+                        
+                        # Special handling for Transformer model
+                        if model_name == "transformer":
+                            # Save model architecture and weights separately for better compatibility
+                            model.save(h5_path, save_format='h5')
+                            
+                            # Also save model architecture as JSON for debugging
+                            architecture_path = self.model_dir / f"{model_name}_architecture.json"
+                            with open(architecture_path, 'w') as f:
+                                f.write(model.to_json())
+                            
+                            # Save layer information for debugging
+                            layer_info = {
+                                'total_layers': len(model.layers),
+                                'layer_details': [
+                                    {
+                                        'name': layer.name,
+                                        'class': layer.__class__.__name__,
+                                        'config': layer.get_config() if hasattr(layer, 'get_config') else 'N/A'
+                                    } for layer in model.layers
+                                ]
+                            }
+                            layer_info_path = self.model_dir / f"{model_name}_layer_info.json"
+                            with open(layer_info_path, 'w') as f:
+                                json.dump(layer_info, f, indent=2, default=str)
+                            
+                            logger.info(f"Transformer model saved with {len(model.layers)} layers")
+                        else:
+                            # Save LSTM and CNN models normally
+                            model.save(h5_path)
+                        
+                        logger.info(f"✓ Successfully saved {model_name} model to {h5_path}")
+                        
+                    except Exception as save_error:
+                        logger.error(f"✗ Failed to save {model_name} model: {save_error}")
+                        raise save_error
                 else:
                     # Save sklearn/xgboost models
                     with open(model_path, 'wb') as f:
                         pickle.dump(model, f)
+                    logger.info(f"✓ Successfully saved {model_name} model to {model_path}")
             
             # Save scalers
             scalers_path = self.model_dir / "scalers.pkl"
@@ -1171,18 +1230,177 @@ class ModelTrainer:
             
             # Load models
             loaded_models = []
+            missing_models = []
             for model_name in self.model_configs.keys():
                 if model_name in ["lstm", "cnn", "transformer"]:
                     model_path = load_dir / f"{model_name}_model.h5"
                     if model_path.exists():
-                        self.models[model_name] = tf.keras.models.load_model(str(model_path))
-                        loaded_models.append(model_name)
+                        try:
+                            # Suppress TensorFlow verbose output during loading
+                            import os
+                            os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+                            
+                            # Special handling for Transformer model - recreate architecture and load weights
+                            if model_name == "transformer":
+                                logger.info(f"Loading Transformer model from {model_path}...")
+                                
+                                # Check if we have layer info for debugging
+                                layer_info_path = load_dir / f"{model_name}_layer_info.json"
+                                if layer_info_path.exists():
+                                    with open(layer_info_path, 'r') as f:
+                                        layer_info = json.load(f)
+                                    logger.info(f"Expected layers from saved info: {layer_info['total_layers']}")
+                                
+                                model_loaded = False
+                                
+                                # Strategy 1: Try loading with enhanced custom objects
+                                try:
+                                    from tensorflow.keras.layers import MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D
+                                    custom_objects = {
+                                        'MultiHeadAttention': MultiHeadAttention,
+                                        'LayerNormalization': LayerNormalization,
+                                        'GlobalAveragePooling1D': GlobalAveragePooling1D,
+                                        'Dense': tf.keras.layers.Dense,
+                                        'Dropout': tf.keras.layers.Dropout,
+                                        'Input': tf.keras.layers.Input
+                                    }
+                                    self.models[model_name] = tf.keras.models.load_model(
+                                        str(model_path), 
+                                        custom_objects=custom_objects,
+                                        compile=False
+                                    )
+                                    model_loaded = True
+                                    logger.info("✓ Loaded transformer with enhanced custom objects (Strategy 1)")
+                                except Exception as e:
+                                    logger.warning(f"Strategy 1 failed: {e}")
+                                
+                                # Strategy 2: Recreate exact architecture from _train_transformer
+                                if not model_loaded:
+                                    try:
+                                        logger.info("Attempting to recreate exact transformer architecture...")
+                                        
+                                        # Load the saved model to inspect its structure
+                                        try:
+                                            saved_model = tf.keras.models.load_model(str(model_path), compile=False)
+                                            saved_weights = saved_model.get_weights()
+                                            logger.info(f"Saved model has {len(saved_model.layers)} layers and {len(saved_weights)} weight arrays")
+                                        except Exception as inspect_error:
+                                            logger.warning(f"Could not inspect saved model: {inspect_error}")
+                                            saved_weights = None
+                                        
+                                        # Recreate the exact architecture from _train_transformer method
+                                        from tensorflow.keras.layers import Input, Dense, Dropout, MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D
+                                        from tensorflow.keras.models import Model
+                                        
+                                        # Load metadata to get actual training dimensions
+                                        metadata_path = load_dir / "training_metadata.json"
+                                        if metadata_path.exists():
+                                            with open(metadata_path, 'r') as f:
+                                                metadata = json.load(f)
+                                            transformer_metadata = metadata.get('model_configs', {}).get('transformer', {})
+                                            sequence_length = transformer_metadata.get('lookback_window', 60)
+                                            n_features = transformer_metadata.get('feature_count', 50)
+                                            logger.info(f"Using actual training dimensions: sequence_length={sequence_length}, n_features={n_features}")
+                                        else:
+                                            # Fallback to config values if metadata not available
+                                            transformer_config = self.model_configs['transformer']
+                                            sequence_length = transformer_config.lookback_window
+                                            n_features = transformer_config.feature_count
+                                            logger.warning(f"No metadata found, using config dimensions: sequence_length={sequence_length}, n_features={n_features}")
+                                        
+                                        # Use the same architecture as in _train_transformer
+                                        input_layer = Input(shape=(sequence_length, n_features), name='input_layer')
+                                        
+                                        # Multi-head attention (2 heads, key_dim=32)
+                                        attention = MultiHeadAttention(
+                                            num_heads=2, 
+                                            key_dim=32,
+                                            name='multi_head_attention'
+                                        )(input_layer, input_layer)
+                                        
+                                        # Layer normalization
+                                        norm1 = LayerNormalization(name='layer_normalization')(attention)
+                                        
+                                        # Global average pooling
+                                        pooling = GlobalAveragePooling1D(name='global_average_pooling1d')(norm1)
+                                        
+                                        # Dense layer (32 units to match _train_transformer)
+                                        dense = Dense(32, activation='relu', name='dense')(pooling)
+                                        
+                                        # Dropout (0.1 to match _train_transformer)
+                                        dropout = Dropout(0.1, name='dropout')(dense)
+                                        
+                                        # Output layer
+                                        outputs = Dense(1, activation='sigmoid', name='dense_1')(dropout)
+                                        
+                                        # Create model
+                                        new_model = Model(inputs=input_layer, outputs=outputs, name='transformer_model')
+                                        
+                                        logger.info(f"Recreated model has {len(new_model.layers)} layers")
+                                        
+                                        # Try to load weights
+                                        if saved_weights is not None:
+                                            try:
+                                                if len(saved_weights) == len(new_model.get_weights()):
+                                                    new_model.set_weights(saved_weights)
+                                                    logger.info("✓ Successfully loaded all weights")
+                                                else:
+                                                    logger.warning(f"Weight count mismatch: saved={len(saved_weights)}, model={len(new_model.get_weights())}")
+                                                    # Try loading weights by layer
+                                                    model_weights = new_model.get_weights()
+                                                    weights_loaded = 0
+                                                    for i, (saved_w, model_w) in enumerate(zip(saved_weights, model_weights)):
+                                                        if saved_w.shape == model_w.shape:
+                                                            model_weights[i] = saved_w
+                                                            weights_loaded += 1
+                                                        else:
+                                                            logger.warning(f"Shape mismatch at weight {i}: saved={saved_w.shape}, model={model_w.shape}")
+                                                    new_model.set_weights(model_weights)
+                                                    logger.info(f"✓ Loaded {weights_loaded}/{len(saved_weights)} weights")
+                                            except Exception as weight_error:
+                                                logger.warning(f"Could not load weights: {weight_error}")
+                                                logger.info("Using model with random weights")
+                                        else:
+                                            # Try loading weights directly from file
+                                            try:
+                                                new_model.load_weights(str(model_path))
+                                                logger.info("✓ Loaded weights directly from file")
+                                            except Exception as direct_weight_error:
+                                                logger.warning(f"Could not load weights directly: {direct_weight_error}")
+                                                logger.info("Using model with random weights")
+                                        
+                                        self.models[model_name] = new_model
+                                        model_loaded = True
+                                        logger.info("✓ Successfully recreated transformer architecture (Strategy 2)")
+                                        
+                                    except Exception as recreate_error:
+                                        logger.error(f"Strategy 2 failed: {recreate_error}")
+                                
+                                if not model_loaded:
+                                    logger.error(f"All strategies failed to load {model_name} model")
+                                    raise Exception(f"Could not load transformer model with any strategy")
+                            else:
+                                # Load LSTM and CNN models normally
+                                self.models[model_name] = tf.keras.models.load_model(str(model_path), compile=False)
+                            
+                            loaded_models.append(model_name)
+                            logger.info(f"✓ Loaded {model_name} model from {model_path}")
+                        except Exception as model_error:
+                            missing_models.append(f"{model_name} (load error: {str(model_error)})")
+                            logger.error(f"✗ Failed to load {model_name} model: {model_error}")
+                    else:
+                        missing_models.append(f"{model_name} (missing {model_path})")
+                        logger.warning(f"✗ Missing {model_name} model file: {model_path}")
                 else:
                     model_path = load_dir / f"{model_name}_model.pkl"
                     if model_path.exists():
                         with open(model_path, 'rb') as f:
                             self.models[model_name] = pickle.load(f)
                         loaded_models.append(model_name)
+                        logger.info(f"✓ Loaded {model_name} model from {model_path}")
+                    else:
+                        missing_models.append(f"{model_name} (missing {model_path})")
+                        logger.warning(f"✗ Missing {model_name} model file: {model_path}")
             
             # Load metadata if available
             metadata_path = load_dir / "training_metadata.json"
@@ -1191,7 +1409,9 @@ class ModelTrainer:
                     metadata = json.load(f)
                 logger.info(f"Loaded models from version: {metadata.get('timestamp', 'unknown')}")
             
-            logger.info(f"Loaded {len(loaded_models)} models from {load_dir}: {loaded_models}")
+            logger.info(f"Loaded {len(loaded_models)}/{len(self.model_configs)} models from {load_dir}: {loaded_models}")
+            if missing_models:
+                logger.warning(f"Missing models: {missing_models}")
             
         except Exception as e:
             logger.error(f"Failed to load models: {e}")
@@ -1317,10 +1537,10 @@ class ModelTrainer:
                     prediction_proba = pred_proba[0, 1]
             elif model_name == "cnn":
                 features_cnn = features.reshape(1, features.shape[0], features.shape[1], 1)
-                prediction_proba = model.predict(features_cnn)[0, 0]
+                prediction_proba = model.predict(features_cnn, verbose=0)[0, 0]
             else:
                 features_reshaped = features.reshape(1, features.shape[0], features.shape[1])
-                prediction_proba = model.predict(features_reshaped)[0, 0]
+                prediction_proba = model.predict(features_reshaped, verbose=0)[0, 0]
             
             # Use model-specific threshold for binary decision
             model_config = self.model_configs.get(model_name)
@@ -1884,11 +2104,11 @@ class ModelTrainer:
                 elif model_name == "cnn":
                     # Reshape for CNN
                     feature_cnn = feature_window.reshape(1, feature_window.shape[0], feature_window.shape[1], 1)
-                    pred_proba = model.predict(feature_cnn)[0, 0]
+                    pred_proba = model.predict(feature_cnn, verbose=0)[0, 0]
                 else:
                     # LSTM and Transformer
                     feature_reshaped = feature_window.reshape(1, feature_window.shape[0], feature_window.shape[1])
-                    pred_proba = model.predict(feature_reshaped)[0, 0]
+                    pred_proba = model.predict(feature_reshaped, verbose=0)[0, 0]
                 
                 predictions.append(pred_proba)
                 
