@@ -14,8 +14,6 @@ from collections import defaultdict, deque
 # ML libraries
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-import torch
-import torch.nn as nn
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 import xgboost as xgb
@@ -203,7 +201,22 @@ class SignalGenerator:
                     elif model_type == ModelType.CNN:
                         self.models[symbol][model_type] = load_model(f"{model_path}.h5")
                     elif model_type == ModelType.TRANSFORMER:
-                        self.models[symbol][model_type] = torch.load(f"{model_path}.pt")
+                        # Load TensorFlow model instead of PyTorch
+                        try:
+                            # Try loading with custom objects for compatibility
+                            custom_objects = {
+                                'MultiHeadAttention': tf.keras.layers.MultiHeadAttention,
+                                'LayerNormalization': tf.keras.layers.LayerNormalization,
+                                'GlobalAveragePooling1D': tf.keras.layers.GlobalAveragePooling1D
+                            }
+                            self.models[symbol][model_type] = tf.keras.models.load_model(
+                                f"{model_path}.h5", 
+                                custom_objects=custom_objects
+                            )
+                        except Exception as load_error:
+                            logger.warning(f"Failed to load transformer model for {symbol}: {load_error}")
+                            # Create new model if loading fails
+                            self.models[symbol][model_type] = self._create_transformer_model()
                     elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST, ModelType.LIGHTGBM]:
                         with open(f"{model_path}.pkl", 'rb') as f:
                             self.models[symbol][model_type] = pickle.load(f)
@@ -303,43 +316,44 @@ class SignalGenerator:
         
         return model
     
-    def _create_transformer_model(self) -> nn.Module:
-        """Create Transformer model architecture"""
-        class TransformerModel(nn.Module):
-            def __init__(self, input_dim=50, d_model=128, nhead=8, num_layers=3, seq_len=60):
-                super().__init__()
-                self.input_projection = nn.Linear(input_dim, d_model)
-                self.positional_encoding = nn.Parameter(torch.randn(seq_len, d_model))
-                
-                encoder_layer = nn.TransformerEncoderLayer(
-                    d_model=d_model,
-                    nhead=nhead,
-                    dim_feedforward=512,
-                    dropout=0.1,
-                    batch_first=True
-                )
-                self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-                
-                self.output_projection = nn.Sequential(
-                    nn.Linear(d_model, 64),
-                    nn.ReLU(),
-                    nn.Dropout(0.2),
-                    nn.Linear(64, 32),
-                    nn.ReLU(),
-                    nn.Dropout(0.2),
-                    nn.Linear(32, 1),
-                    nn.Tanh()
-                )
-            
-            def forward(self, x):
-                # x shape: (batch_size, seq_len, input_dim)
-                x = self.input_projection(x)
-                x = x + self.positional_encoding[:x.size(1), :]
-                x = self.transformer(x)
-                x = x.mean(dim=1)  # Global average pooling
-                return self.output_projection(x)
+    def _create_transformer_model(self) -> tf.keras.Model:
+        """Create Transformer model architecture using TensorFlow/Keras"""
+        # Create the same architecture as in model_trainer.py for consistency
+        input_layer = tf.keras.layers.Input(shape=(60, 50), name='input_layer')
         
-        return TransformerModel()
+        # Multi-head attention (2 heads, key_dim=32 to match model_trainer.py)
+        attention = tf.keras.layers.MultiHeadAttention(
+            num_heads=2, 
+            key_dim=32,
+            name='multi_head_attention'
+        )(input_layer, input_layer)
+        
+        # Layer normalization
+        norm1 = tf.keras.layers.LayerNormalization(name='layer_normalization')(attention)
+        
+        # Global average pooling
+        pooling = tf.keras.layers.GlobalAveragePooling1D(name='global_average_pooling1d')(norm1)
+        
+        # Dense layer (50 units to match model_trainer.py)
+        dense = tf.keras.layers.Dense(50, activation='relu', name='dense')(pooling)
+        
+        # Dropout (0.2 to match model_trainer.py)
+        dropout = tf.keras.layers.Dropout(0.2, name='dropout')(dense)
+        
+        # Output layer (tanh activation for signal generation)
+        output = tf.keras.layers.Dense(1, activation='tanh', name='dense_1')(dropout)
+        
+        # Create model
+        model = tf.keras.Model(inputs=input_layer, outputs=output, name='transformer_model')
+        
+        # Compile the model
+        model.compile(
+            optimizer='adam',
+            loss='mse',  # Use MSE for regression
+            metrics=['mae']
+        )
+        
+        return model
     
     async def generate_signals(self, market_data: Dict[str, pd.DataFrame]) -> List[TradeSignal]:
         """Generate trading signals for multiple symbols"""
@@ -450,11 +464,8 @@ class SignalGenerator:
                 confidence = min(0.9, 0.5 + abs(prediction) * 0.4)  # Higher confidence for stronger predictions
                 
             elif model_type == ModelType.TRANSFORMER:
-                # PyTorch model
-                model.eval()
-                with torch.no_grad():
-                    features_tensor = torch.FloatTensor(features).unsqueeze(0)
-                    prediction = model(features_tensor).item()
+                # TensorFlow model (now consistent with LSTM and CNN)
+                prediction = model.predict(features.reshape(1, features.shape[0], features.shape[1]), verbose=0)[0][0]
                 confidence = min(0.9, 0.5 + abs(prediction) * 0.4)
                 
             elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST, ModelType.LIGHTGBM]:
@@ -943,10 +954,10 @@ class SignalGenerator:
                 model_path = f"models/{model_type.value}/{symbol}_model"
                 
                 try:
-                    if model_type in [ModelType.LSTM, ModelType.CNN]:
+                    if model_type in [ModelType.LSTM, ModelType.CNN, ModelType.TRANSFORMER]:
+                        # Save all neural network models as TensorFlow .h5 files
                         model.save(f"{model_path}.h5")
-                    elif model_type == ModelType.TRANSFORMER:
-                        torch.save(model, f"{model_path}.pt")
+                        logger.info(f"✓ Saved {model_type.value} model for {symbol} as .h5 file")
                     elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST, ModelType.LIGHTGBM]:
                         with open(f"{model_path}.pkl", 'wb') as f:
                             pickle.dump(model, f)
