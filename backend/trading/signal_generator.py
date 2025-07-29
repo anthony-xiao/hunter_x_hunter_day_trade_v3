@@ -26,6 +26,7 @@ import talib
 
 from config import settings
 from .execution_engine import TradeSignal
+from ml.model_trainer import ModelTrainer
 
 class SignalType(Enum):
     BUY = "buy"
@@ -267,165 +268,77 @@ class SignalGenerator:
             return False
     
     async def _load_or_create_models(self, symbol: str) -> None:
-        """Load existing models or create new ones"""
+        """Load existing models or create new ones using ModelTrainer's load_models method"""
         try:
             self.models[symbol] = {}
             
-            # Find the latest timestamped model directory
-            latest_model_dir = self._find_latest_model_directory()
+            # Create a ModelTrainer instance to use its load_models method
+            # Set create_model_dir=False to avoid creating new directories
+            model_trainer = ModelTrainer(create_model_dir=False)
             
-            if latest_model_dir:
-                logger.info(f"Loading models from {latest_model_dir}")
+            try:
+                # Use ModelTrainer's sophisticated load_models method
+                await model_trainer.load_models(version="latest")
                 
-                # Try to load existing models from the latest directory
-                for model_type in ModelType:
-                    try:
-                        if model_type == ModelType.LSTM:
-                            model_path = os.path.join(latest_model_dir, "lstm_model.h5")
-                            if os.path.exists(model_path):
-                                self.models[symbol][model_type] = load_model(model_path)
-                                logger.info(f"Loaded {model_type.value} model for {symbol}")
-                            else:
-                                self.models[symbol][model_type] = await self._create_model(model_type, symbol)
-                                
-                        elif model_type == ModelType.CNN:
-                            model_path = os.path.join(latest_model_dir, "cnn_model.h5")
-                            if os.path.exists(model_path):
-                                self.models[symbol][model_type] = load_model(model_path)
-                                logger.info(f"Loaded {model_type.value} model for {symbol}")
-                            else:
-                                self.models[symbol][model_type] = await self._create_model(model_type, symbol)
-                                
-                        elif model_type == ModelType.TRANSFORMER:
-                            model_path = os.path.join(latest_model_dir, "transformer_model.h5")
-                            if os.path.exists(model_path):
-                                try:
-                                    # Try loading with custom objects for compatibility
-                                    custom_objects = {
-                                        'MultiHeadAttention': tf.keras.layers.MultiHeadAttention,
-                                        'LayerNormalization': tf.keras.layers.LayerNormalization,
-                                        'GlobalAveragePooling1D': tf.keras.layers.GlobalAveragePooling1D
-                                    }
-                                    self.models[symbol][model_type] = tf.keras.models.load_model(
-                                        model_path, 
-                                        custom_objects=custom_objects
-                                    )
-                                    logger.info(f"Loaded {model_type.value} model for {symbol}")
-                                except Exception as load_error:
-                                    logger.warning(f"Failed to load transformer model for {symbol}: {load_error}")
-                                    self.models[symbol][model_type] = self._create_transformer_model()
-                            else:
-                                self.models[symbol][model_type] = self._create_transformer_model()
-                                
-                        elif model_type == ModelType.RANDOM_FOREST:
-                            model_path = os.path.join(latest_model_dir, "random_forest_model.pkl")
-                            if os.path.exists(model_path):
-                                with open(model_path, 'rb') as f:
-                                    self.models[symbol][model_type] = pickle.load(f)
-                                logger.info(f"Loaded {model_type.value} model for {symbol}")
-                            else:
-                                self.models[symbol][model_type] = await self._create_model(model_type, symbol)
-                                
-                        elif model_type == ModelType.XGBOOST:
-                            model_path = os.path.join(latest_model_dir, "xgboost_model.pkl")
-                            if os.path.exists(model_path):
-                                with open(model_path, 'rb') as f:
-                                    self.models[symbol][model_type] = pickle.load(f)
-                                logger.info(f"Loaded {model_type.value} model for {symbol}")
-                            else:
-                                self.models[symbol][model_type] = await self._create_model(model_type, symbol)
-                                
-                        elif model_type == ModelType.LIGHTGBM:
-                            # LightGBM models might not be in all directories, create new one
-                            self.models[symbol][model_type] = await self._create_model(model_type, symbol)
-                            
-                    except Exception as e:
-                        logger.warning(f"Error loading {model_type.value} model for {symbol}: {e}")
-                        # Create new model if loading fails
-                        self.models[symbol][model_type] = await self._create_model(model_type, symbol)
+                # Map ModelTrainer's models to SignalGenerator's model structure
+                # ModelTrainer uses string keys, SignalGenerator uses ModelType enum
+                model_mapping = {
+                    'lstm': ModelType.LSTM,
+                    'cnn': ModelType.CNN,
+                    'transformer': ModelType.TRANSFORMER,
+                    'random_forest': ModelType.RANDOM_FOREST,
+                    'xgboost': ModelType.XGBOOST
+                }
                 
-                # Load scalers if available
-                scalers_path = os.path.join(latest_model_dir, "scalers.pkl")
-                if os.path.exists(scalers_path):
-                    try:
-                        with open(scalers_path, 'rb') as f:
-                            self.scalers[symbol] = pickle.load(f)
-                        logger.info(f"Loaded scalers for {symbol}")
-                    except Exception as e:
-                        logger.warning(f"Failed to load scalers for {symbol}: {e}")
-                        # Create default scaler
-                        from sklearn.preprocessing import StandardScaler
-                        self.scalers[symbol] = StandardScaler()
+                # Copy loaded models from ModelTrainer to SignalGenerator
+                for trainer_key, signal_type in model_mapping.items():
+                    if trainer_key in model_trainer.models:
+                        self.models[symbol][signal_type] = model_trainer.models[trainer_key]
+                        logger.info(f"✓ Loaded {signal_type.value} model for {symbol} using ModelTrainer")
+                    else:
+                        logger.warning(f"Model {trainer_key} not found in ModelTrainer, creating fallback")
+                        self.models[symbol][signal_type] = await self._create_model(signal_type, symbol)
+                
+                # Handle LightGBM separately as it might not be in ModelTrainer
+                if ModelType.LIGHTGBM not in self.models[symbol]:
+                    self.models[symbol][ModelType.LIGHTGBM] = await self._create_model(ModelType.LIGHTGBM, symbol)
+                
+                # Copy scalers from ModelTrainer if available
+                if hasattr(model_trainer, 'scalers') and model_trainer.scalers:
+                    # ModelTrainer might have a single scaler or multiple scalers
+                    if isinstance(model_trainer.scalers, dict):
+                        # If multiple scalers, use the first one or a default key
+                        scaler_key = list(model_trainer.scalers.keys())[0] if model_trainer.scalers else None
+                        if scaler_key:
+                            self.scalers[symbol] = model_trainer.scalers[scaler_key]
+                        else:
+                            self.scalers[symbol] = StandardScaler()
+                    else:
+                        # Single scaler
+                        self.scalers[symbol] = model_trainer.scalers
+                    logger.info(f"✓ Loaded scalers for {symbol} from ModelTrainer")
                 else:
-                    # Create default scaler
-                    from sklearn.preprocessing import StandardScaler
+                    # Create default scaler if none available
                     self.scalers[symbol] = StandardScaler()
-            else:
-                # No trained models found, create new ones
-                logger.info(f"No trained models found, creating new models for {symbol}")
+                    logger.info(f"Created default scaler for {symbol}")
+                
+                logger.info(f"Successfully loaded models for {symbol} using ModelTrainer's load_models method")
+                
+            except Exception as trainer_error:
+                logger.error(f"Failed to load models using ModelTrainer: {trainer_error}")
+                logger.info(f"Falling back to creating new models for {symbol}")
+                
+                # Fallback: create new models if ModelTrainer loading fails
                 for model_type in ModelType:
                     self.models[symbol][model_type] = await self._create_model(model_type, symbol)
                 
                 # Create default scaler
-                from sklearn.preprocessing import StandardScaler
                 self.scalers[symbol] = StandardScaler()
                     
         except Exception as e:
             logger.error(f"Error loading/creating models for {symbol}: {e}")
     
-    def _find_latest_model_directory(self) -> Optional[str]:
-        """Find the latest timestamped model directory with all required models"""
-        try:
-            # Use absolute path to models directory
-            models_dir = "/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models"
-            if not os.path.exists(models_dir):
-                logger.error(f"Models directory not found: {models_dir}")
-                return None
-            
-            # Required model files for a complete model set
-            required_models = {
-                "lstm_model.h5",
-                "cnn_model.h5", 
-                "transformer_model.h5",
-                "random_forest_model.pkl",
-                "xgboost_model.pkl",
-                "scalers.pkl"
-            }
-            
-            # Get all timestamped directories (format: YYYYMMDD_HHMMSS)
-            timestamped_dirs = []
-            for item in os.listdir(models_dir):
-                item_path = os.path.join(models_dir, item)
-                if os.path.isdir(item_path) and len(item) == 15 and item[8] == '_':
-                    try:
-                        # Validate timestamp format
-                        datetime.strptime(item, "%Y%m%d_%H%M%S")
-                        
-                        # Check if this directory has all required models
-                        dir_files = set(os.listdir(item_path))
-                        if required_models.issubset(dir_files):
-                            timestamped_dirs.append(item)
-                            logger.info(f"Found complete model set in: {item}")
-                        else:
-                            missing = required_models - dir_files
-                            logger.warning(f"Directory {item} missing models: {missing}")
-                    except ValueError:
-                        continue
-            
-            if not timestamped_dirs:
-                logger.error("No complete model directories found")
-                return None
-            
-            # Sort by timestamp (latest first)
-            timestamped_dirs.sort(reverse=True)
-            latest_dir = os.path.join(models_dir, timestamped_dirs[0])
-            
-            logger.info(f"Using latest complete model directory: {latest_dir}")
-            return latest_dir
-            
-        except Exception as e:
-            logger.error(f"Error finding latest model directory: {e}")
-            return None
+
     
     async def _create_model(self, model_type: ModelType, symbol: str) -> Any:
         """Create a new model of specified type"""
