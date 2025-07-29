@@ -2,8 +2,8 @@ import asyncio
 import aiohttp
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Any
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 import json
 from polygon import RESTClient
@@ -173,7 +173,7 @@ class DataPipeline:
         This prevents redundant downloads and maintains consistency with training endpoint logic.
         """
         try:
-            logger.info(f"Starting download of historical data for {symbol} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+            logger.info(f"Starting download of historical data for {symbol} from {start_date.strftime('%Y-%m-%d %H:%M:%S')} to {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
             
             # First, try to load existing data from database (same logic as train_symbol_models)
             existing_data = await self.load_market_data(
@@ -220,7 +220,7 @@ class DataPipeline:
                 ):
                     bars.append(MarketData(
                         symbol=symbol,
-                        timestamp=datetime.fromtimestamp(agg.timestamp / 1000),
+                        timestamp=datetime.fromtimestamp(agg.timestamp / 1000, tz=timezone.utc),
                         open=agg.open,
                         high=agg.high,
                         low=agg.low,
@@ -254,7 +254,7 @@ class DataPipeline:
                     for bar in resp.results:
                         bars.append(MarketData(
                             symbol=symbol,
-                            timestamp=datetime.fromtimestamp(bar.timestamp / 1000),
+                            timestamp=datetime.fromtimestamp(bar.timestamp / 1000, tz=timezone.utc),
                             open=bar.open,
                             high=bar.high,
                             low=bar.low,
@@ -319,7 +319,7 @@ class DataPipeline:
             if trade and quote:
                 return MarketData(
                     symbol=symbol,
-                    timestamp=datetime.fromtimestamp(trade.timestamp / 1000),
+                    timestamp=datetime.fromtimestamp(trade.timestamp / 1000, tz=timezone.utc),
                     open=trade.price,  # Simplified - would need more logic
                     high=trade.price,
                     low=trade.price,
@@ -404,9 +404,31 @@ class DataPipeline:
             logger.error(f"Failed to load market data for {symbol}: {e}")
             return pd.DataFrame()
     
+    def _make_json_serializable(self, obj: Any) -> Any:
+        """Convert objects to JSON-serializable format"""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: self._make_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_json_serializable(item) for item in obj]
+        elif pd.isna(obj):
+            return None
+        else:
+            return obj
+
     async def store_features(self, symbol: str, timestamp: datetime, features: Dict):
         """Store engineered features using hybrid strategy: PostgreSQL + in-memory cache"""
         try:
+            # Convert features to JSON-serializable format
+            serializable_features = self._make_json_serializable(features)
+            
             # 1. Store in PostgreSQL for persistence
             with self.Session() as session:
                 session.execute(text("""
@@ -417,7 +439,7 @@ class DataPipeline:
                 """), {
                     'symbol': symbol,
                     'timestamp': timestamp,
-                    'features': json.dumps(features)
+                    'features': json.dumps(serializable_features)
                 })
                 
                 session.commit()
@@ -474,16 +496,116 @@ class DataPipeline:
             logger.error(f"Failed to get cached features for {symbol}: {e}")
             return None
     
-    async def get_recent_cached_features(self, symbol: str, minutes: int = 60) -> Dict[datetime, Dict]:
-        """Get recent cached features for a symbol (last N minutes)"""
+    async def bootstrap_feature_cache(self, symbol: str, minutes: int = 120) -> int:
+        """Bootstrap feature cache from database for a symbol
+        
+        Args:
+            symbol: Stock symbol to bootstrap
+            minutes: Number of minutes to load from database
+            
+        Returns:
+            int: Number of features loaded into cache
+        """
         try:
-            if symbol not in self.feature_cache:
+            # Calculate time range for bootstrap
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(minutes=minutes)
+            
+            logger.info(f"Bootstrapping feature cache for {symbol} from {start_time} to {end_time}")
+            
+            # Load features from database
+            features_df = await self.load_features_from_db(symbol, start_time, end_time)
+            
+            if features_df is None or len(features_df) == 0:
+                logger.debug(f"No existing features found in database for {symbol}")
+                return 0
+            
+            # Load features into cache
+            loaded_count = 0
+            for timestamp, row in features_df.iterrows():
+                # Convert row to dictionary, excluding NaN values
+                feature_dict = {k: v for k, v in row.to_dict().items() if pd.notna(v)}
+                
+                # Cache the features
+                await self._cache_features(symbol, timestamp, feature_dict)
+                loaded_count += 1
+            
+            logger.info(f"Bootstrapped {loaded_count} features for {symbol} into cache")
+            return loaded_count
+            
+        except Exception as e:
+            logger.error(f"Failed to bootstrap feature cache for {symbol}: {e}")
+            return 0
+    
+    async def get_recent_cached_features(self, symbol: str, minutes: int = 60) -> Dict[datetime, Dict]:
+        """Get recent cached features for a symbol (last N minutes)
+        
+        Smart timestamp handling:
+        1. Use most recent cached feature timestamp as reference point
+        2. Handle market gaps (overnight, weekends) intelligently
+        3. Ensure sufficient features for signal generation (60 minimum)
+        4. Auto-bootstrap from database if cache is empty
+        """
+        try:
+            # Check if cache is empty and try to bootstrap from database
+            if symbol not in self.feature_cache or not self.feature_cache[symbol]:
+                logger.debug(f"No cached features found for {symbol}, attempting bootstrap from database")
+                
+                # Try to bootstrap from database
+                bootstrap_count = await self.bootstrap_feature_cache(symbol, minutes * 2)  # Load more for better coverage
+                
+                if bootstrap_count == 0:
+                    logger.debug(f"No features available in database for {symbol}")
+                    return {}
+                
+                logger.info(f"Bootstrapped {bootstrap_count} features for {symbol} from database")
+            
+            # Get all cached timestamps for this symbol
+            cached_timestamps = list(self.feature_cache[symbol].keys())
+            
+            if not cached_timestamps:
                 return {}
             
-            cutoff_time = datetime.now() - timedelta(minutes=minutes)
+            # Sort timestamps to find the most recent
+            cached_timestamps.sort()
+            most_recent_timestamp = cached_timestamps[-1]
+            
+            logger.debug(f"Most recent cached feature for {symbol}: {most_recent_timestamp}")
+            
+            # Strategy 1: Try to get last N minutes from most recent timestamp
+            cutoff_time = most_recent_timestamp - timedelta(minutes=minutes)
             recent_features = {
                 ts: features for ts, features in self.feature_cache[symbol].items()
                 if ts >= cutoff_time
+            }
+            
+            # Check if we have sufficient features (minimum 60 for signal generation)
+            min_required_features = 60
+            
+            if len(recent_features) >= min_required_features:
+                logger.debug(f"Found {len(recent_features)} recent features for {symbol} using {minutes}-minute window")
+                return recent_features
+            
+            # Strategy 2: If insufficient, get the most recent N features regardless of time gap
+            # This handles market gaps (overnight, weekends, holidays)
+            if len(cached_timestamps) >= min_required_features:
+                # Take the most recent N features
+                recent_timestamps = cached_timestamps[-min_required_features:]
+                recent_features = {
+                    ts: self.feature_cache[symbol][ts] for ts in recent_timestamps
+                }
+                
+                time_span = recent_timestamps[-1] - recent_timestamps[0]
+                logger.info(f"Using {len(recent_features)} most recent features for {symbol} "
+                           f"spanning {time_span} (market gap detected)")
+                return recent_features
+            
+            # Strategy 3: Return all available features if we have less than minimum
+            logger.warning(f"Only {len(cached_timestamps)} cached features available for {symbol}, "
+                          f"less than minimum required {min_required_features}")
+            
+            recent_features = {
+                ts: features for ts, features in self.feature_cache[symbol].items()
             }
             
             return recent_features
@@ -517,7 +639,13 @@ class DataPipeline:
                     'end_time': end_time
                 })
                 
-                existing_timestamps = [row.timestamp for row in result.fetchall()]
+                existing_timestamps = []
+                for row in result.fetchall():
+                    timestamp = row.timestamp
+                    # Ensure timestamp is timezone-aware (UTC)
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    existing_timestamps.append(timestamp)
                 
                 logger.info(f"Found {len(existing_timestamps)} existing feature timestamps for {symbol} in range {start_time} to {end_time}")
                 return existing_timestamps
@@ -564,9 +692,14 @@ class DataPipeline:
                     # JSONB column returns dict directly, no need for json.loads()
                     feature_dict = row.features if isinstance(row.features, dict) else json.loads(row.features)
                     
+                    # Ensure timestamp is timezone-aware (UTC)
+                    timestamp = row.timestamp
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    
                     # Add basic OHLCV columns
                     feature_dict.update({
-                        'timestamp': row.timestamp,
+                        'timestamp': timestamp,
                         'open': float(row.open) if row.open is not None else None,
                         'high': float(row.high) if row.high is not None else None,
                         'low': float(row.low) if row.low is not None else None,
@@ -624,7 +757,7 @@ class DataPipeline:
                     AND timestamp >= :start_date
                 """), {
                     'symbol': symbol,
-                    'start_date': datetime.now() - timedelta(days=30)
+                    'start_date': datetime.now(timezone.utc) - timedelta(days=30)
                 })
                 
                 stats = result.fetchone()
@@ -659,7 +792,7 @@ class DataPipeline:
                     WHERE gap_pct > 0.02  -- 2% gap threshold
                 """), {
                     'symbol': symbol,
-                    'start_date': datetime.now() - timedelta(days=30)
+                    'start_date': datetime.now(timezone.utc) - timedelta(days=30)
                 })
                 
                 price_gaps = gap_result.fetchone().price_gaps or 0
@@ -765,7 +898,7 @@ class DataPipeline:
                     LIMIT :limit
                 """), {
                     'symbol': symbol,
-                    'start_date': datetime.now() - timedelta(days=30),
+                    'start_date': datetime.now(timezone.utc) - timedelta(days=30),
                     'limit': period + 5
                 })
                 
@@ -835,7 +968,7 @@ class DataPipeline:
                 """), {
                     'symbol': symbol,
                     'benchmark': benchmark,
-                    'start_date': datetime.now() - timedelta(days=period_days + 30),
+                    'start_date': datetime.now(timezone.utc) - timedelta(days=period_days + 30),
                     'limit': period_days
                 })
                 

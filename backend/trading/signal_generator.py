@@ -1,6 +1,6 @@
 import asyncio
 from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 from enum import Enum
 import numpy as np
@@ -18,7 +18,6 @@ from tensorflow.keras.models import load_model
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 import xgboost as xgb
-import lightgbm as lgb
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # Technical analysis
@@ -40,7 +39,6 @@ class ModelType(Enum):
     TRANSFORMER = "transformer"
     RANDOM_FOREST = "random_forest"
     XGBOOST = "xgboost"
-    LIGHTGBM = "lightgbm"
 
 class ConfidenceLevel(Enum):
     LOW = "low"        # 0.5-0.6
@@ -103,12 +101,11 @@ class SignalGenerator:
         # Initialize ensemble weights - will be loaded from optimization results
         self.ensemble_weights: Dict[str, Dict[ModelType, float]] = {}  # symbol -> model_type -> weight
         self.default_ensemble_weights = {
-            ModelType.LSTM: 0.2,
-            ModelType.CNN: 0.15,
-            ModelType.TRANSFORMER: 0.2,
+            ModelType.LSTM: 0.25,
+            ModelType.CNN: 0.20,
+            ModelType.TRANSFORMER: 0.25,
             ModelType.RANDOM_FOREST: 0.15,
-            ModelType.XGBOOST: 0.15,
-            ModelType.LIGHTGBM: 0.15
+            ModelType.XGBOOST: 0.15
         }
         
         # Initialize ensemble configuration manager with absolute path
@@ -137,8 +134,14 @@ class SignalGenerator:
         self.current_market_regime: Optional[MarketRegime] = None
         self.regime_history: deque = deque(maxlen=100)
         
+        # Model configurations for feature count requirements
+        self.model_configs: Dict[str, Dict] = {}
+        
         # Initialize additional attributes
         self._initialize_attributes()
+        
+        # Load model configurations
+        self._load_model_configurations()
     
     def _load_optimized_ensemble_weights(self) -> None:
         """Load optimized ensemble weights from shared configuration"""
@@ -228,6 +231,60 @@ class SignalGenerator:
         
         logger.info("SignalGenerator initialized")
     
+    def _load_model_configurations(self) -> None:
+        """Load model configurations from the latest training metadata"""
+        try:
+            models_dir = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models')
+            latest_link = models_dir / 'latest'
+            
+            if latest_link.exists() and latest_link.is_symlink():
+                metadata_file = latest_link / 'training_metadata.json'
+                if metadata_file.exists():
+                    with open(metadata_file, 'r') as f:
+                        metadata = json.load(f)
+                    
+                    self.model_configs = metadata.get('model_configs', {})
+                    logger.info(f"Loaded model configurations for {len(self.model_configs)} models")
+                    
+                    # Log feature counts for each model
+                    for model_name, config in self.model_configs.items():
+                        feature_count = config.get('feature_count', 'unknown')
+                        logger.debug(f"{model_name} expects {feature_count} features")
+                else:
+                    logger.warning("No training metadata found, using default configurations")
+                    self._set_default_model_configs()
+            else:
+                logger.warning("No latest model directory found, using default configurations")
+                self._set_default_model_configs()
+                
+        except Exception as e:
+            logger.error(f"Error loading model configurations: {e}")
+            self._set_default_model_configs()
+    
+    def _set_default_model_configs(self) -> None:
+        """Set default model configurations if loading fails"""
+        self.model_configs = {
+            'lstm': {'feature_count': 102},
+            'cnn': {'feature_count': 20},
+            'random_forest': {'feature_count': 102},
+            'xgboost': {'feature_count': 30},
+            'transformer': {'feature_count': 102}
+        }
+        logger.info("Using default model configurations")
+    
+    def _determine_feature_count_from_data(self, data: pd.DataFrame) -> int:
+        """Determine the actual feature count from cached data"""
+        try:
+            # Exclude non-feature columns
+            exclude_columns = {'timestamp'}
+            feature_columns = [col for col in data.columns if col not in exclude_columns]
+            feature_count = len(feature_columns)
+            logger.debug(f"Determined feature count: {feature_count} from columns: {feature_columns[:10]}...")
+            return feature_count
+        except Exception as e:
+            logger.error(f"Error determining feature count: {e}")
+            return 50  # Default fallback
+    
     async def initialize_models(self, symbols: List[str]) -> bool:
         """Initialize ML models for given symbols"""
         try:
@@ -238,10 +295,9 @@ class SignalGenerator:
                 self.ensemble_weights[symbol] = {
                     ModelType.LSTM: 0.25,
                     ModelType.CNN: 0.20,
-                    ModelType.TRANSFORMER: 0.20,
+                    ModelType.TRANSFORMER: 0.25,
                     ModelType.RANDOM_FOREST: 0.15,
-                    ModelType.XGBOOST: 0.10,
-                    ModelType.LIGHTGBM: 0.10
+                    ModelType.XGBOOST: 0.15
                 }
                 
                 # Load or create models
@@ -299,9 +355,7 @@ class SignalGenerator:
                         logger.warning(f"Model {trainer_key} not found in ModelTrainer, creating fallback")
                         self.models[symbol][signal_type] = await self._create_model(signal_type, symbol)
                 
-                # Handle LightGBM separately as it might not be in ModelTrainer
-                if ModelType.LIGHTGBM not in self.models[symbol]:
-                    self.models[symbol][ModelType.LIGHTGBM] = await self._create_model(ModelType.LIGHTGBM, symbol)
+                # All models loaded from ModelTrainer or created as fallback
                 
                 # Copy scalers from ModelTrainer if available
                 if hasattr(model_trainer, 'scalers') and model_trainer.scalers:
@@ -340,15 +394,19 @@ class SignalGenerator:
     
 
     
-    async def _create_model(self, model_type: ModelType, symbol: str) -> Any:
-        """Create a new model of specified type"""
+    async def _create_model(self, model_type: ModelType, symbol: str, feature_count: int = None) -> Any:
+        """Create a new model of specified type with dynamic feature count"""
         try:
+            # Use provided feature_count or default to 50
+            if feature_count is None:
+                feature_count = 50
+                
             if model_type == ModelType.LSTM:
-                return self._create_lstm_model()
+                return self._create_lstm_model(feature_count)
             elif model_type == ModelType.CNN:
-                return self._create_cnn_model()
+                return self._create_cnn_model(feature_count)
             elif model_type == ModelType.TRANSFORMER:
-                return self._create_transformer_model()
+                return self._create_transformer_model(feature_count)
             elif model_type == ModelType.RANDOM_FOREST:
                 return RandomForestRegressor(
                     n_estimators=100,
@@ -366,24 +424,19 @@ class SignalGenerator:
                     colsample_bytree=0.8,
                     random_state=42
                 )
-            elif model_type == ModelType.LIGHTGBM:
-                return lgb.LGBMRegressor(
-                    n_estimators=100,
-                    max_depth=6,
-                    learning_rate=0.1,
-                    subsample=0.8,
-                    colsample_bytree=0.8,
-                    random_state=42
-                )
             
         except Exception as e:
             logger.error(f"Error creating {model_type.value} model: {e}")
             return None
     
-    def _create_lstm_model(self) -> tf.keras.Model:
-        """Create LSTM model architecture"""
+    def _create_lstm_model(self, feature_count: int = None) -> tf.keras.Model:
+        """Create LSTM model architecture with dynamic feature count"""
+        # Use provided feature_count or default to 50
+        if feature_count is None:
+            feature_count = 50
+            
         model = tf.keras.Sequential([
-            tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(60, 50)),
+            tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(60, feature_count)),
             tf.keras.layers.Dropout(0.2),
             tf.keras.layers.LSTM(64, return_sequences=True),
             tf.keras.layers.Dropout(0.2),
@@ -401,34 +454,41 @@ class SignalGenerator:
         
         return model
     
-    def _create_cnn_model(self) -> tf.keras.Model:
-        """Create CNN model architecture"""
+    def _create_cnn_model(self, feature_count: int = None) -> tf.keras.Model:
+        """Create CNN model architecture with dynamic feature count"""
+        # Use provided feature_count or default to 20 (CNN default from model configs)
+        if feature_count is None:
+            feature_count = 20
+            
+        # Create 1D CNN architecture that works better with time series data
+        # Input shape: (time_steps, features) = (60, 20)
         model = tf.keras.Sequential([
-            tf.keras.layers.Conv1D(64, 3, activation='relu', input_shape=(60, 50)),
+            tf.keras.layers.Conv1D(32, 3, activation='relu', input_shape=(60, feature_count)),
             tf.keras.layers.MaxPooling1D(2),
-            tf.keras.layers.Conv1D(32, 3, activation='relu'),
+            tf.keras.layers.Conv1D(64, 3, activation='relu'),
             tf.keras.layers.MaxPooling1D(2),
-            tf.keras.layers.Conv1D(16, 3, activation='relu'),
-            tf.keras.layers.GlobalMaxPooling1D(),
-            tf.keras.layers.Dense(64, activation='relu'),
+            tf.keras.layers.Flatten(),
+            tf.keras.layers.Dense(50, activation='relu'),
             tf.keras.layers.Dropout(0.3),
-            tf.keras.layers.Dense(32, activation='relu'),
-            tf.keras.layers.Dropout(0.3),
-            tf.keras.layers.Dense(1, activation='tanh')
+            tf.keras.layers.Dense(1, activation='tanh')  # Use tanh for signal generation
         ])
         
         model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss='mse',
+            optimizer=tf.keras.optimizers.RMSprop(learning_rate=0.001),
+            loss='mse',  # Use MSE for regression in signal generation
             metrics=['mae']
         )
         
         return model
     
-    def _create_transformer_model(self) -> tf.keras.Model:
-        """Create Transformer model architecture using TensorFlow/Keras"""
+    def _create_transformer_model(self, feature_count: int = None) -> tf.keras.Model:
+        """Create Transformer model architecture using TensorFlow/Keras with dynamic feature count"""
+        # Use provided feature_count or default to 50
+        if feature_count is None:
+            feature_count = 50
+            
         # Create the same architecture as in model_trainer.py for consistency
-        input_layer = tf.keras.layers.Input(shape=(60, 50), name='input_layer')
+        input_layer = tf.keras.layers.Input(shape=(60, feature_count), name='input_layer')
         
         # Multi-head attention (2 heads, key_dim=32 to match model_trainer.py)
         attention = tf.keras.layers.MultiHeadAttention(
@@ -498,15 +558,34 @@ class SignalGenerator:
             return []
     
     async def generate_signals_from_features(self, symbol: str, cached_features: Dict[datetime, Dict]) -> Optional[TradeSignal]:
-        """Generate trading signal from cached features without historical data download"""
+        """Generate trading signal from cached features without historical data download
+        
+        Smart feature handling:
+        - Optimal: 60+ features for full signal generation
+        - Acceptable: 30+ features for reduced confidence signals
+        - Minimum: 10+ features for emergency signals during market gaps
+        """
         try:
             if symbol not in self.models:
                 logger.warning(f"No models found for {symbol}")
                 return None
             
-            if not cached_features or len(cached_features) < 60:
-                logger.warning(f"Insufficient cached features for {symbol}: {len(cached_features) if cached_features else 0}/60")
+            if not cached_features:
+                logger.warning(f"No cached features available for {symbol}")
                 return None
+            
+            feature_count = len(cached_features)
+            
+            # Smart feature count handling based on market conditions
+            if feature_count < 10:
+                logger.warning(f"Insufficient cached features for {symbol}: {feature_count}/10 (minimum required)")
+                return None
+            elif feature_count < 30:
+                logger.info(f"Limited cached features for {symbol}: {feature_count}/60 (emergency mode - market gap detected)")
+            elif feature_count < 60:
+                logger.info(f"Reduced cached features for {symbol}: {feature_count}/60 (acceptable for signal generation)")
+            else:
+                logger.debug(f"Optimal cached features for {symbol}: {feature_count}/60")
             
             # Convert cached features to DataFrame format
             features_df = await self._convert_cached_features_to_dataframe(symbol, cached_features)
@@ -535,20 +614,24 @@ class SignalGenerator:
             logger.error(f"Error generating signal from cached features for {symbol}: {e}")
             return None
     
-    async def _generate_ensemble_prediction(self, symbol: str, data: pd.DataFrame) -> Optional[EnsemblePrediction]:
+    async def _generate_ensemble_prediction(self, symbol: str, data: pd.DataFrame, feature_count: int = None) -> Optional[EnsemblePrediction]:
         """Generate ensemble prediction for a symbol"""
         try:
-            # Prepare features
-            features = await self._prepare_features(symbol, data)
-            if features is None or len(features) == 0:
-                return None
-            
-            # Get individual model predictions
+            # Get individual model predictions with model-specific feature filtering
             individual_predictions = []
             
             for model_type, model in self.models[symbol].items():
                 try:
-                    prediction = await self._get_model_prediction(model_type, model, symbol, features)
+                    # Get model-specific feature count from configurations
+                    model_feature_count = self.model_configs.get(model_type.value, {}).get('feature_count', feature_count)
+                    
+                    # Prepare features specifically for this model
+                    features = await self._prepare_features(symbol, data, model_type, model_feature_count)
+                    if features is None or len(features) == 0:
+                        logger.warning(f"No features prepared for {model_type.value} model for {symbol}")
+                        continue
+                    
+                    prediction = await self._get_model_prediction(model_type, model, symbol, features, model_feature_count)
                     if prediction:
                         individual_predictions.append(prediction)
                 except Exception as e:
@@ -612,22 +695,48 @@ class SignalGenerator:
             logger.error(f"Error generating ensemble prediction for {symbol}: {e}")
             return None
     
-    async def _get_model_prediction(self, model_type: ModelType, model: Any, symbol: str, features: np.ndarray) -> Optional[ModelPrediction]:
-        """Get prediction from individual model"""
+    async def _get_model_prediction(self, model_type: ModelType, model: Any, symbol: str, features: np.ndarray, feature_count: int = None) -> Optional[ModelPrediction]:
+        """Get prediction from individual model with proper feature handling"""
         try:
-            if model_type in [ModelType.LSTM, ModelType.CNN]:
-                # TensorFlow models
-                prediction = model.predict(features.reshape(1, features.shape[0], features.shape[1]), verbose=0)[0][0]
+            # Determine actual feature count from the features array
+            actual_feature_count = features.shape[1] if len(features.shape) > 1 else features.shape[0]
+            
+            if model_type == ModelType.CNN:
+                # CNN model - expects 3D input (batch_size, time_steps, features) for 1D CNN
+                time_steps = features.shape[0]
+                
+                # Reshape features to match 1D CNN expectations
+                if len(features.shape) == 2:
+                    # Features are in (time_steps, features) format
+                    model_input = features.reshape(1, time_steps, actual_feature_count)
+                else:
+                    # Features might be flattened, reshape appropriately
+                    model_input = features.reshape(1, time_steps, -1)
+                
+                logger.debug(f"CNN model input shape: {model_input.shape}")
+                prediction = model.predict(model_input, verbose=0)[0][0]
                 confidence = min(0.9, 0.5 + abs(prediction) * 0.4)  # Higher confidence for stronger predictions
                 
-            elif model_type == ModelType.TRANSFORMER:
-                # TensorFlow model (now consistent with LSTM and CNN)
-                prediction = model.predict(features.reshape(1, features.shape[0], features.shape[1]), verbose=0)[0][0]
-                confidence = min(0.9, 0.5 + abs(prediction) * 0.4)
+            elif model_type in [ModelType.LSTM, ModelType.TRANSFORMER]:
+                # LSTM/Transformer models - expect 3D input (batch_size, time_steps, features)
+                time_steps = features.shape[0]
                 
-            elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST, ModelType.LIGHTGBM]:
-                # Sklearn-style models
+                # Reshape features to match model expectations
+                if len(features.shape) == 2:
+                    # Features are already in (time_steps, features) format
+                    model_input = features.reshape(1, time_steps, actual_feature_count)
+                else:
+                    # Features might be flattened, reshape appropriately
+                    model_input = features.reshape(1, time_steps, -1)
+                
+                logger.debug(f"Model input shape for {model_type.value}: {model_input.shape}")
+                prediction = model.predict(model_input, verbose=0)[0][0]
+                confidence = min(0.9, 0.5 + abs(prediction) * 0.4)  # Higher confidence for stronger predictions
+                
+            elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST]:
+                # Sklearn-style models - flatten features
                 features_flat = features.reshape(1, -1)
+                logger.debug(f"Flattened features shape for {model_type.value}: {features_flat.shape}")
                 prediction = model.predict(features_flat)[0]
                 
                 # Calculate confidence based on feature importance and prediction strength
@@ -663,15 +772,15 @@ class SignalGenerator:
         try:
             if not cached_features:
                 return None
-            
+
             # Sort by timestamp and convert to DataFrame
             sorted_timestamps = sorted(cached_features.keys())
-            
+
             # Extract OHLCV data and engineered features
             rows = []
             for timestamp in sorted_timestamps:
                 features = cached_features[timestamp]
-                
+
                 # Ensure we have basic OHLCV data
                 if all(key in features for key in ['open', 'high', 'low', 'close', 'volume']):
                     row = {
@@ -682,37 +791,45 @@ class SignalGenerator:
                         'close': features['close'],
                         'volume': features['volume']
                     }
-                    
+
                     # Add Polygon WebSocket fields if available
                     for field in ['vwap', 'transactions', 'accumulated_volume']:
                         if field in features:
                             row[field] = features[field]
-                    
-                    # Add all other engineered features
+
+                    # Add all other engineered features (only numeric values)
+                    exclude_keys = {'timestamp', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions', 'accumulated_volume'}
                     for key, value in features.items():
-                        if key not in row and not pd.isna(value):
-                            row[key] = value
-                    
+                        if key not in exclude_keys and not pd.isna(value):
+                            # Only include numeric values, skip strings like symbol names
+                            try:
+                                float(value)  # Test if value can be converted to float
+                                row[key] = value
+                            except (ValueError, TypeError):
+                                # Skip non-numeric values like symbol names
+                                continue
+
                     rows.append(row)
-            
+
             if not rows:
                 logger.warning(f"No valid feature rows found for {symbol}")
                 return None
-            
+
             # Create DataFrame with timestamp index
             df = pd.DataFrame(rows)
             df.set_index('timestamp', inplace=True)
             df.sort_index(inplace=True)
-            
-            # Ensure numeric columns are float type
-            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions', 'accumulated_volume']
-            for col in numeric_columns:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            logger.debug(f"Converted {len(df)} cached feature records to DataFrame for {symbol}")
+
+            # Ensure all columns are numeric (convert to float, coerce errors to NaN)
+            for col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # Drop columns that are all NaN (failed numeric conversion)
+            df = df.dropna(axis=1, how='all')
+
+            logger.debug(f"Converted {len(df)} cached feature records to DataFrame for {symbol} with {len(df.columns)} numeric features")
             return df
-            
+
         except Exception as e:
             logger.error(f"Error converting cached features to DataFrame for {symbol}: {e}")
             return None
@@ -768,83 +885,110 @@ class SignalGenerator:
         except Exception as e:
             logger.error(f"Error updating market regime from cached features: {e}")
     
-    async def _prepare_features(self, symbol: str, data: pd.DataFrame) -> Optional[np.ndarray]:
-        """Prepare features for model prediction"""
+    async def _prepare_features(self, symbol: str, data: pd.DataFrame, model_type: ModelType = None, feature_count: int = None) -> Optional[np.ndarray]:
+        """Prepare features for model prediction using cached engineered features with model-specific filtering"""
         try:
-            if len(data) < 60:  # Need at least 60 periods
+            # Determine minimum required periods based on available data
+            min_periods = min(60, max(10, len(data)))  # Adaptive minimum periods
+            
+            if len(data) < min_periods:
+                logger.warning(f"Insufficient data for {symbol}: {len(data)} < {min_periods}")
                 return None
             
-            # Use the last 60 periods
-            recent_data = data.tail(60).copy()
+            # Use the available data (up to last 60 periods)
+            recent_data = data.tail(min_periods).copy()
             
-            features = []
+            # Exclude non-feature columns and ensure all columns are numeric
+            exclude_columns = {'timestamp'}
             
-            # Price-based features
-            features.extend([
-                recent_data['close'].values,
-                recent_data['high'].values,
-                recent_data['low'].values,
-                recent_data['open'].values,
-                recent_data['volume'].values
-            ])
+            # Get all feature columns (everything except excluded columns)
+            feature_columns = [col for col in recent_data.columns if col not in exclude_columns]
             
-            # Technical indicators
-            close_prices = recent_data['close'].values
-            high_prices = recent_data['high'].values
-            low_prices = recent_data['low'].values
-            volume = recent_data['volume'].values
+            if not feature_columns:
+                logger.error(f"No feature columns found for {symbol}")
+                return None
             
-            # Moving averages
-            for period in [5, 10, 20]:
-                if len(close_prices) >= period:
-                    sma = talib.SMA(close_prices, timeperiod=period)
-                    ema = talib.EMA(close_prices, timeperiod=period)
-                    features.extend([sma, ema])
+            # Ensure all feature columns are numeric
+            numeric_data = recent_data[feature_columns].copy()
+            for col in feature_columns:
+                numeric_data[col] = pd.to_numeric(numeric_data[col], errors='coerce')
             
-            # Momentum indicators
-            if len(close_prices) >= 14:
-                rsi = talib.RSI(close_prices, timeperiod=14)
-                features.append(rsi)
+            # Drop columns that are all NaN (failed numeric conversion)
+            numeric_data = numeric_data.dropna(axis=1, how='all')
             
-            if len(close_prices) >= 26:
-                macd, macd_signal, macd_hist = talib.MACD(close_prices)
-                features.extend([macd, macd_signal, macd_hist])
+            if numeric_data.empty or len(numeric_data.columns) == 0:
+                logger.error(f"No valid numeric features found for {symbol}")
+                return None
             
-            # Volatility indicators
-            if len(close_prices) >= 20:
-                bb_upper, bb_middle, bb_lower = talib.BBANDS(close_prices, timeperiod=20)
-                atr = talib.ATR(high_prices, low_prices, close_prices, timeperiod=14)
-                features.extend([bb_upper, bb_middle, bb_lower, atr])
+            # Extract features as numpy array
+            features_array = numeric_data.values
             
-            # Volume indicators
-            if len(close_prices) >= 14:
-                obv = talib.OBV(close_prices, volume)
-                ad = talib.AD(high_prices, low_prices, close_prices, volume)
-                features.extend([obv, ad])
-            
-            # Oscillators
-            if len(close_prices) >= 14:
-                stoch_k, stoch_d = talib.STOCH(high_prices, low_prices, close_prices)
-                williams_r = talib.WILLR(high_prices, low_prices, close_prices)
-                cci = talib.CCI(high_prices, low_prices, close_prices)
-                features.extend([stoch_k, stoch_d, williams_r, cci])
-            
-            # Convert to numpy array and handle NaN values
-            features_array = np.array(features).T  # Transpose to get (time, features)
-            
-            # Fill NaN values with forward fill then backward fill
-            df_features = pd.DataFrame(features_array)
+            # Handle NaN values with forward fill then backward fill
+            df_features = pd.DataFrame(features_array, columns=numeric_data.columns)
             df_features = df_features.fillna(method='ffill').fillna(method='bfill')
+            
+            # If still NaN values, fill with 0
+            df_features = df_features.fillna(0)
             features_array = df_features.values
             
-            # Normalize features
-            if symbol in self.scalers:
-                features_array = self.scalers[symbol].fit_transform(features_array)
+            # Validate that features_array contains only numeric values
+            if not np.issubdtype(features_array.dtype, np.number):
+                logger.error(f"Features array contains non-numeric values for {symbol}")
+                return None
             
+            # Apply model-specific feature filtering if model_type is provided
+            if model_type and feature_count:
+                target_feature_count = feature_count
+                current_feature_count = features_array.shape[1]
+                
+                if current_feature_count != target_feature_count:
+                    logger.info(f"Filtering features for {model_type} model: {current_feature_count} -> {target_feature_count}")
+                    
+                    if current_feature_count > target_feature_count:
+                        # Select top features based on variance (simple feature selection)
+                        feature_variances = np.var(features_array, axis=0)
+                        top_feature_indices = np.argsort(feature_variances)[-target_feature_count:]
+                        features_array = features_array[:, top_feature_indices]
+                        logger.debug(f"Selected top {target_feature_count} features by variance for {model_type}")
+                    elif current_feature_count < target_feature_count:
+                        # Pad with zeros if we have fewer features than expected
+                        padding_needed = target_feature_count - current_feature_count
+                        padding = np.zeros((features_array.shape[0], padding_needed))
+                        features_array = np.concatenate([features_array, padding], axis=1)
+                        logger.debug(f"Padded {padding_needed} zero features for {model_type}")
+            
+            # Create model-specific scaler key
+            scaler_key = f"{symbol}_{model_type if model_type else 'default'}"
+            
+            # Initialize scaler if not exists
+            if scaler_key not in self.scalers:
+                self.scalers[scaler_key] = StandardScaler()
+            
+            # Normalize features using the model-specific scaler
+            if features_array.size > 0:
+                current_feature_count = features_array.shape[1]
+                scaler_fitted = hasattr(self.scalers[scaler_key], 'scale_') and self.scalers[scaler_key].scale_ is not None
+                
+                if not scaler_fitted:
+                    # First time fitting the scaler
+                    logger.debug(f"Fitting scaler for {scaler_key} with {current_feature_count} features")
+                    self.scalers[scaler_key].fit(features_array)
+                elif scaler_fitted and len(self.scalers[scaler_key].scale_) != current_feature_count:
+                    # Feature count changed, need to refit the scaler
+                    logger.warning(f"Feature count changed for {scaler_key}: {len(self.scalers[scaler_key].scale_)} -> {current_feature_count}. Refitting scaler.")
+                    self.scalers[scaler_key] = StandardScaler()  # Create new scaler
+                    self.scalers[scaler_key].fit(features_array)
+                
+                # Transform features using the fitted scaler
+                features_array = self.scalers[scaler_key].transform(features_array)
+            
+            logger.debug(f"Prepared features for {symbol} ({model_type if model_type else 'default'}): shape {features_array.shape}")
             return features_array
             
         except Exception as e:
             logger.error(f"Error preparing features for {symbol}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     async def _calculate_risk_metrics(self, symbol: str, data: pd.DataFrame) -> RiskMetrics:
@@ -1109,7 +1253,7 @@ class SignalGenerator:
         """Log signal details"""
         try:
             signal_log = {
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'signal': asdict(signal),
                 'ensemble_prediction': asdict(ensemble_pred),
                 'market_regime': asdict(self.current_market_regime) if self.current_market_regime else None,
@@ -1200,7 +1344,7 @@ class SignalGenerator:
                         # Save all neural network models as TensorFlow .h5 files
                         model.save(f"{model_path}.h5")
                         logger.info(f"✓ Saved {model_type.value} model for {symbol} as .h5 file")
-                    elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST, ModelType.LIGHTGBM]:
+                    elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST]:
                         with open(f"{model_path}.pkl", 'wb') as f:
                             pickle.dump(model, f)
                     

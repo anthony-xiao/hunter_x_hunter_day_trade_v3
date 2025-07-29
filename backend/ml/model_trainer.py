@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 import asyncio
 import concurrent.futures
@@ -70,7 +70,7 @@ class ModelPerformance:
     
     def __post_init__(self):
         if self.last_updated is None:
-            self.last_updated = datetime.now()
+            self.last_updated = datetime.now(timezone.utc)
 
 @dataclass
 class WalkForwardResult:
@@ -94,40 +94,40 @@ class ModelTrainer:
                 name='lstm',
                 model_type='neural_network',
                 parameters={
-                    'units': [256, 128, 64],  # Increased complexity: 3-layer LSTM with more units
-                    'dropout': 0.1,  # Reduced dropout for more aggressive predictions
-                    'epochs': 2,  # Increased from 2 to 50 for proper training
-                    'batch_size': 128,  # Reduced batch size for better gradient updates
-                    'learning_rate': 0.002,  # Increased learning rate
+                    'units': [128, 64, 32],  # 3-layer LSTM as per requirements
+                    'dropout': 0.2,  # Standard dropout
+                    'epochs': 100,  # As per requirements: 100 epochs with early stopping
+                    'batch_size': 256,  # As per requirements: batch size 256
+                    'learning_rate': 0.001,  # As per requirements: Adam lr=0.001
                     'optimizer': 'adam',
                     'loss': 'binary_crossentropy'
                 },
                 training_window=18,  # 18 months
                 validation_window=6,  # 6 months
-                lookback_window=60,  # 60-minute lookback
+                lookback_window=60,  # 60-minute lookback as per requirements
                 feature_count=feature_count,
-                learning_rate=0.002,
-                prediction_threshold=0.35  # More aggressive threshold
+                learning_rate=0.001,
+                prediction_threshold=0.35
             ),
             'cnn': ModelConfig(
                 name='cnn',
                 model_type='neural_network',
                 parameters={
-                    'filters': [64, 128],  # Increased filter complexity
+                    'filters': [32, 64],  # Conv2D(32) → Conv2D(64) as per requirements
                     'kernel_size': (3, 3),
-                    'dropout': 0.15,  # Reduced dropout for more aggressive predictions
-                    'l2_reg': 0.005,  # Reduced regularization
-                    'epochs': 2,  # Increased from 2 to 40 for proper training
-                    'batch_size': 128,
-                    'learning_rate': 0.001,  # Increased learning rate
+                    'dropout': 0.3,  # As per requirements: Dropout(0.3)
+                    'l2_reg': 0.01,  # As per requirements: L2(0.01)
+                    'epochs': 80,  # As per requirements: 80 epochs
+                    'batch_size': 128,  # As per requirements: batch size 128
+                    'learning_rate': 0.0005,  # As per requirements: RMSprop lr=0.0005
                     'optimizer': 'rmsprop'
                 },
                 training_window=18,
                 validation_window=6,
                 lookback_window=30,  # 30x20 matrix (30 minutes × 20 features)
                 feature_count=20,
-                learning_rate=0.001,
-                prediction_threshold=0.35  # More aggressive threshold
+                learning_rate=0.0005,
+                prediction_threshold=0.35
             ),
             'random_forest': ModelConfig(
                 name='random_forest',
@@ -164,20 +164,20 @@ class ModelTrainer:
                 name='transformer',
                 model_type='neural_network',
                 parameters={
-                    'num_heads': 2,  # Reduced from 8 to 2 attention heads for faster training
-                    'num_layers': 1,  # Reduced from 3 to 1 encoder layer
-                    'dropout': 0.1,  # Slightly increased dropout
-                    'epochs': 1,  # Reduced to 1 epoch for faster training
-                    'batch_size': 128,  # Increased batch size for efficiency
-                    'learning_rate': 0.001,  # Reduced learning rate
+                    'num_heads': 4,  # As per requirements: 4-head attention
+                    'num_layers': 2,  # As per requirements: 2 encoder layers
+                    'dropout': 0.1,
+                    'epochs': 50,  # As per requirements: 50+ epochs
+                    'batch_size': 32,  # Smaller batch size for transformer
+                    'learning_rate': 0.001,
                     'warmup_steps': 100
                 },
                 training_window=18,
                 validation_window=6,
-                lookback_window=60,  # Reduced from 120 to 60-minute sequence
+                lookback_window=120,  # As per requirements: 120-minute sequence
                 feature_count=feature_count,
                 learning_rate=0.001,
-                prediction_threshold=0.3  # Most aggressive threshold
+                prediction_threshold=0.3
             )
         }
         
@@ -248,7 +248,7 @@ class ModelTrainer:
         base_models_dir.mkdir(exist_ok=True)
         
         # Create timestamped directory for this training run
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.model_dir = base_models_dir / timestamp
         self.model_dir.mkdir(exist_ok=True)
         
@@ -281,9 +281,8 @@ class ModelTrainer:
         """Train all models in the ensemble"""
         logger.info("Starting ensemble model training")
         
-        # Create model directory if not already created (for training runs)
-        if self.model_dir is None:
-            self._create_model_dir()
+        # Always create a new model directory for each training run
+        self._create_model_dir()
         
         # Prepare features and targets from data
         features_df, targets_df = self._extract_features_and_targets(data)
@@ -611,7 +610,6 @@ class ModelTrainer:
         
         callbacks = [
             EarlyStopping(patience=10, restore_best_weights=True),
-            ReduceLROnPlateau(patience=5, factor=0.5),
             ProgressCallback()
         ]
         
@@ -680,7 +678,6 @@ class ModelTrainer:
         
         callbacks = [
             EarlyStopping(patience=10, restore_best_weights=True),
-            ReduceLROnPlateau(patience=5, factor=0.5),
             ProgressCallback()
         ]
         
@@ -818,7 +815,7 @@ class ModelTrainer:
         
         # Custom learning rate schedule
         lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-            initial_learning_rate=config.learning_rate,
+            initial_learning_rate=config.parameters['learning_rate'],
             decay_steps=1000,
             decay_rate=0.9
         )
@@ -837,7 +834,6 @@ class ModelTrainer:
         
         callbacks = [
             EarlyStopping(patience=10, restore_best_weights=True),
-            ReduceLROnPlateau(patience=5, factor=0.5),
             ProgressCallback()
         ]
         

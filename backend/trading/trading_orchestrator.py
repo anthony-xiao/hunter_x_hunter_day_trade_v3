@@ -1,7 +1,7 @@
 import asyncio
 import time
 from typing import Dict, List, Optional, Set
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from loguru import logger
 import pandas as pd
@@ -89,7 +89,7 @@ class TradingOrchestrator:
             return False
     
     async def start(self, trading_symbols: List[str]):
-        """Start the event-driven trading orchestrator"""
+        """Start the event-driven trading orchestrator with proactive data bootstrapping"""
         try:
             if self.is_running:
                 logger.warning("Trading orchestrator is already running")
@@ -102,6 +102,10 @@ class TradingOrchestrator:
             for symbol in trading_symbols:
                 self.processing_locks[symbol] = asyncio.Lock()
             
+            # Phase 1: Proactive Data Bootstrapping (Cold Start Solution)
+            logger.info("Starting proactive data bootstrapping to solve cold start problem...")
+            await self._bootstrap_historical_data(trading_symbols)
+            
             # Start WebSocket data streaming
             if self.websocket_manager:
                 await self.websocket_manager.subscribe_minute_aggs(trading_symbols)
@@ -112,11 +116,98 @@ class TradingOrchestrator:
                 self.polling_task = asyncio.create_task(self._polling_backup_loop())
                 logger.info("Started polling backup system")
             
-            logger.info(f"Event-driven trading orchestrator started for {len(trading_symbols)} symbols")
+            logger.info(f"Event-driven trading orchestrator started for {len(trading_symbols)} symbols with data bootstrap complete")
             
         except Exception as e:
             logger.error(f"Failed to start trading orchestrator: {e}")
             self.is_running = False
+            raise
+    
+    async def _bootstrap_historical_data(self, trading_symbols: List[str]):
+        """Bootstrap historical data for all symbols to solve cold start problem"""
+        try:
+            if not self.feature_engineer or not self.data_pipeline:
+                logger.warning("Cannot bootstrap data: feature_engineer or data_pipeline not available")
+                return
+            
+            # Calculate required lookback period from feature engineering requirements
+            required_lookback_minutes = self.feature_engineer.calculate_required_lookback()
+            logger.info(f"Calculated required lookback period: {required_lookback_minutes} minutes")
+            
+            # Calculate bootstrap time window
+            end_time = datetime.now()
+            start_time = end_time - timedelta(minutes=required_lookback_minutes)
+            
+            logger.info(f"Bootstrapping historical data from {start_time} to {end_time} for {len(trading_symbols)} symbols")
+            
+            # Bootstrap data for each symbol
+            bootstrap_tasks = []
+            for symbol in trading_symbols:
+                task = asyncio.create_task(self._bootstrap_symbol_data(symbol, start_time, end_time))
+                bootstrap_tasks.append(task)
+            
+            # Execute all bootstrap tasks concurrently
+            results = await asyncio.gather(*bootstrap_tasks, return_exceptions=True)
+            
+            # Log bootstrap results
+            successful_bootstraps = 0
+            for i, result in enumerate(results):
+                symbol = trading_symbols[i]
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to bootstrap data for {symbol}: {result}")
+                else:
+                    successful_bootstraps += 1
+                    logger.debug(f"Successfully bootstrapped data for {symbol}")
+            
+            logger.info(f"Data bootstrap complete: {successful_bootstraps}/{len(trading_symbols)} symbols successful")
+            
+        except Exception as e:
+            logger.error(f"Error during data bootstrapping: {e}")
+    
+    async def _bootstrap_symbol_data(self, symbol: str, start_time: datetime, end_time: datetime):
+        """Bootstrap historical data for a single symbol with intelligent cache loading"""
+        try:
+            # Step 1: Try to bootstrap existing features from database first
+            logger.info(f"Attempting to bootstrap existing features for {symbol} from database")
+            bootstrap_count = await self.data_pipeline.bootstrap_feature_cache(symbol, minutes=240)  # 4 hours lookback
+            
+            if bootstrap_count > 60:  # Sufficient features available
+                logger.info(f"Successfully bootstrapped {bootstrap_count} existing features for {symbol} from database")
+                return
+            
+            logger.info(f"Insufficient existing features ({bootstrap_count}) for {symbol}, downloading fresh data")
+            
+            # Step 2: Download historical data for the required lookback period
+            historical_data = await self.data_pipeline.download_historical_data(
+                symbol=symbol,
+                start_date=start_time,
+                end_date=end_time
+            )
+            
+            if historical_data is None or len(historical_data) == 0:
+                logger.warning(f"No historical data available for {symbol} in bootstrap period")
+                return
+            
+            logger.debug(f"Downloaded {len(historical_data)} historical bars for {symbol}")
+            
+            # Step 3: Generate features for all historical data points
+            features = await self.feature_engineer.engineer_features(historical_data, symbol)
+            
+            if features is None or len(features) == 0:
+                logger.warning(f"No features generated for {symbol} during bootstrap")
+                return
+            
+            # Step 4: Cache all generated features for immediate availability
+            cached_count = 0
+            for timestamp, feature_row in features.iterrows():
+                feature_dict = feature_row.to_dict()
+                await self.data_pipeline.store_features(symbol, timestamp, feature_dict)
+                cached_count += 1
+            
+            logger.info(f"Bootstrapped and cached {cached_count} feature sets for {symbol}")
+            
+        except Exception as e:
+            logger.error(f"Error bootstrapping data for {symbol}: {e}")
             raise
     
     async def stop(self):
@@ -246,6 +337,9 @@ class TradingOrchestrator:
                     # Add accumulated_volume if available from WebSocket
                     'accumulated_volume': float(getattr(agg_data, 'accumulated_volume', agg_data.volume) if agg_data.volume is not None else 1000)
                 }
+                
+                # Create a copy without timestamp for feature storage (timestamp is passed separately)
+                current_bar_features = {k: v for k, v in current_bar.items() if k != 'timestamp'}
                 data_rows.append(current_bar)
                 
                 # Create DataFrame for feature engineering
@@ -275,16 +369,7 @@ class TradingOrchestrator:
                         current_features = engineered_features.loc[current_timestamp].to_dict()
                         
                         # Ensure all Polygon WebSocket fields are included (Priority 3: Model Input Optimization)
-                        current_features.update({
-                            'open': current_bar['open'],
-                            'high': current_bar['high'],
-                            'low': current_bar['low'],
-                            'close': current_bar['close'],
-                            'volume': current_bar['volume'],
-                            'vwap': current_bar['vwap'],
-                            'transactions': current_bar['transactions'],
-                            'accumulated_volume': current_bar['accumulated_volume']
-                        })
+                        current_features.update(current_bar_features)
                         
                         # Store comprehensive features
                         await self.data_pipeline.store_features(symbol, current_timestamp, current_features)
@@ -292,12 +377,12 @@ class TradingOrchestrator:
                     else:
                         # Fallback: use the last available features
                         latest_features = engineered_features.iloc[-1].to_dict()
-                        latest_features.update(current_bar)  # Ensure current bar data is included
+                        latest_features.update(current_bar_features)  # Ensure current bar data is included
                         await self.data_pipeline.store_features(symbol, current_timestamp, latest_features)
                         logger.debug(f"[{symbol}] Fallback features stored for {current_timestamp}")
                 else:
                     logger.warning(f"[{symbol}] engineer_features returned no results, storing basic features")
-                    await self.data_pipeline.store_features(symbol, current_timestamp, current_bar)
+                    await self.data_pipeline.store_features(symbol, current_timestamp, current_bar_features)
                 
             else:
                 # Cold start: insufficient recent features, use engineer_features with minimal historical data
@@ -373,34 +458,24 @@ class TradingOrchestrator:
             # Try to get recent cached features first (Priority 1: Optimize Feature Engineering Pipeline)
             recent_features = await self.data_pipeline.get_recent_cached_features(symbol, minutes=60)
             
-            # Check if we have sufficient cached features (at least 60 data points for proper lookback)
-            if recent_features and len(recent_features) >= 60:
-                logger.info(f"Using cached features for signal generation: {symbol} ({len(recent_features)} points)")
+            # Use smart caching logic - let signal generator decide if features are sufficient
+            if recent_features:
+                feature_count = len(recent_features)
+                logger.info(f"Using cached features for signal generation: {symbol} ({feature_count} points)")
                 
                 # Generate signal directly from cached features (eliminates historical data download)
-                signals = await self.signal_generator.generate_signals_from_features({symbol: recent_features})
+                # The signal generator now handles smart feature count validation internally
+                signal = await self.signal_generator.generate_signals_from_features(symbol, recent_features)
                 
-                if signals and len(signals) > 0:
+                if signal:
                     self.signals_generated += 1
-                    logger.info(f"[{symbol}] Generated signal from cached features: {signals[0].action} with confidence {signals[0].confidence:.3f}")
-                    return signals[0]
+                    logger.info(f"[{symbol}] Generated signal from cached features: {signal.action} with confidence {signal.confidence:.3f}")
+                    return signal
                 else:
-                    logger.warning(f"Failed to generate signal from cached features for {symbol}")
-            
-            # Handle cold start problem: insufficient cached features
-            elif recent_features and len(recent_features) >= 10:
-                logger.info(f"Limited cached features for {symbol} ({len(recent_features)} points), attempting signal generation")
-                
-                # Try with limited cached features
-                signals = await self.signal_generator.generate_signals_from_features({symbol: recent_features})
-                
-                if signals and len(signals) > 0:
-                    self.signals_generated += 1
-                    logger.info(f"[{symbol}] Generated signal with limited cached features: {signals[0].action} with confidence {signals[0].confidence:.3f}")
-                    return signals[0]
+                    logger.debug(f"Signal generator declined to generate signal for {symbol} with {feature_count} cached features")
             
             # Cold start mitigation: Skip signal generation instead of downloading historical data
-            logger.warning(f"Insufficient cached features for {symbol} ({len(recent_features) if recent_features else 0} points). Skipping signal generation to avoid historical data download.")
+            logger.warning(f"No cached features available for {symbol}. Skipping signal generation to avoid historical data download.")
             return None
             
         except Exception as e:
@@ -419,67 +494,123 @@ class TradingOrchestrator:
                 minutes=60
             )
             
-            # Check if we have sufficient cached features for risk management
-            if not recent_features or len(recent_features) < 30:
-                logger.warning(f"Insufficient cached features for risk management: {signal.symbol} ({len(recent_features) if recent_features else 0} points). Skipping execution.")
-                return
-            
-            # Convert cached features to DataFrame for risk calculations
-            market_data = None
-            try:
-                # Sort features by timestamp
-                sorted_timestamps = sorted(recent_features.keys())
-                
-                # Create DataFrame from cached features
-                data_rows = []
-                for timestamp in sorted_timestamps:
-                    feature_dict = recent_features[timestamp].copy()
-                    feature_dict['timestamp'] = timestamp
-                    data_rows.append(feature_dict)
-                
-                if data_rows:
-                    df = pd.DataFrame(data_rows)
-                    df.set_index('timestamp', inplace=True)
-                    
-                    # Ensure required columns exist for risk calculations
-                    required_cols = ['open', 'high', 'low', 'close', 'volume']
-                    for col in required_cols:
-                        if col not in df.columns:
-                            if col == 'volume':
-                                df[col] = 1000  # Default volume
-                            else:
-                                df[col] = df.get('close', 100.0)  # Use close price as fallback
-                    
-                    market_data = df
-                    logger.debug(f"Converted {len(df)} cached features to DataFrame for risk management: {signal.symbol}")
-                
-            except Exception as e:
-                logger.error(f"Failed to convert cached features for risk management: {signal.symbol}: {e}")
-                return
-            
-            if market_data is not None and len(market_data) >= 10:
-                # Calculate position size with risk management
-                position_size = await self.risk_manager.calculate_position_size(
-                    signal=signal,
-                    market_data=market_data
+            # Apply smart caching logic for risk management
+            if not recent_features:
+                logger.warning(f"No cached features available for risk management: {signal.symbol}")
+                # Still proceed with signal execution but with significantly reduced confidence
+                risk_adjusted_signal = TradeSignal(
+                    symbol=signal.symbol,
+                    action=signal.action,
+                    confidence=max(0.1, signal.confidence * 0.3),  # Significantly reduce confidence
+                    price=signal.price,
+                    quantity=min(signal.quantity, 25),  # Significantly reduce position size
+                    timestamp=signal.timestamp,
+                    strategy_name=signal.strategy_name,
+                    metadata={**signal.metadata, "risk_adjustment": "no_cached_features"}
                 )
+            elif len(recent_features) < 10:
+                logger.warning(f"Very limited cached features for risk management: {signal.symbol} ({len(recent_features)}/10)")
+                # Proceed with minimal risk management
+                risk_adjusted_signal = TradeSignal(
+                    symbol=signal.symbol,
+                    action=signal.action,
+                    confidence=max(0.1, signal.confidence * 0.6),  # Moderately reduce confidence
+                    price=signal.price,
+                    quantity=min(signal.quantity, 50),  # Moderately reduce position size
+                    timestamp=signal.timestamp,
+                    strategy_name=signal.strategy_name,
+                    metadata={**signal.metadata, "risk_adjustment": "minimal_features"}
+                )
+            else:
+                # Apply full risk management with available cached features
+                feature_count = len(recent_features)
+                logger.debug(f"Applying risk management with {feature_count} cached features for {signal.symbol}")
                 
-                if position_size > 0:
-                    # Execute the trade
-                    success = await self.execution_engine.execute_signal(
+                # Convert cached features to DataFrame for risk calculations
+                market_data = None
+                try:
+                    # Sort features by timestamp
+                    sorted_timestamps = sorted(recent_features.keys())
+                    
+                    # Create DataFrame from cached features
+                    data_rows = []
+                    for timestamp in sorted_timestamps:
+                        feature_dict = recent_features[timestamp].copy()
+                        feature_dict['timestamp'] = timestamp
+                        data_rows.append(feature_dict)
+                    
+                    if data_rows:
+                        df = pd.DataFrame(data_rows)
+                        df.set_index('timestamp', inplace=True)
+                        
+                        # Ensure required columns exist for risk calculations
+                        required_cols = ['open', 'high', 'low', 'close', 'volume']
+                        for col in required_cols:
+                            if col not in df.columns:
+                                if col == 'volume':
+                                    df[col] = 1000  # Default volume
+                                else:
+                                    df[col] = df.get('close', 100.0)  # Use close price as fallback
+                        
+                        market_data = df
+                        logger.debug(f"Converted {len(df)} cached features to DataFrame for risk management: {signal.symbol}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to convert cached features for risk management: {signal.symbol}: {e}")
+                    # Fallback to reduced confidence signal
+                    risk_adjusted_signal = TradeSignal(
+                        symbol=signal.symbol,
+                        action=signal.action,
+                        confidence=max(0.1, signal.confidence * 0.5),
+                        price=signal.price,
+                        quantity=min(signal.quantity, 50),
+                        timestamp=signal.timestamp,
+                        strategy_name=signal.strategy_name,
+                        metadata={**signal.metadata, "risk_adjustment": "feature_conversion_error"}
+                    )
+                    market_data = None
+                
+                if market_data is not None and len(market_data) >= 10:
+                    # Calculate position size with risk management
+                    position_size = await self.risk_manager.calculate_position_size(
                         signal=signal,
-                        position_size=position_size
+                        market_data=market_data
                     )
                     
-                    if success:
-                        self.trades_executed += 1
-                        logger.info(f"Event-driven trade executed: {signal.symbol} {signal.action}")
+                    if position_size > 0:
+                        risk_adjusted_signal = signal  # Use original signal with calculated position size
                     else:
-                        logger.warning(f"Failed to execute event-driven trade for {signal.symbol}")
+                        logger.debug(f"Signal for {signal.symbol} rejected by risk management")
+                        return
                 else:
-                    logger.debug(f"Signal for {signal.symbol} rejected by risk management")
+                    logger.warning(f"Insufficient market data for risk management: {signal.symbol}")
+                    # Use fallback signal with reduced parameters
+                    risk_adjusted_signal = TradeSignal(
+                        symbol=signal.symbol,
+                        action=signal.action,
+                        confidence=max(0.1, signal.confidence * 0.7),
+                        price=signal.price,
+                        quantity=min(signal.quantity, 75),
+                        timestamp=signal.timestamp,
+                        strategy_name=signal.strategy_name,
+                        metadata={**signal.metadata, "risk_adjustment": "insufficient_market_data"}
+                    )
+                    position_size = risk_adjusted_signal.quantity
+            
+            # Execute the risk-adjusted signal
+            if 'position_size' not in locals():
+                position_size = risk_adjusted_signal.quantity
+            
+            success = await self.execution_engine.execute_signal(
+                signal=risk_adjusted_signal,
+                position_size=position_size
+            )
+            
+            if success:
+                self.trades_executed += 1
+                logger.info(f"Event-driven trade executed: {signal.symbol} {signal.action} (risk-adjusted)")
             else:
-                logger.warning(f"Insufficient market data for risk management: {signal.symbol}")
+                logger.warning(f"Failed to execute event-driven trade for {signal.symbol}")
             
         except Exception as e:
             logger.error(f"Error executing signal for {signal.symbol}: {e}")
@@ -491,7 +622,7 @@ class TradingOrchestrator:
         while self.is_running:
             try:
                 # Check if market is open
-                now = datetime.now()
+                now = datetime.now(timezone.utc)
                 
                 if (now.weekday() < 5 and  # Monday = 0, Friday = 4
                     9 <= now.hour < 16 and
@@ -509,7 +640,7 @@ class TradingOrchestrator:
     async def _process_stale_symbols(self):
         """Process symbols that haven't received recent minute bar events"""
         try:
-            current_time = datetime.now()
+            current_time = datetime.now(timezone.utc)
             stale_threshold = timedelta(minutes=2)  # Consider stale if no update in 2 minutes
             
             for symbol in self.active_symbols:
