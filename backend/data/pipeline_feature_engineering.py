@@ -253,14 +253,12 @@ class FeatureEngineer:
         return df
     
     def _add_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add market microstructure features"""
-        # Bid-ask spread proxy (using high-low)
+        """Add enhanced market microstructure features using Polygon WebSocket fields (Priority 3)"""
+        # Basic microstructure features
         df['spread_proxy'] = (df['high'] - df['low']) / df['close']
+        df['price_impact'] = abs(df['close'] - df['open']) / (df['volume'] + 1e-8)
         
-        # Price impact
-        df['price_impact'] = abs(df['close'] - df['open']) / df['volume']
-        
-        # Tick direction
+        # Tick direction and momentum
         df['tick_direction'] = np.sign(df['close'] - df['close'].shift(1))
         
         # Consecutive ticks
@@ -272,6 +270,75 @@ class FeatureEngineer:
         # Order flow imbalance proxy
         df['flow_imbalance'] = (df['close'] - (df['high'] + df['low']) / 2) / \
                               (df['high'] - df['low'] + 1e-8)
+        
+        # Enhanced microstructure features using Polygon WebSocket fields
+        if 'vwap' in df.columns:
+            # VWAP-based features
+            df['price_vwap_ratio'] = df['close'] / (df['vwap'] + 1e-8)
+            df['vwap_deviation'] = (df['close'] - df['vwap']) / (df['vwap'] + 1e-8)
+            df['vwap_momentum'] = df['vwap'].pct_change()
+            
+            # VWAP trend strength
+            for period in [5, 10, 20]:
+                vwap_sma = df['vwap'].rolling(period).mean()
+                df[f'vwap_trend_{period}'] = (df['vwap'] - vwap_sma) / (vwap_sma + 1e-8)
+        
+        if 'transactions' in df.columns:
+            # Transaction-based microstructure indicators
+            df['avg_trade_size'] = df['volume'] / (df['transactions'] + 1e-8)
+            df['trade_intensity'] = df['transactions'] / df['volume'].rolling(20).mean().fillna(1)
+            
+            # Transaction momentum and volatility
+            df['transaction_momentum'] = df['transactions'].pct_change()
+            df['transaction_volatility'] = df['transactions'].rolling(10).std() / (df['transactions'].rolling(10).mean() + 1e-8)
+            
+            # Market activity indicators
+            df['high_frequency_ratio'] = df['transactions'] / (df['volume'] + 1e-8)  # Transactions per unit volume
+            
+            # Rolling transaction statistics
+            for period in [5, 10, 20]:
+                df[f'transactions_ma_{period}'] = df['transactions'].rolling(period).mean()
+                df[f'transactions_ratio_{period}'] = df['transactions'] / (df[f'transactions_ma_{period}'] + 1e-8)
+        
+        if 'accumulated_volume' in df.columns:
+            # Accumulated volume features
+            df['volume_acceleration'] = df['accumulated_volume'].diff().diff()  # Second derivative
+            df['volume_momentum'] = df['accumulated_volume'].pct_change()
+            
+            # Volume distribution analysis
+            df['volume_concentration'] = df['volume'] / (df['accumulated_volume'] + 1e-8)
+            
+            # Intraday volume patterns
+            df['volume_profile'] = df['accumulated_volume'] / df['accumulated_volume'].rolling(20).max().fillna(1)
+        
+        # Advanced microstructure indicators combining multiple fields
+        if all(col in df.columns for col in ['vwap', 'transactions', 'volume']):
+            # Market efficiency indicators
+            df['price_efficiency'] = abs(df['close'] - df['vwap']) / (df['transactions'] + 1e-8)
+            df['liquidity_proxy'] = df['volume'] / (abs(df['close'] - df['vwap']) + 1e-8)
+            
+            # Order flow toxicity (Kyle's lambda proxy)
+            price_impact_per_trade = abs(df['close'] - df['close'].shift(1)) / (df['transactions'] + 1e-8)
+            df['order_flow_toxicity'] = price_impact_per_trade.rolling(10).mean()
+            
+            # Market depth proxy
+            df['market_depth_proxy'] = df['volume'] / (df['spread_proxy'] + 1e-8)
+        
+        # Real-time volatility indicators (Priority 3: Real-time volatility calculations)
+        if 'vwap' in df.columns:
+            # Intraday volatility using VWAP
+            df['intraday_vol_vwap'] = abs(df['close'] - df['vwap']).rolling(10).std()
+            df['vwap_volatility_ratio'] = df['intraday_vol_vwap'] / (df['close'].rolling(10).std() + 1e-8)
+        
+        # Microstructure momentum indicators
+        if 'transactions' in df.columns and 'volume' in df.columns:
+            # Trade size momentum
+            trade_size = df['volume'] / (df['transactions'] + 1e-8)
+            df['trade_size_momentum'] = trade_size.pct_change()
+            df['trade_size_acceleration'] = df['trade_size_momentum'].diff()
+            
+            # Activity-adjusted price momentum
+            df['activity_adj_momentum'] = df['close'].pct_change() * np.log1p(df['transactions'])
         
         return df
     
@@ -294,7 +361,7 @@ class FeatureEngineer:
         return df
     
     def _add_volatility_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add volatility features"""
+        """Add enhanced real-time volatility features (Priority 3)"""
         # Historical volatility
         for period in [5, 10, 20]:
             returns = df['close'].pct_change()
@@ -316,10 +383,61 @@ class FeatureEngineer:
         df['vol_ratio_5_20'] = df['volatility_5'] / (df['volatility_20'] + 1e-8)
         df['vol_ratio_10_20'] = df['volatility_10'] / (df['volatility_20'] + 1e-8)
         
+        # Real-time volatility enhancements using Polygon WebSocket fields
+        if 'vwap' in df.columns:
+            # VWAP-based volatility
+            vwap_returns = df['vwap'].pct_change()
+            for period in [5, 10, 20]:
+                df[f'vwap_volatility_{period}'] = vwap_returns.rolling(period).std() * np.sqrt(390)
+            
+            # Cross-volatility between price and VWAP
+            price_vwap_spread = (df['close'] - df['vwap']) / df['vwap']
+            df['price_vwap_vol'] = price_vwap_spread.rolling(10).std()
+        
+        if 'transactions' in df.columns:
+            # Transaction-weighted volatility
+            transaction_weights = df['transactions'] / df['transactions'].rolling(20).sum()
+            weighted_returns = df['close'].pct_change() * transaction_weights
+            df['transaction_weighted_vol'] = weighted_returns.rolling(10).std() * np.sqrt(390)
+            
+            # Volatility per transaction
+            df['vol_per_transaction'] = df['volatility_10'] / (np.log1p(df['transactions']) + 1e-8)
+        
+        if 'volume' in df.columns:
+            # Volume-weighted volatility
+            volume_weights = df['volume'] / df['volume'].rolling(20).sum()
+            volume_weighted_returns = df['close'].pct_change() * volume_weights
+            df['volume_weighted_vol'] = volume_weighted_returns.rolling(10).std() * np.sqrt(390)
+            
+            # Realized volatility using volume
+            df['realized_vol'] = (df['close'].pct_change() * np.sqrt(df['volume'])).rolling(10).std()
+        
+        # Intraday volatility patterns
+        if df.index.dtype.kind == 'M':  # datetime index
+            # Time-of-day volatility
+            hour_vol = df.groupby(df.index.hour)['close'].pct_change().rolling(5).std()
+            df['hour_volatility'] = hour_vol.reindex(df.index, method='ffill')
+            
+            # Volatility clustering
+            df['vol_clustering'] = df['volatility_5'].rolling(5).std()
+        
+        # Advanced volatility measures
+        # Jump detection
+        returns = df['close'].pct_change()
+        vol_threshold = returns.rolling(20).std() * 3  # 3-sigma threshold
+        df['jump_indicator'] = (abs(returns) > vol_threshold).astype(int)
+        df['jump_intensity'] = df['jump_indicator'].rolling(10).sum()
+        
+        # Volatility regime detection
+        short_vol = df['volatility_5']
+        long_vol = df['volatility_20']
+        df['vol_regime'] = np.where(short_vol > long_vol * 1.5, 1,  # High vol regime
+                                   np.where(short_vol < long_vol * 0.5, -1, 0))  # Low vol regime
+        
         return df
     
     def _add_momentum_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add momentum features"""
+        """Add enhanced real-time momentum features (Priority 3)"""
         # Rate of Change
         for period in [1, 5, 10, 20]:
             df[f'roc_{period}'] = df['close'].pct_change(period)
@@ -336,6 +454,95 @@ class FeatureEngineer:
         for period in [10, 20]:
             df[f'trend_strength_{period}'] = abs(df[f'roc_{period}']) / \
                                             (df[f'volatility_{period}'] + 1e-8)
+        
+        # Real-time momentum enhancements using Polygon WebSocket fields
+        if 'vwap' in df.columns:
+            # VWAP momentum
+            for period in [5, 10, 20]:
+                df[f'vwap_momentum_{period}'] = df['vwap'].pct_change(period)
+            
+            # Price vs VWAP momentum
+            df['price_vwap_momentum'] = (df['close'] - df['vwap']) / df['vwap']
+            df['price_vwap_momentum_change'] = df['price_vwap_momentum'].diff()
+            
+            # VWAP trend strength
+            vwap_sma_5 = df['vwap'].rolling(5).mean()
+            vwap_sma_20 = df['vwap'].rolling(20).mean()
+            df['vwap_trend_strength'] = (vwap_sma_5 - vwap_sma_20) / vwap_sma_20
+        
+        if 'transactions' in df.columns:
+            # Transaction momentum
+            for period in [5, 10, 20]:
+                df[f'transaction_momentum_{period}'] = df['transactions'].pct_change(period)
+            
+            # Transaction-weighted price momentum
+            transaction_weights = df['transactions'] / df['transactions'].rolling(10).sum()
+            df['transaction_weighted_momentum'] = (df['close'].pct_change() * transaction_weights).rolling(5).sum()
+            
+            # Activity-adjusted momentum
+            df['activity_adjusted_momentum'] = df['momentum_10'] * np.log1p(df['transactions'])
+            
+            # Transaction acceleration
+            df['transaction_acceleration'] = df['transactions'].diff().diff()
+        
+        if 'volume' in df.columns:
+            # Volume momentum
+            for period in [5, 10, 20]:
+                df[f'volume_momentum_{period}'] = df['volume'].pct_change(period)
+            
+            # Volume-weighted momentum
+            volume_weights = df['volume'] / df['volume'].rolling(10).sum()
+            df['volume_weighted_momentum'] = (df['close'].pct_change() * volume_weights).rolling(5).sum()
+            
+            # Volume-price momentum divergence
+            price_momentum_norm = (df['momentum_10'] - df['momentum_10'].rolling(20).mean()) / df['momentum_10'].rolling(20).std()
+            volume_momentum_norm = (df['volume_momentum_10'] - df['volume_momentum_10'].rolling(20).mean()) / df['volume_momentum_10'].rolling(20).std()
+            df['momentum_volume_divergence'] = price_momentum_norm - volume_momentum_norm
+        
+        if 'accumulated_volume' in df.columns:
+            # Accumulated volume momentum
+            df['accumulated_volume_momentum'] = df['accumulated_volume'].pct_change()
+            df['accumulated_volume_acceleration'] = df['accumulated_volume_momentum'].diff()
+            
+            # Volume accumulation rate
+            df['volume_accumulation_rate'] = df['accumulated_volume'] / (df.index.to_series().diff().dt.total_seconds() / 60).fillna(1)
+        
+        # Cross-asset momentum indicators
+        if all(col in df.columns for col in ['vwap', 'transactions', 'volume']):
+            # Composite momentum score
+            momentum_components = [
+                df['momentum_10'].fillna(0),
+                df['vwap_momentum_10'].fillna(0),
+                df['transaction_momentum_10'].fillna(0),
+                df['volume_momentum_10'].fillna(0)
+            ]
+            df['composite_momentum'] = np.mean(momentum_components, axis=0)
+            
+            # Momentum consistency
+            momentum_signs = [np.sign(comp) for comp in momentum_components]
+            df['momentum_consistency'] = np.mean([np.sum(signs) / len(signs) for signs in zip(*momentum_signs)])
+            
+            # Market efficiency momentum
+            price_efficiency = abs(df['close'] - df['vwap']) / df['vwap']
+            df['efficiency_momentum'] = price_efficiency.rolling(5).apply(lambda x: x.iloc[-1] - x.iloc[0])
+        
+        # Advanced momentum patterns
+        # Momentum persistence
+        df['momentum_persistence'] = df['momentum_10'].rolling(5).apply(
+            lambda x: len([i for i in range(1, len(x)) if np.sign(x.iloc[i]) == np.sign(x.iloc[i-1])]) / (len(x) - 1)
+        )
+        
+        # Momentum acceleration
+        df['momentum_acceleration'] = df['momentum_10'].diff()
+        df['momentum_jerk'] = df['momentum_acceleration'].diff()
+        
+        # Momentum regime detection
+        momentum_ma = df['momentum_10'].rolling(20).mean()
+        momentum_std = df['momentum_10'].rolling(20).std()
+        df['momentum_regime'] = np.where(
+            df['momentum_10'] > momentum_ma + momentum_std, 1,  # Strong positive momentum
+            np.where(df['momentum_10'] < momentum_ma - momentum_std, -1, 0)  # Strong negative momentum
+        )
         
         return df
     

@@ -405,7 +405,7 @@ TRADING_MODE="paper"  # Options: "paper" or "live"
 
 ### 5.4 Security & Credentials
 
-- **Environment Variables**: Store all API keys and secrets in .env file
+- **Environment Variables**: Store all API keys and secrets in .env file located in `/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/` folder
 - **API Rate Limiting**: Implement proper rate limiting for Polygon.io and Alpaca APIs
 - **Data Encryption**: Encrypt sensitive trading data and credentials
 - **Audit Logging**: Comprehensive logging of all trading decisions and executions

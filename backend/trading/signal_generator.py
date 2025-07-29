@@ -497,6 +497,44 @@ class SignalGenerator:
             logger.error(f"Error generating signals: {e}")
             return []
     
+    async def generate_signals_from_features(self, symbol: str, cached_features: Dict[datetime, Dict]) -> Optional[TradeSignal]:
+        """Generate trading signal from cached features without historical data download"""
+        try:
+            if symbol not in self.models:
+                logger.warning(f"No models found for {symbol}")
+                return None
+            
+            if not cached_features or len(cached_features) < 60:
+                logger.warning(f"Insufficient cached features for {symbol}: {len(cached_features) if cached_features else 0}/60")
+                return None
+            
+            # Convert cached features to DataFrame format
+            features_df = await self._convert_cached_features_to_dataframe(symbol, cached_features)
+            if features_df is None:
+                return None
+            
+            # Update market regime using cached features (simplified)
+            await self._update_market_regime_from_features({symbol: features_df})
+            
+            # Generate ensemble prediction using cached features
+            ensemble_pred = await self._generate_ensemble_prediction(symbol, features_df)
+            
+            if ensemble_pred:
+                # Convert prediction to signal
+                signal = await self._prediction_to_signal(ensemble_pred)
+                
+                if signal:
+                    # Log signal
+                    await self._log_signal(signal, ensemble_pred)
+                    logger.info(f"Generated signal from cached features for {symbol}: {signal.action} (confidence: {signal.confidence:.3f})")
+                    return signal
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error generating signal from cached features for {symbol}: {e}")
+            return None
+    
     async def _generate_ensemble_prediction(self, symbol: str, data: pd.DataFrame) -> Optional[EnsemblePrediction]:
         """Generate ensemble prediction for a symbol"""
         try:
@@ -619,6 +657,116 @@ class SignalGenerator:
         except Exception as e:
             logger.error(f"Error getting prediction from {model_type.value}: {e}")
             return None
+    
+    async def _convert_cached_features_to_dataframe(self, symbol: str, cached_features: Dict[datetime, Dict]) -> Optional[pd.DataFrame]:
+        """Convert cached features dictionary to DataFrame format expected by models"""
+        try:
+            if not cached_features:
+                return None
+            
+            # Sort by timestamp and convert to DataFrame
+            sorted_timestamps = sorted(cached_features.keys())
+            
+            # Extract OHLCV data and engineered features
+            rows = []
+            for timestamp in sorted_timestamps:
+                features = cached_features[timestamp]
+                
+                # Ensure we have basic OHLCV data
+                if all(key in features for key in ['open', 'high', 'low', 'close', 'volume']):
+                    row = {
+                        'timestamp': timestamp,
+                        'open': features['open'],
+                        'high': features['high'], 
+                        'low': features['low'],
+                        'close': features['close'],
+                        'volume': features['volume']
+                    }
+                    
+                    # Add Polygon WebSocket fields if available
+                    for field in ['vwap', 'transactions', 'accumulated_volume']:
+                        if field in features:
+                            row[field] = features[field]
+                    
+                    # Add all other engineered features
+                    for key, value in features.items():
+                        if key not in row and not pd.isna(value):
+                            row[key] = value
+                    
+                    rows.append(row)
+            
+            if not rows:
+                logger.warning(f"No valid feature rows found for {symbol}")
+                return None
+            
+            # Create DataFrame with timestamp index
+            df = pd.DataFrame(rows)
+            df.set_index('timestamp', inplace=True)
+            df.sort_index(inplace=True)
+            
+            # Ensure numeric columns are float type
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions', 'accumulated_volume']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            logger.debug(f"Converted {len(df)} cached feature records to DataFrame for {symbol}")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error converting cached features to DataFrame for {symbol}: {e}")
+            return None
+    
+    async def _update_market_regime_from_features(self, features_data: Dict[str, pd.DataFrame]) -> None:
+        """Update market regime using cached features data"""
+        try:
+            # Use SPY or first available symbol for market regime analysis
+            spy_data = features_data.get('SPY')
+            if spy_data is None and features_data:
+                # Use first available symbol as proxy
+                spy_data = list(features_data.values())[0]
+            
+            if spy_data is None or len(spy_data) < 20:
+                logger.debug("Insufficient data for market regime update from cached features")
+                return
+            
+            # Use cached features for regime analysis
+            if 'close' in spy_data.columns:
+                close_prices = spy_data['close'].tail(50).values
+                returns = np.diff(np.log(close_prices))
+                
+                # Calculate regime indicators
+                volatility = np.std(returns) * np.sqrt(252)
+                trend_strength = abs(np.mean(returns)) * np.sqrt(252)
+                
+                # Determine regime type
+                if volatility > 0.3:
+                    regime_type = "volatile"
+                elif volatility < 0.15:
+                    regime_type = "calm"
+                elif trend_strength > 0.1:
+                    regime_type = "trending"
+                else:
+                    regime_type = "ranging"
+                
+                # Calculate market stress and confidence
+                market_stress = min(1.0, volatility / 0.4)
+                confidence = 1.0 - min(0.5, abs(volatility - 0.2) / 0.3)
+                
+                self.current_market_regime = MarketRegime(
+                    regime_type=regime_type,
+                    confidence=confidence,
+                    volatility_level=volatility,
+                    trend_strength=trend_strength,
+                    market_stress=market_stress,
+                    timestamp=datetime.now()
+                )
+                
+                self.regime_history.append(self.current_market_regime)
+                logger.debug(f"Updated market regime from cached features: {regime_type} (volatility: {volatility:.3f})")
+            
+        except Exception as e:
+            logger.error(f"Error updating market regime from cached features: {e}")
     
     async def _prepare_features(self, symbol: str, data: pd.DataFrame) -> Optional[np.ndarray]:
         """Prepare features for model prediction"""
