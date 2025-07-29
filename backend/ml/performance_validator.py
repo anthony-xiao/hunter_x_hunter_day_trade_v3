@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import numpy as np
@@ -807,7 +807,7 @@ class PerformanceValidator:
     async def validate_live_readiness(self) -> ValidationResult:
         """Validate if system is ready for live trading"""
         # Validate last 3 months of performance
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=90)
         
         result = await self.validate_system_performance(start_date, end_date)
@@ -827,7 +827,7 @@ class PerformanceValidator:
         try:
             logger.info(f"Validating model performance over last {lookback_days} days")
             
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=lookback_days)
             
             # Get model predictions and actual results
@@ -1005,7 +1005,7 @@ class PerformanceValidator:
         """Validate recent performance consistency"""
         try:
             # Check last 30 days for consistency
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=30)
             
             returns_data = await self._get_returns_data(start_date, end_date)

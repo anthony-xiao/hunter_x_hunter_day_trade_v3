@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
 from loguru import logger
@@ -259,7 +259,7 @@ class RiskManager:
                     avg_position_size=0.0,
                     largest_position_pct=0.0,
                     risk_level=RiskLevel.LOW,
-                    timestamp=datetime.now()
+                    timestamp=datetime.now(timezone.utc)
                 )
             
             # Calculate basic metrics
@@ -325,7 +325,7 @@ class RiskManager:
                 avg_position_size=total_exposure / len(positions) if positions else 0,
                 largest_position_pct=concentration_risk,
                 risk_level=risk_level,
-                timestamp=datetime.now()
+                timestamp=datetime.now(timezone.utc)
             )
             
             # Store in history

@@ -1,6 +1,6 @@
 import asyncio
 from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 from enum import Enum
 import numpy as np
@@ -97,7 +97,7 @@ class TradeSignal:
     
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.now()
+            self.timestamp = datetime.now(timezone.utc)
         if self.model_predictions is None:
             self.model_predictions = {}
 

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 # import talib  # Temporarily commented out
 from loguru import logger
 
@@ -20,6 +20,65 @@ class FeatureEngineer:
         self.feature_cache: Dict[str, pd.DataFrame] = {}
         self.feature_columns: List[str] = []
         self.data_pipeline = data_pipeline  # Reference to DataPipeline for hybrid storage
+        
+    def calculate_required_lookback(self) -> int:
+        """
+        Calculate the maximum lookback period required by all technical indicators.
+        This ensures we have sufficient historical data for feature engineering.
+        
+        Returns:
+            int: Maximum lookback period in minutes (with safety buffer)
+        """
+        # Define all lookback periods used in feature engineering
+        lookback_periods = {
+            # Moving averages (SMA, EMA)
+            'moving_averages': [5, 10, 20, 50],
+            
+            # Bollinger Bands
+            'bollinger_bands': [10, 20],
+            
+            # RSI
+            'rsi': [7, 14, 21],
+            
+            # MACD components
+            'macd': [12, 26, 9],  # EMA12, EMA26, Signal line
+            
+            # Stochastic, Williams %R, ATR, CCI, MFI
+            'oscillators': [14],
+            
+            # Volume features
+            'volume_features': [5, 10, 20],
+            
+            # VWAP and microstructure
+            'vwap_features': [20],
+            
+            # Volatility features
+            'volatility': [5, 10, 20],
+            
+            # Momentum features
+            'momentum': [1, 5, 10, 20],
+            
+            # Statistical features
+            'statistical': [10, 20],
+            
+            # Autocorrelation (uses rolling window)
+            'autocorr_window': [20],
+        }
+        
+        # Find maximum lookback across all categories
+        max_lookback = 0
+        for category, periods in lookback_periods.items():
+            category_max = max(periods)
+            max_lookback = max(max_lookback, category_max)
+            logger.debug(f"Category {category}: max lookback = {category_max}")
+        
+        # Add safety buffer (20% extra) to ensure all indicators have sufficient data
+        safety_buffer = int(max_lookback * 0.2)
+        total_lookback = max_lookback + safety_buffer
+        
+        logger.info(f"Calculated required lookback: {max_lookback} minutes + {safety_buffer} buffer = {total_lookback} minutes")
+        
+        return total_lookback
         
     async def engineer_features(self, ohlcv_data: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """Engineer comprehensive features from OHLCV data"""
@@ -107,9 +166,12 @@ class FeatureEngineer:
                 elif not isinstance(timestamp, datetime):
                     continue
                 
-                # Extract feature values (exclude OHLCV columns)
+                # Always include basic OHLCV data to ensure cached features are available
                 features = {}
-                for col in feature_cols:
+                
+                # Include basic OHLCV columns if available
+                basic_cols = ['open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions', 'accumulated_volume']
+                for col in basic_cols:
                     if col in row and not pd.isna(row[col]):
                         value = row[col]
                         # Convert numpy types to Python types for JSON serialization
@@ -117,7 +179,16 @@ class FeatureEngineer:
                             value = value.item()
                         features[col] = float(value) if isinstance(value, (int, float)) else value
                 
-                # Only store if we have features
+                # Add engineered features (exclude basic OHLCV columns)
+                for col in feature_cols:
+                    if col not in basic_cols and col in row and not pd.isna(row[col]):
+                        value = row[col]
+                        # Convert numpy types to Python types for JSON serialization
+                        if hasattr(value, 'item'):
+                            value = value.item()
+                        features[col] = float(value) if isinstance(value, (int, float)) else value
+                
+                # Store features if we have at least basic OHLCV data
                 if features:
                     await self.data_pipeline.store_features(symbol, timestamp, features)
                     stored_count += 1

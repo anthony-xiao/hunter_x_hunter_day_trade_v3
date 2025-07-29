@@ -10,7 +10,7 @@ import subprocess
 import asyncio
 from pathlib import Path
 from loguru import logger
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Add backend directory to Python path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -148,7 +148,7 @@ async def initialize_system():
         
         # Download initial data if needed
         for symbol in universe[:3]:  # Start with first 3 symbols
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=30)
             
             df = await data_pipeline.load_market_data(symbol, start_date, end_date)

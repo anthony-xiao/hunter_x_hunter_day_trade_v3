@@ -3,7 +3,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 import pandas as pd
 from loguru import logger
@@ -180,8 +180,8 @@ async def background_initialization(signal_generator, trading_symbols):
                 try:
                     await data_pipeline.download_historical_data(
                         symbol=symbol,
-                        start_date=datetime.now() - timedelta(days=760),
-                        end_date=datetime.now()
+                        start_date=datetime.now(timezone.utc) - timedelta(days=760),
+            end_date=datetime.now(timezone.utc)
                     )
                     logger.info(f"Downloaded historical data for {symbol}")
                 except Exception as e:
@@ -199,7 +199,7 @@ async def background_model_training():
     while True:
         try:
             # Check if it's time to retrain models (daily at market close)
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             
             # Train models daily at 4:30 PM ET (after market close)
             if (now.hour == 16 and now.minute >= 30 and 
@@ -216,8 +216,8 @@ async def background_model_training():
                             # Get historical data
                             historical_data = await data_pipeline.download_historical_data(
                                 symbol=symbol,
-                                start_date=datetime.now() - timedelta(days=760),
-                                end_date=datetime.now()
+                                start_date=datetime.now(timezone.utc) - timedelta(days=760),
+            end_date=datetime.now(timezone.utc)
                             )
                             
                             if historical_data is not None and len(historical_data) > 100:
@@ -293,7 +293,7 @@ async def trading_loop():
     while trading_active:
         try:
             # Check if market is open
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             
             # Trading hours: 9:30 AM - 4:00 PM ET (Monday-Friday)
             if (now.weekday() < 5 and  # Monday = 0, Friday = 4
@@ -309,8 +309,8 @@ async def trading_loop():
                         # Get recent historical data for analysis
                         data = await data_pipeline.download_historical_data(
                             symbol=symbol,
-                            start_date=datetime.now() - timedelta(days=30),
-                            end_date=datetime.now()
+                            start_date=datetime.now(timezone.utc) - timedelta(days=30),
+            end_date=datetime.now(timezone.utc)
                         )
                         
                         if data is not None and len(data) >= 60:
@@ -407,7 +407,7 @@ async def get_trading_status():
         status = {
             "trading_active": trading_active,
             "event_driven_active": event_driven_active,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "last_model_training": last_model_training.isoformat() if last_model_training else None
         }
         
@@ -492,7 +492,7 @@ async def start_trading(background_tasks: BackgroundTasks):
             "event_driven_active": event_driven_active,
             "polling_backup_active": trading_active,
             "trading_symbols_count": len(trading_symbols),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:
@@ -538,7 +538,7 @@ async def stop_trading():
             "status": "inactive",
             "event_driven_stopped": True,
             "polling_stopped": True,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:
@@ -598,7 +598,7 @@ async def get_performance_validation(
     try:
         from datetime import datetime, timedelta
         
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
         
         validation_result = await execution_engine.performance_validator.validate_system_performance(
@@ -643,7 +643,7 @@ async def get_drift_detection():
         
         return {
             "status": "success",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "drift_results": drift_results,
             "recent_alerts": [
                 {
@@ -680,7 +680,7 @@ async def optimize_ensemble_weights():
         logger.info(f"Loaded {len(model_trainer.models)} models for optimization")
         
         # Get recent validation data for optimization (last 30 days)
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=30)
         
         # Get trading universe for multi-symbol ensemble optimization
@@ -893,7 +893,7 @@ async def emergency_stop():
         return {
             "message": "Emergency stop executed - all positions closed",
             "status": "emergency_stopped",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:
@@ -987,7 +987,7 @@ async def train_models(symbol: str, background_tasks: BackgroundTasks):
         return {
             "message": f"Model training started for {symbol}",
             "symbol": symbol,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:
@@ -1000,7 +1000,7 @@ async def train_symbol_models(symbol: str):
         logger.info(f"Starting model training for {symbol}")
         
         # Define date range for historical data
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=760)
         
         # First, try to load existing data from database
@@ -1152,7 +1152,7 @@ async def execute_manual_trade(
             risk_score=0.5,         # Placeholder value
             quantity=quantity,
             price=price,
-            timestamp=datetime.now()
+            timestamp=datetime.now(timezone.utc)
         )
         
         # Execute the trade
