@@ -167,9 +167,40 @@ class DataPipeline:
     async def download_historical_data(self, symbol: str, 
                                      start_date: datetime, 
                                      end_date: datetime) -> pd.DataFrame:
-        """Download historical minute data from Polygon.io with proper pagination"""
+        """Download historical minute data from Polygon.io with proper pagination
+        
+        First checks for existing data in database and only downloads missing data if needed.
+        This prevents redundant downloads and maintains consistency with training endpoint logic.
+        """
         try:
             logger.info(f"Starting download of historical data for {symbol} from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+            
+            # First, try to load existing data from database (same logic as train_symbol_models)
+            existing_data = await self.load_market_data(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            # Check if we have sufficient existing data
+            if existing_data is not None and len(existing_data) >= 100:
+                # Calculate expected data points (approximately 390 minutes per trading day)
+                expected_days = (end_date - start_date).days
+                expected_data_points = expected_days * 390  # Rough estimate
+                coverage_percentage = (len(existing_data) / expected_data_points * 100) if expected_data_points > 0 else 0
+                
+                logger.info(f"Found {len(existing_data)} existing data points for {symbol} (estimated {coverage_percentage:.1f}% coverage)")
+                
+                # If we have good coverage (>80%), return existing data
+                if coverage_percentage > 80.0:
+                    logger.info(f"Using existing data for {symbol} - sufficient coverage ({coverage_percentage:.1f}%)")
+                    # Cache the data
+                    self.data_cache[symbol] = existing_data
+                    return existing_data
+                else:
+                    logger.info(f"Existing data coverage insufficient ({coverage_percentage:.1f}%), downloading fresh data...")
+            else:
+                logger.info(f"No existing data or insufficient data for {symbol} (found {len(existing_data) if existing_data is not None else 0} points), downloading...")
             
             # Get minute bars from Polygon using date range with pagination
             bars = []
