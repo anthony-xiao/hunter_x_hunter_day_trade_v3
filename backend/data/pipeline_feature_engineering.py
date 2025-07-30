@@ -160,11 +160,24 @@ class FeatureEngineer:
                 if pd.isna(timestamp):
                     continue
                 
-                # Convert timestamp to datetime if needed
+                # Convert timestamp to datetime if needed, preserving UTC timezone
                 if hasattr(timestamp, 'to_pydatetime'):
                     timestamp = timestamp.to_pydatetime()
+                    # Ensure timestamp is in UTC to match market data storage
+                    if timestamp.tzinfo is None:
+                        # If no timezone info, assume UTC (pandas default for market data)
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    elif timestamp.tzinfo != timezone.utc:
+                        # Convert to UTC if in different timezone
+                        timestamp = timestamp.astimezone(timezone.utc)
                 elif not isinstance(timestamp, datetime):
                     continue
+                else:
+                    # Ensure existing datetime objects are also in UTC
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    elif timestamp.tzinfo != timezone.utc:
+                        timestamp = timestamp.astimezone(timezone.utc)
                 
                 # Always include basic OHLCV data to ensure cached features are available
                 features = {}

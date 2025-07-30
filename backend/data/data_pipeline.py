@@ -49,7 +49,7 @@ class DataPipeline:
         
         # Trading universe
         self.trading_universe = [
-            'AAPL', 'NVDA'
+            'AAPL'
             # Technology
             # 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META',
             # Biotechnology
@@ -339,6 +339,16 @@ class DataPipeline:
         try:
             with self.Session() as session:
                 for timestamp, row in df.iterrows():
+                    # Ensure timestamp is in UTC timezone for consistency
+                    if hasattr(timestamp, 'to_pydatetime'):
+                        timestamp = timestamp.to_pydatetime()
+                    
+                    if isinstance(timestamp, datetime):
+                        if timestamp.tzinfo is None:
+                            timestamp = timestamp.replace(tzinfo=timezone.utc)
+                        elif timestamp.tzinfo != timezone.utc:
+                            timestamp = timestamp.astimezone(timezone.utc)
+                    
                     session.execute(text("""
                         INSERT INTO market_data 
                         (symbol, timestamp, open, high, low, close, volume, vwap, transactions)
