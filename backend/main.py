@@ -380,7 +380,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 @app.get("/health/detailed")
@@ -388,7 +388,7 @@ async def detailed_health_check():
     """Detailed health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "trading_active": trading_active,
         "components": {
             "data_pipeline": data_pipeline is not None,

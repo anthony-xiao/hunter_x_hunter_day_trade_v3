@@ -759,7 +759,7 @@ class ExecutionEngine:
     async def _get_volatility_primary(self, symbol: str) -> Optional[float]:
         """Get volatility from primary data source (Polygon)"""
         try:
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=30)
             
             # Get daily bars from Polygon
@@ -797,7 +797,7 @@ class ExecutionEngine:
             
             with Session() as session:
                 # Get last 30 days of market data
-                end_date = datetime.now()
+                end_date = datetime.now(timezone.utc)
                 start_date = end_date - timedelta(days=30)
                 
                 result = session.execute(text("""
@@ -878,7 +878,7 @@ class ExecutionEngine:
                 return True
             
             # Get recent volume data from Polygon
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=5)
             
             bars = self.polygon_client.get_aggs(
