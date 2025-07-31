@@ -135,7 +135,7 @@ class TradingOrchestrator:
             logger.info(f"Calculated required lookback period: {required_lookback_minutes} minutes")
             
             # Calculate bootstrap time window
-            end_time = datetime.now()
+            end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(minutes=required_lookback_minutes)
             
             logger.info(f"Bootstrapping historical data from {start_time} to {end_time} for {len(trading_symbols)} symbols")

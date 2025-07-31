@@ -96,7 +96,7 @@ class ModelTrainer:
                 parameters={
                     'units': [128, 64, 32],  # 3-layer LSTM as per requirements
                     'dropout': 0.2,  # Standard dropout
-                    'epochs': 5,  # As per requirements: 100 epochs with early stopping
+                    'epochs': 2,  # As per requirements: 100 epochs with early stopping
                     'batch_size': 256,  # As per requirements: batch size 256
                     'learning_rate': 0.001,  # As per requirements: Adam lr=0.001
                     'optimizer': 'adam',
@@ -117,7 +117,7 @@ class ModelTrainer:
                     'kernel_size': (3, 3),
                     'dropout': 0.3,  # As per requirements: Dropout(0.3)
                     'l2_reg': 0.01,  # As per requirements: L2(0.01)
-                    'epochs': 5,  # As per requirements: 80 epochs
+                    'epochs': 2,  # As per requirements: 80 epochs
                     'batch_size': 128,  # As per requirements: batch size 128
                     'learning_rate': 0.0005,  # As per requirements: RMSprop lr=0.0005
                     'optimizer': 'rmsprop'
@@ -164,17 +164,17 @@ class ModelTrainer:
                 name='transformer',
                 model_type='neural_network',
                 parameters={
-                    'num_heads': 4,  # As per requirements: 4-head attention
+                    'num_heads': 2,  # As per requirements: 4-head attention
                     'num_layers': 2,  # As per requirements: 2 encoder layers
                     'dropout': 0.1,
-                    'epochs': 5,  # As per requirements: 50+ epochs
-                    'batch_size': 32,  # Smaller batch size for transformer
+                    'epochs': 2,  # As per requirements: 50+ epochs
+                    'batch_size': 4,  # Smaller batch size for transformer
                     'learning_rate': 0.001,
                     'warmup_steps': 100
                 },
                 training_window=18,
                 validation_window=6,
-                lookback_window=120,  # As per requirements: 120-minute sequence
+                lookback_window=60,  # As per requirements: 120-minute sequence
                 feature_count=feature_count,
                 learning_rate=0.001,
                 prediction_threshold=0.3

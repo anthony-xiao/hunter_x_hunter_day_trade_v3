@@ -210,12 +210,16 @@ class DataPipeline:
             logger.info(f"Fetching data for {symbol} from Polygon API...")
             
             try:
+                # Convert datetime to millisecond timestamps for precise time windows
+                start_timestamp_ms = int(start_date.timestamp() * 1000)
+                end_timestamp_ms = int(end_date.timestamp() * 1000)
+                
                 for agg in self.polygon_client.list_aggs(
                     ticker=symbol,
                     multiplier=1,
                     timespan="minute",
-                    from_=start_date.strftime("%Y-%m-%d"),
-                    to=end_date.strftime("%Y-%m-%d"),
+                    from_=start_timestamp_ms,
+                    to=end_timestamp_ms,
                     limit=50000
                 ):
                     bars.append(MarketData(
@@ -245,8 +249,8 @@ class DataPipeline:
                     ticker=symbol,
                     multiplier=1,
                     timespan="minute",
-                    from_=start_date.strftime("%Y-%m-%d"),
-                    to=end_date.strftime("%Y-%m-%d"),
+                    from_=start_timestamp_ms,
+                    to=end_timestamp_ms,
                     limit=50000
                 )
                 
