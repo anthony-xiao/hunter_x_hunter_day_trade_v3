@@ -772,10 +772,48 @@ class SignalGenerator:
                 confidence = min(0.9, 0.5 + abs(prediction) * 0.4)  # Higher confidence for stronger predictions
                 
             elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST]:
-                # Sklearn-style models - flatten features
-                features_flat = features.reshape(1, -1)
-                logger.debug(f"Flattened features shape for {model_type.value}: {features_flat.shape}")
-                prediction = model.predict(features_flat)[0]
+                # Sklearn-style models - use only latest features (no time sequence)
+                # Random Forest and XGBoost were trained with lookback_window=1
+                if len(features.shape) > 1:
+                    # Use only the latest row of features
+                    latest_features = features[-1:].reshape(1, -1)
+                else:
+                    # Already flattened
+                    latest_features = features.reshape(1, -1)
+                
+                # Get expected feature count from model configuration
+                model_name = model_type.value.lower()
+                if hasattr(self, 'model_configs') and model_name in self.model_configs:
+                    config_feature_count = self.model_configs[model_name].get('feature_count', 30)
+                else:
+                    # Default feature counts based on training metadata
+                    config_feature_count = 164 if model_type == ModelType.RANDOM_FOREST else 30
+                
+                # XGBoost model file expects 164 features despite being trained with 30
+                # This is due to the model being saved with the full feature space
+                if model_type == ModelType.XGBOOST:
+                    expected_features = 164  # Model file expects 164 features
+                else:
+                    expected_features = config_feature_count
+                
+                current_features = latest_features.shape[1]
+                
+                if current_features != expected_features:
+                    if current_features > expected_features:
+                        # Select top features by variance if we have too many
+                        if len(features.shape) > 1:
+                            feature_variances = np.var(features, axis=0)
+                            top_indices = np.argsort(feature_variances)[-expected_features:]
+                            latest_features = features[-1, top_indices].reshape(1, -1)
+                        else:
+                            latest_features = latest_features[:, :expected_features]
+                    else:
+                        # Pad with zeros if we have fewer features
+                        padding = np.zeros((1, expected_features - current_features))
+                        latest_features = np.concatenate([latest_features, padding], axis=1)
+                
+                logger.debug(f"Features shape for {model_type.value}: {latest_features.shape} (expected: {expected_features})")
+                prediction = model.predict(latest_features)[0]
                 
                 # Calculate confidence based on feature importance and prediction strength
                 if hasattr(model, 'feature_importances_'):
