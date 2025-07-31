@@ -602,8 +602,7 @@ class TradingOrchestrator:
                 position_size = risk_adjusted_signal.quantity
             
             success = await self.execution_engine.execute_signal(
-                signal=risk_adjusted_signal,
-                position_size=position_size
+                signal=risk_adjusted_signal
             )
             
             if success:
