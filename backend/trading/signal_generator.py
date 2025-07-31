@@ -702,18 +702,56 @@ class SignalGenerator:
             actual_feature_count = features.shape[1] if len(features.shape) > 1 else features.shape[0]
             
             if model_type == ModelType.CNN:
-                # CNN model - expects 3D input (batch_size, time_steps, features) for 1D CNN
+                # CNN model - expects 4D input (batch_size, height, width, channels) for 2D CNN
+                # The trained model architecture: Conv2D(32,(3,3)) + MaxPool(2,2) + Conv2D(64,(3,3)) + MaxPool(2,2) + Flatten()
+                # Dense layer expects 14976 features = 64 * 39 * 6 (calculated from conv/pool operations)
+                # Working backwards: final size after flatten should be 64 * 39 * 6 = 14976
+                # This means input should be reshaped to (1, 80, 26, 1) to produce this output
+                
                 time_steps = features.shape[0]
                 
-                # Reshape features to match 1D CNN expectations
+                # CNN model was trained with ACTUAL input shape (30, 164, 1) based on training logs:
+                # X_train.shape = (274171, 30, 164) - discovered from log analysis
+                # CNN architecture: Conv2D(32,(3,3)) -> MaxPool(2,2) -> Conv2D(64,(3,3)) -> MaxPool(2,2) -> Flatten()
+                # 
+                # Calculating actual dense layer input size:
+                # Input: (30, 164, 1)
+                # After Conv2D(32,(3,3)): (30-3+1, 164-3+1) = (28, 162)
+                # After MaxPool(2,2): (28//2, 162//2) = (14, 81)
+                # After Conv2D(64,(3,3)): (14-3+1, 81-3+1) = (12, 79)
+                # After MaxPool(2,2): (12//2, 79//2) = (6, 39)
+                # After Flatten(): 64 * 6 * 39 = 14976 features ✓
+                #
+                # This matches the expected 14976 features from the error message.
+                required_height = 30   # Match actual training lookback_window
+                required_width = 164   # Match actual training feature_count (not config value)
+                
                 if len(features.shape) == 2:
                     # Features are in (time_steps, features) format
-                    model_input = features.reshape(1, time_steps, actual_feature_count)
+                    # Pad or truncate to match required dimensions
+                    if time_steps >= required_height and actual_feature_count >= required_width:
+                        # Truncate to required size
+                        resized_features = features[:required_height, :required_width]
+                    else:
+                        # Pad with zeros to required size
+                        resized_features = np.zeros((required_height, required_width))
+                        h_end = min(time_steps, required_height)
+                        w_end = min(actual_feature_count, required_width)
+                        resized_features[:h_end, :w_end] = features[:h_end, :w_end]
+                    
+                    model_input = resized_features.reshape(1, required_height, required_width, 1)
                 else:
-                    # Features might be flattened, reshape appropriately
-                    model_input = features.reshape(1, time_steps, -1)
+                    # Features might be flattened, reshape to required dimensions
+                    total_features = required_height * required_width
+                    if features.size >= total_features:
+                        model_input = features.flatten()[:total_features].reshape(1, required_height, required_width, 1)
+                    else:
+                        # Pad with zeros if insufficient features
+                        padded_features = np.zeros(total_features)
+                        padded_features[:features.size] = features.flatten()
+                        model_input = padded_features.reshape(1, required_height, required_width, 1)
                 
-                logger.debug(f"CNN model input shape: {model_input.shape}")
+                logger.debug(f"CNN model input shape (4D for Conv2D): {model_input.shape}")
                 prediction = model.predict(model_input, verbose=0)[0][0]
                 confidence = min(0.9, 0.5 + abs(prediction) * 0.4)  # Higher confidence for stronger predictions
                 
