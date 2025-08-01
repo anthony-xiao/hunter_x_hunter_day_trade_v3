@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from loguru import logger
 import pandas as pd
+import pytz
 
 from data.polygon_websocket import RealTimeData, PolygonWebSocketManager
 from data.data_pipeline import DataPipeline
@@ -61,6 +62,11 @@ class TradingOrchestrator:
         self.is_running = False
         self.orchestrator_task: Optional[asyncio.Task] = None
         self.polling_task: Optional[asyncio.Task] = None
+        self.eod_liquidation_task: Optional[asyncio.Task] = None
+        
+        # End-of-day liquidation settings
+        self.eod_liquidation_enabled = True
+        self.eod_liquidation_minutes_before_close = 10  # Close positions 10 minutes before market close
         
     async def initialize(self, 
                         websocket_manager: PolygonWebSocketManager,
@@ -115,6 +121,11 @@ class TradingOrchestrator:
             if self.enable_polling_backup:
                 self.polling_task = asyncio.create_task(self._polling_backup_loop())
                 logger.info("Started polling backup system")
+            
+            # Start end-of-day liquidation scheduler if enabled
+            if self.eod_liquidation_enabled:
+                self.eod_liquidation_task = asyncio.create_task(self._eod_liquidation_scheduler())
+                logger.info("Started end-of-day liquidation scheduler")
             
             logger.info(f"Event-driven trading orchestrator started for {len(trading_symbols)} symbols with data bootstrap complete")
             
@@ -220,6 +231,14 @@ class TradingOrchestrator:
                 self.polling_task.cancel()
                 try:
                     await self.polling_task
+                except asyncio.CancelledError:
+                    pass
+            
+            # Cancel end-of-day liquidation task
+            if self.eod_liquidation_task and not self.eod_liquidation_task.done():
+                self.eod_liquidation_task.cancel()
+                try:
+                    await self.eod_liquidation_task
                 except asyncio.CancelledError:
                     pass
             
@@ -691,6 +710,48 @@ class TradingOrchestrator:
         self.signals_generated = 0
         self.trades_executed = 0
         logger.info("Trading orchestrator statistics reset")
+    
+    async def _eod_liquidation_scheduler(self):
+        """End-of-day liquidation scheduler that runs continuously"""
+        logger.info("End-of-day liquidation scheduler started")
+        
+        while self.is_running:
+            try:
+                # Check if we need to perform end-of-day liquidation
+                if await self._should_perform_eod_liquidation():
+                    logger.info("Triggering end-of-day liquidation")
+                    
+                    if self.execution_engine:
+                        success = await self.execution_engine.close_all_positions_eod()
+                        if success:
+                            logger.info("End-of-day liquidation completed successfully")
+                        else:
+                            logger.error("End-of-day liquidation failed")
+                    else:
+                        logger.error("Cannot perform end-of-day liquidation: execution_engine not available")
+                    
+                    # Sleep for 5 minutes after liquidation to avoid repeated triggers
+                    await asyncio.sleep(300)
+                else:
+                    # Check every minute when not near market close
+                    await asyncio.sleep(60)
+                    
+            except Exception as e:
+                logger.error(f"Error in end-of-day liquidation scheduler: {e}")
+                await asyncio.sleep(60)
+    
+    async def _should_perform_eod_liquidation(self) -> bool:
+        """Check if end-of-day liquidation should be performed"""
+        try:
+            if not self.execution_engine:
+                return False
+            
+            # Use execution engine's market clock functionality
+            return self.execution_engine.is_market_near_close(self.eod_liquidation_minutes_before_close)
+            
+        except Exception as e:
+            logger.error(f"Error checking if EOD liquidation should be performed: {e}")
+            return False
 
 # Global orchestrator instance
 orchestrator = TradingOrchestrator()

@@ -1328,12 +1328,16 @@ class SignalGenerator:
     async def _log_signal(self, signal: TradeSignal, ensemble_pred: EnsemblePrediction) -> None:
         """Log signal details"""
         try:
+            # Convert ModelType enum keys to string values for JSON serialization
+            ensemble_weights = self.ensemble_weights.get(signal.symbol, {})
+            serializable_weights = {model_type.value: weight for model_type, weight in ensemble_weights.items()}
+            
             signal_log = {
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'signal': asdict(signal),
                 'ensemble_prediction': asdict(ensemble_pred),
                 'market_regime': asdict(self.current_market_regime) if self.current_market_regime else None,
-                'ensemble_weights': self.ensemble_weights.get(signal.symbol, {})
+                'ensemble_weights': serializable_weights
             }
             
             # Save to file
