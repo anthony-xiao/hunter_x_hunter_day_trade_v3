@@ -207,12 +207,28 @@ class SignalGenerator:
             'williams_r', 'atr', 'cci', 'mfi', 'obv', 'ad_line'
         ]
         
-        # Signal generation parameters
+        # Signal generation parameters - Enhanced with lower thresholds
         self.signal_thresholds = {
-            'buy_threshold': 0.6,
-            'sell_threshold': -0.6,
-            'strong_buy_threshold': 0.8,
-            'strong_sell_threshold': -0.8
+            'buy_threshold': 0.4,
+            'sell_threshold': -0.4,
+            'strong_buy_threshold': 0.6,
+            'strong_sell_threshold': -0.6
+        }
+        
+        # Market-based sell signal parameters
+        self.market_sell_conditions = {
+            'rsi_overbought': 70,
+            'rsi_oversold': 30,
+            'high_volatility_threshold': 0.25,  # 25% annualized volatility
+            'market_stress_threshold': 0.7,     # Market stress level
+            'volume_spike_threshold': 2.0       # 2x average volume
+        }
+        
+        # Time-based sell signal parameters
+        self.time_sell_conditions = {
+            'max_holding_hours': 4,              # Maximum 4 hours for intraday
+            'force_sell_minutes_before_close': 10,  # Force sell 10 min before close (aligned with EOD liquidation)
+            'position_age_warning_hours': 3      # Warning at 3 hours
         }
         
         # Model update frequency (in hours)
@@ -541,8 +557,8 @@ class SignalGenerator:
                 ensemble_pred = await self._generate_ensemble_prediction(symbol, data)
                 
                 if ensemble_pred:
-                    # Convert prediction to signal
-                    signal = await self._prediction_to_signal(ensemble_pred)
+                    # Convert prediction to signal with market data and positions
+                    signal = await self._prediction_to_signal(ensemble_pred, data, None)
                     
                     if signal:
                         signals.append(signal)
@@ -599,8 +615,8 @@ class SignalGenerator:
             ensemble_pred = await self._generate_ensemble_prediction(symbol, features_df)
             
             if ensemble_pred:
-                # Convert prediction to signal
-                signal = await self._prediction_to_signal(ensemble_pred)
+                # Convert prediction to signal with features data and positions
+                signal = await self._prediction_to_signal(ensemble_pred, features_df, None)
                 
                 if signal:
                     # Log signal
@@ -851,14 +867,34 @@ class SignalGenerator:
 
             # Sort by timestamp and convert to DataFrame
             sorted_timestamps = sorted(cached_features.keys())
+            
+            # DEBUG: Log total input
+            logger.debug(f"[DEBUG] {symbol}: Processing {len(cached_features)} cached feature records")
+            logger.debug(f"[DEBUG] {symbol}: Timestamp range: {sorted_timestamps[0]} to {sorted_timestamps[-1]}")
 
             # Extract OHLCV data and engineered features
             rows = []
-            for timestamp in sorted_timestamps:
+            fallback_rows = []  # For records with only engineered features
+            last_close_price = None  # Track last known close price for synthesis
+            
+            # DEBUG: Track processing stats
+            complete_ohlcv_count = 0
+            engineered_only_count = 0
+            skipped_count = 0
+            
+            for i, timestamp in enumerate(sorted_timestamps):
                 features = cached_features[timestamp]
+                
+                # DEBUG: Log first few records in detail
+                if i < 3:
+                    logger.debug(f"[DEBUG] {symbol}: Record {i+1} at {timestamp}:")
+                    ohlcv_present = [key for key in ['open', 'high', 'low', 'close', 'volume'] if key in features]
+                    logger.debug(f"[DEBUG] {symbol}: OHLCV present: {ohlcv_present}")
 
-                # Ensure we have basic OHLCV data
+                # Primary path: Ensure we have basic OHLCV data
                 if all(key in features for key in ['open', 'high', 'low', 'close', 'volume']):
+                    complete_ohlcv_count += 1
+                    
                     row = {
                         'timestamp': timestamp,
                         'open': features['open'],
@@ -867,6 +903,7 @@ class SignalGenerator:
                         'close': features['close'],
                         'volume': features['volume']
                     }
+                    last_close_price = features['close']  # Update last known close
 
                     # Add Polygon WebSocket fields if available
                     for field in ['vwap', 'transactions', 'accumulated_volume']:
@@ -875,39 +912,121 @@ class SignalGenerator:
 
                     # Add all other engineered features (only numeric values)
                     exclude_keys = {'timestamp', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions', 'accumulated_volume'}
+                    engineered_added = 0
                     for key, value in features.items():
                         if key not in exclude_keys and not pd.isna(value):
                             # Only include numeric values, skip strings like symbol names
                             try:
                                 float(value)  # Test if value can be converted to float
                                 row[key] = value
+                                engineered_added += 1
                             except (ValueError, TypeError):
                                 # Skip non-numeric values like symbol names
                                 continue
+                    
+                    # DEBUG: Log engineered features added
+                    if i < 3:
+                        logger.debug(f"[DEBUG] {symbol}: Added {engineered_added} engineered features to complete OHLCV record")
 
                     rows.append(row)
+                    
+                # Fallback path: Handle engineered-only features when OHLCV is missing
+                else:
+                    # Check if we have any engineered features
+                    engineered_features = {}
+                    exclude_keys = {'timestamp', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions', 'accumulated_volume'}
+                    
+                    for key, value in features.items():
+                        if key not in exclude_keys and not pd.isna(value):
+                            try:
+                                float(value)  # Test if value can be converted to float
+                                engineered_features[key] = value
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    # If we have engineered features, create a fallback row
+                    if engineered_features:
+                        engineered_only_count += 1
+                        
+                        # DEBUG: Log engineered-only record details
+                        if i < 3:
+                            logger.debug(f"[DEBUG] {symbol}: Engineered-only record with {len(engineered_features)} features: {list(engineered_features.keys())[:10]}...")
+                        
+                        # Synthesize basic OHLCV using last known close or reasonable defaults
+                        synthetic_close = last_close_price if last_close_price is not None else 100.0
+                        
+                        fallback_row = {
+                            'timestamp': timestamp,
+                            'open': synthetic_close,
+                            'high': synthetic_close,
+                            'low': synthetic_close,
+                            'close': synthetic_close,
+                            'volume': 1000  # Minimal volume
+                        }
+                        
+                        # Add the engineered features
+                        fallback_row.update(engineered_features)
+                        fallback_rows.append(fallback_row)
+                    else:
+                        skipped_count += 1
+                        # DEBUG: Log why record was skipped
+                        if i < 3:
+                            logger.debug(f"[DEBUG] {symbol}: Skipped record - no OHLCV and no valid engineered features")
 
-            if not rows:
+            # DEBUG: Log processing summary
+            logger.debug(f"[DEBUG] {symbol}: Processing summary:")
+            logger.debug(f"[DEBUG] {symbol}: - Complete OHLCV records: {complete_ohlcv_count}")
+            logger.debug(f"[DEBUG] {symbol}: - Engineered-only records: {engineered_only_count}")
+            logger.debug(f"[DEBUG] {symbol}: - Skipped records: {skipped_count}")
+            logger.debug(f"[DEBUG] {symbol}: - Total processed: {complete_ohlcv_count + engineered_only_count}")
+
+            # Combine primary and fallback rows
+            all_rows = rows + fallback_rows
+            
+            if not all_rows:
                 logger.warning(f"No valid feature rows found for {symbol}")
                 return None
 
+            # Log fallback usage
+            if fallback_rows:
+                logger.info(f"Using fallback mode for {symbol}: {len(rows)} complete OHLCV records + {len(fallback_rows)} engineered-only records")
+
             # Create DataFrame with timestamp index
-            df = pd.DataFrame(rows)
+            df = pd.DataFrame(all_rows)
             df.set_index('timestamp', inplace=True)
             df.sort_index(inplace=True)
 
+            # DEBUG: Log DataFrame creation details
+            logger.debug(f"[DEBUG] {symbol}: Created DataFrame with {len(df)} rows and {len(df.columns)} columns")
+            logger.debug(f"[DEBUG] {symbol}: Column names: {list(df.columns)[:20]}...")
+
             # Ensure all columns are numeric (convert to float, coerce errors to NaN)
+            numeric_conversion_failures = []
             for col in df.columns:
+                original_dtype = df[col].dtype
                 df[col] = pd.to_numeric(df[col], errors='coerce')
+                if df[col].isna().all():
+                    numeric_conversion_failures.append(col)
+
+            # DEBUG: Log numeric conversion issues
+            if numeric_conversion_failures:
+                logger.debug(f"[DEBUG] {symbol}: Numeric conversion failed for columns: {numeric_conversion_failures}")
 
             # Drop columns that are all NaN (failed numeric conversion)
+            columns_before_drop = len(df.columns)
             df = df.dropna(axis=1, how='all')
+            columns_after_drop = len(df.columns)
+            
+            if columns_before_drop != columns_after_drop:
+                logger.debug(f"[DEBUG] {symbol}: Dropped {columns_before_drop - columns_after_drop} all-NaN columns")
 
             logger.debug(f"Converted {len(df)} cached feature records to DataFrame for {symbol} with {len(df.columns)} numeric features")
             return df
 
         except Exception as e:
             logger.error(f"Error converting cached features to DataFrame for {symbol}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     async def _update_market_regime_from_features(self, features_data: Dict[str, pd.DataFrame]) -> None:
@@ -964,15 +1083,51 @@ class SignalGenerator:
     async def _prepare_features(self, symbol: str, data: pd.DataFrame, model_type: ModelType = None, feature_count: int = None) -> Optional[np.ndarray]:
         """Prepare features for model prediction using cached engineered features with model-specific filtering"""
         try:
-            # Determine minimum required periods based on available data
-            min_periods = min(60, max(10, len(data)))  # Adaptive minimum periods
+            # Determine minimum required periods based on model type
+            if model_type == ModelType.TRANSFORMER:
+                # Transformer model requires exactly 60 timesteps
+                required_periods = 60
+                min_periods = 60
+            elif model_type == ModelType.LSTM:
+                # LSTM model requires exactly 60 timesteps
+                required_periods = 60
+                min_periods = 60
+            elif model_type == ModelType.CNN:
+                # CNN model requires exactly 30 timesteps
+                required_periods = 30
+                min_periods = 30
+            else:
+                # For other models (Random Forest, XGBoost), use adaptive minimum periods
+                min_periods = min(60, max(10, len(data)))
+                required_periods = min_periods
             
-            if len(data) < min_periods:
-                logger.warning(f"Insufficient data for {symbol}: {len(data)} < {min_periods}")
-                return None
+            # For sequence models with padding capability, allow smaller datasets
+            if model_type not in [ModelType.TRANSFORMER, ModelType.LSTM, ModelType.CNN]:
+                if len(data) < min_periods:
+                    logger.warning(f"Insufficient data for {symbol} and {model_type}: {len(data)} < {min_periods}")
+                    return None
+            else:
+                # For sequence models, we need at least 1 row to pad from
+                if len(data) < 1:
+                    logger.warning(f"No data available for {symbol} and {model_type}")
+                    return None
             
-            # Use the available data (up to last 60 periods)
-            recent_data = data.tail(min_periods).copy()
+            # Use the available data based on model requirements
+            if model_type in [ModelType.TRANSFORMER, ModelType.LSTM, ModelType.CNN]:
+                # For sequence models, ensure we have exactly the required number of periods
+                if len(data) >= required_periods:
+                    recent_data = data.tail(required_periods).copy()
+                else:
+                    # Pad with the first available row if we don't have enough data
+                    recent_data = data.copy()
+                    first_row = recent_data.iloc[0:1]
+                    padding_needed = required_periods - len(recent_data)
+                    padding_data = pd.concat([first_row] * padding_needed, ignore_index=True)
+                    recent_data = pd.concat([padding_data, recent_data], ignore_index=True).tail(required_periods)
+                    logger.debug(f"Padded {padding_needed} rows for {model_type} model for {symbol}")
+            else:
+                # For non-sequence models, use adaptive periods
+                recent_data = data.tail(min_periods).copy()
             
             # Exclude non-feature columns and ensure all columns are numeric
             exclude_columns = {'timestamp'}
@@ -1188,8 +1343,8 @@ class SignalGenerator:
         except Exception as e:
             logger.error(f"Error updating market regime: {e}")
     
-    async def _prediction_to_signal(self, ensemble_pred: EnsemblePrediction) -> Optional[TradeSignal]:
-        """Convert ensemble prediction to trading signal"""
+    async def _prediction_to_signal(self, ensemble_pred: EnsemblePrediction, market_data: pd.DataFrame = None, current_positions: Dict = None) -> Optional[TradeSignal]:
+        """Convert ensemble prediction to trading signal with enhanced sell logic"""
         try:
             # Apply risk filters
             if not await self._apply_risk_filters(ensemble_pred):
@@ -1197,47 +1352,80 @@ class SignalGenerator:
             
             prediction = ensemble_pred.final_prediction
             confidence = ensemble_pred.confidence
+            symbol = ensemble_pred.symbol
             
-            # Determine action based on prediction and thresholds
-            if prediction >= self.signal_thresholds['strong_buy_threshold']:
-                action = SignalType.BUY.value
-                signal_strength = "strong"
-            elif prediction >= self.signal_thresholds['buy_threshold']:
-                action = SignalType.BUY.value
-                signal_strength = "moderate"
-            elif prediction <= self.signal_thresholds['strong_sell_threshold']:
+            # Check for forced sell conditions first (market-based and time-based)
+            force_sell = False
+            force_sell_reason = ""
+            
+            if market_data is not None:
+                force_sell, force_sell_reason = await self._should_force_sell_signal(
+                    symbol, market_data, current_positions
+                )
+            
+            # If forced sell conditions are met, override prediction
+            if force_sell:
                 action = SignalType.SELL.value
-                signal_strength = "strong"
-            elif prediction <= self.signal_thresholds['sell_threshold']:
-                action = SignalType.SELL.value
-                signal_strength = "moderate"
+                signal_strength = "forced"
+                # Boost confidence for forced sells to ensure execution
+                confidence = min(confidence * 1.2, 0.95)
+                predicted_return = -0.02  # Expect small loss to avoid larger loss
+                logger.info(f"Forced sell signal for {symbol}: {force_sell_reason}")
             else:
-                action = SignalType.HOLD.value
-                signal_strength = "weak"
+                # Normal prediction-based signal generation with enhanced thresholds
+                if prediction >= self.signal_thresholds['strong_buy_threshold']:
+                    action = SignalType.BUY.value
+                    signal_strength = "strong"
+                elif prediction >= self.signal_thresholds['buy_threshold']:
+                    action = SignalType.BUY.value
+                    signal_strength = "moderate"
+                elif prediction <= self.signal_thresholds['strong_sell_threshold']:
+                    action = SignalType.SELL.value
+                    signal_strength = "strong"
+                elif prediction <= self.signal_thresholds['sell_threshold']:
+                    action = SignalType.SELL.value
+                    signal_strength = "moderate"
+                else:
+                    action = SignalType.HOLD.value
+                    signal_strength = "weak"
+                
+                # Skip weak signals
+                if action == SignalType.HOLD.value:
+                    return None
+                
+                # Calculate predicted return
+                predicted_return = prediction * 0.05  # Scale to reasonable return expectation
             
-            # Skip weak signals
-            if action == SignalType.HOLD.value:
-                return None
+            # Enhanced signal with additional metadata
+            model_predictions = {
+                pred.model_type.value: pred.prediction 
+                for pred in ensemble_pred.individual_predictions
+            }
             
-            # Calculate predicted return
-            predicted_return = prediction * 0.05  # Scale to reasonable return expectation
+            # Add force sell information to model predictions for tracking
+            if force_sell:
+                model_predictions['force_sell_reason'] = force_sell_reason
             
             # Create signal
             signal = TradeSignal(
-                symbol=ensemble_pred.symbol,
+                symbol=symbol,
                 action=action,
                 confidence=confidence,
                 predicted_return=predicted_return,
                 risk_score=ensemble_pred.risk_score,
                 timestamp=datetime.now(),
-                model_predictions={
-                    pred.model_type.value: pred.prediction 
-                    for pred in ensemble_pred.individual_predictions
-                }
+                model_predictions=model_predictions
             )
             
             # Store signal history
-            self.signal_history[ensemble_pred.symbol].append(signal)
+            self.signal_history[symbol].append(signal)
+            
+            # Log enhanced signal information
+            logger.info(f"Generated {signal_strength} {action} signal for {symbol} "
+                       f"(confidence: {confidence:.3f}, prediction: {prediction:.3f})")
+            
+            if force_sell:
+                logger.warning(f"FORCED SELL: {symbol} - {force_sell_reason}")
             
             return signal
             
@@ -1276,6 +1464,145 @@ class SignalGenerator:
         except Exception as e:
             logger.error(f"Error applying risk filters: {e}")
             return False
+    
+    async def _check_market_based_sell_conditions(self, symbol: str, data: pd.DataFrame) -> Tuple[bool, str]:
+        """Check market-based conditions that should trigger sell signals
+        
+        Returns:
+            Tuple[bool, str]: (should_sell, reason)
+        """
+        try:
+            if len(data) < 20:
+                return False, "insufficient_data"
+            
+            # Calculate RSI for overbought/oversold conditions
+            close_prices = data['close'].tail(14).values
+            if len(close_prices) >= 14:
+                gains = np.where(np.diff(close_prices) > 0, np.diff(close_prices), 0)
+                losses = np.where(np.diff(close_prices) < 0, -np.diff(close_prices), 0)
+                
+                avg_gain = np.mean(gains) if len(gains) > 0 else 0
+                avg_loss = np.mean(losses) if len(losses) > 0 else 0
+                
+                if avg_loss > 0:
+                    rs = avg_gain / avg_loss
+                    rsi = 100 - (100 / (1 + rs))
+                    
+                    # RSI overbought condition (sell signal)
+                    if rsi > self.market_sell_conditions['rsi_overbought']:
+                        return True, f"rsi_overbought_{rsi:.1f}"
+                    
+                    # RSI oversold condition (avoid new sells, but don't force buy)
+                    if rsi < self.market_sell_conditions['rsi_oversold']:
+                        return False, f"rsi_oversold_{rsi:.1f}"
+            
+            # Check volatility conditions
+            returns = data['close'].pct_change().dropna().tail(20)
+            if len(returns) > 5:
+                volatility = returns.std() * np.sqrt(252)  # Annualized volatility
+                if volatility > self.market_sell_conditions['high_volatility_threshold']:
+                    return True, f"high_volatility_{volatility:.3f}"
+            
+            # Check volume spike conditions
+            if 'volume' in data.columns and len(data) >= 20:
+                recent_volume = data['volume'].tail(5).mean()
+                avg_volume = data['volume'].tail(20).mean()
+                if avg_volume > 0 and recent_volume / avg_volume > self.market_sell_conditions['volume_spike_threshold']:
+                    return True, f"volume_spike_{recent_volume/avg_volume:.1f}x"
+            
+            # Check market regime stress
+            if (self.current_market_regime and 
+                self.current_market_regime.market_stress > self.market_sell_conditions['market_stress_threshold']):
+                return True, f"market_stress_{self.current_market_regime.market_stress:.2f}"
+            
+            return False, "no_market_sell_conditions"
+            
+        except Exception as e:
+            logger.error(f"Error checking market-based sell conditions for {symbol}: {e}")
+            return False, "error_checking_conditions"
+    
+    async def _check_time_based_sell_conditions(self, symbol: str, current_positions: Dict = None) -> Tuple[bool, str]:
+        """Check time-based conditions that should trigger sell signals
+        
+        Args:
+            symbol: Symbol to check
+            current_positions: Current positions from execution engine
+            
+        Returns:
+            Tuple[bool, str]: (should_sell, reason)
+        """
+        try:
+            if not current_positions or symbol not in current_positions:
+                return False, "no_position"
+            
+            position = current_positions[symbol]
+            current_time = datetime.now(timezone.utc)
+            
+            # Check if position has entry_time
+            if not hasattr(position, 'entry_time') or not position.entry_time:
+                return False, "no_entry_time"
+            
+            # Calculate holding time
+            holding_time = current_time - position.entry_time
+            holding_hours = holding_time.total_seconds() / 3600
+            
+            # Force sell if held too long (max 4 hours for intraday)
+            if holding_hours > self.time_sell_conditions['max_holding_hours']:
+                return True, f"max_holding_time_{holding_hours:.1f}h"
+            
+            # Check if we're near market close (force sell 30 minutes before)
+            try:
+                # Import here to avoid circular imports
+                from execution_engine import ExecutionEngine
+                
+                # Check if we're near market close
+                if hasattr(ExecutionEngine, 'is_market_near_close'):
+                    # This would need to be called on an instance, but for now we'll use a simple time check
+                    # In a real implementation, you'd pass the execution engine instance
+                    pass
+                
+                # Simple time-based check for market close (4 PM ET = 9 PM UTC)
+                market_close_time = current_time.replace(hour=21, minute=0, second=0, microsecond=0)
+                force_sell_time = market_close_time - timedelta(minutes=self.time_sell_conditions['force_sell_minutes_before_close'])
+                
+                if current_time >= force_sell_time:
+                    return True, "approaching_market_close"
+                    
+            except Exception as time_check_error:
+                logger.debug(f"Could not check market close time: {time_check_error}")
+            
+            # Warning for positions approaching max holding time
+            if holding_hours > self.time_sell_conditions['position_age_warning_hours']:
+                logger.info(f"Position {symbol} held for {holding_hours:.1f} hours - approaching max holding time")
+            
+            return False, f"holding_time_ok_{holding_hours:.1f}h"
+            
+        except Exception as e:
+            logger.error(f"Error checking time-based sell conditions for {symbol}: {e}")
+            return False, "error_checking_time_conditions"
+    
+    async def _should_force_sell_signal(self, symbol: str, data: pd.DataFrame, current_positions: Dict = None) -> Tuple[bool, str]:
+        """Determine if a sell signal should be forced based on market or time conditions
+        
+        Returns:
+            Tuple[bool, str]: (should_force_sell, reason)
+        """
+        try:
+            # Check market-based sell conditions
+            market_sell, market_reason = await self._check_market_based_sell_conditions(symbol, data)
+            if market_sell:
+                return True, f"market_condition_{market_reason}"
+            
+            # Check time-based sell conditions
+            time_sell, time_reason = await self._check_time_based_sell_conditions(symbol, current_positions)
+            if time_sell:
+                return True, f"time_condition_{time_reason}"
+            
+            return False, "no_force_sell_conditions"
+            
+        except Exception as e:
+            logger.error(f"Error checking force sell conditions for {symbol}: {e}")
+            return False, "error_checking_force_sell"
     
     async def update_model_performance(self, symbol: str, actual_return: float, predicted_return: float, model_predictions: Dict[str, float]) -> None:
         """Update model performance metrics"""
