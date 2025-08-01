@@ -476,15 +476,26 @@ class DataPipeline:
             # Add features to cache
             self.feature_cache[symbol][timestamp] = features.copy()
             
-            # Clean old cache entries (keep only last 2 hours)
-            cutoff_time = timestamp - timedelta(hours=self.cache_duration_hours)
-            timestamps_to_remove = [
-                ts for ts in self.feature_cache[symbol].keys() 
-                if ts < cutoff_time
-            ]
-            
-            for ts in timestamps_to_remove:
-                del self.feature_cache[symbol][ts]
+            # Clean old cache entries using the most recent cached feature timestamp as reference
+            # This prevents historical features from being immediately removed during bootstrap
+            if self.feature_cache[symbol]:
+                # Find the most recent timestamp in the cache (including the one just added)
+                most_recent_timestamp = max(self.feature_cache[symbol].keys())
+                cutoff_time = most_recent_timestamp - timedelta(hours=self.cache_duration_hours)
+                
+                # Debug logging for cache cleaning
+                logger.debug(f"Cache cleaning for {symbol}: most_recent={most_recent_timestamp}, cutoff={cutoff_time}, cache_size_before={len(self.feature_cache[symbol])}")
+                
+                timestamps_to_remove = [
+                    ts for ts in self.feature_cache[symbol].keys() 
+                    if ts < cutoff_time
+                ]
+                
+                for ts in timestamps_to_remove:
+                    del self.feature_cache[symbol][ts]
+                
+                if timestamps_to_remove:
+                    logger.debug(f"Removed {len(timestamps_to_remove)} old features for {symbol}, cache_size_after={len(self.feature_cache[symbol])}")
             
             # Limit cache size per symbol
             if len(self.feature_cache[symbol]) > self.cache_max_size:
@@ -511,7 +522,10 @@ class DataPipeline:
             return None
     
     async def bootstrap_feature_cache(self, symbol: str, minutes: int = 120) -> int:
-        """Bootstrap feature cache from database for a symbol
+        """Bootstrap feature cache with cascading fallback strategy:
+        1. Try to load features from database
+        2. If insufficient data (< 10 features), download from Polygon and generate features
+        3. If both fail, return 0
         
         Args:
             symbol: Stock symbol to bootstrap
@@ -527,25 +541,71 @@ class DataPipeline:
             
             logger.info(f"Bootstrapping feature cache for {symbol} from {start_time} to {end_time}")
             
-            # Load features from database
+            # Step 1: Try to load features from database
             features_df = await self.load_features_from_db(symbol, start_time, end_time)
             
-            if features_df is None or len(features_df) == 0:
-                logger.debug(f"No existing features found in database for {symbol}")
-                return 0
-            
-            # Load features into cache
             loaded_count = 0
-            for timestamp, row in features_df.iterrows():
-                # Convert row to dictionary, excluding NaN values
-                feature_dict = {k: v for k, v in row.to_dict().items() if pd.notna(v)}
-                
-                # Cache the features
-                await self._cache_features(symbol, timestamp, feature_dict)
-                loaded_count += 1
+            min_required_features = 10  # Minimum features needed for models
             
-            logger.info(f"Bootstrapped {loaded_count} features for {symbol} into cache")
-            return loaded_count
+            if features_df is not None and len(features_df) >= min_required_features:
+                # Sufficient features found in database
+                for timestamp, row in features_df.iterrows():
+                    # Convert row to dictionary, excluding NaN values
+                    feature_dict = {k: v for k, v in row.to_dict().items() if pd.notna(v)}
+                    
+                    # Cache the features
+                    await self._cache_features(symbol, timestamp, feature_dict)
+                    loaded_count += 1
+                
+                logger.info(f"Bootstrapped {loaded_count} features for {symbol} from database")
+                return loaded_count
+            
+            # Step 2: Insufficient data in database, try Polygon API fallback
+            logger.warning(f"Insufficient features in database for {symbol} ({len(features_df) if features_df is not None else 0} found, {min_required_features} required)")
+            logger.info(f"Attempting to download recent data from Polygon API for {symbol}")
+            
+            try:
+                # Download recent market data from Polygon (extend time range for better coverage)
+                extended_start_time = end_time - timedelta(minutes=minutes * 2)  # Double the time range
+                market_data = await self.download_historical_data(symbol, extended_start_time, end_time)
+                
+                if market_data is None or len(market_data) == 0:
+                    logger.warning(f"No market data available from Polygon for {symbol}")
+                    return 0
+                
+                logger.info(f"Downloaded {len(market_data)} market data points for {symbol} from Polygon")
+                
+                # Generate features from the downloaded market data
+                from .pipeline_feature_engineering import FeatureEngineer
+                feature_engineer = FeatureEngineer(data_pipeline=self)
+                
+                # Engineer features from market data
+                features_df = await feature_engineer.engineer_features(market_data, symbol)
+                
+                if features_df is None or len(features_df) == 0:
+                    logger.warning(f"Failed to generate features from market data for {symbol}")
+                    return 0
+                
+                logger.info(f"Generated {len(features_df)} features for {symbol} from downloaded data")
+                
+                # Cache the newly generated features
+                for timestamp, row in features_df.iterrows():
+                    # Convert row to dictionary, excluding NaN values
+                    feature_dict = {k: v for k, v in row.to_dict().items() if pd.notna(v)}
+                    
+                    # Cache the features
+                    await self._cache_features(symbol, timestamp, feature_dict)
+                    loaded_count += 1
+                
+                logger.info(f"Successfully bootstrapped {loaded_count} features for {symbol} using Polygon fallback")
+                return loaded_count
+                
+            except Exception as polygon_error:
+                logger.error(f"Polygon API fallback failed for {symbol}: {polygon_error}")
+                
+                # Step 3: Both database and Polygon failed
+                logger.error(f"All bootstrap methods failed for {symbol}. Database had {len(features_df) if features_df is not None else 0} features, Polygon failed.")
+                return 0
             
         except Exception as e:
             logger.error(f"Failed to bootstrap feature cache for {symbol}: {e}")
@@ -583,8 +643,10 @@ class DataPipeline:
             # Sort timestamps to find the most recent
             cached_timestamps.sort()
             most_recent_timestamp = cached_timestamps[-1]
+            oldest_timestamp = cached_timestamps[0]
             
-            logger.debug(f"Most recent cached feature for {symbol}: {most_recent_timestamp}")
+            # Debug logging for cache state
+            logger.debug(f"Cache state for {symbol}: total_features={len(cached_timestamps)}, oldest={oldest_timestamp}, newest={most_recent_timestamp}")
             
             # Strategy 1: Try to get last N minutes from most recent timestamp
             cutoff_time = most_recent_timestamp - timedelta(minutes=minutes)
@@ -593,15 +655,20 @@ class DataPipeline:
                 if ts >= cutoff_time
             }
             
+            # Debug logging for time window search
+            logger.debug(f"Time window search for {symbol}: cutoff={cutoff_time}, found={len(recent_features)} features in {minutes}-minute window")
+            
             # Check if we have sufficient features (minimum 60 for signal generation)
             min_required_features = 60
             
             if len(recent_features) >= min_required_features:
-                logger.debug(f"Found {len(recent_features)} recent features for {symbol} using {minutes}-minute window")
+                logger.debug(f"Sufficient features found for {symbol}: {len(recent_features)} >= {min_required_features}")
                 return recent_features
             
             # Strategy 2: If insufficient, get the most recent N features regardless of time gap
             # This handles market gaps (overnight, weekends, holidays)
+            logger.debug(f"Insufficient features in time window for {symbol}: {len(recent_features)} < {min_required_features}, trying fallback strategy")
+            
             if len(cached_timestamps) >= min_required_features:
                 # Take the most recent N features
                 recent_timestamps = cached_timestamps[-min_required_features:]
@@ -610,12 +677,13 @@ class DataPipeline:
                 }
                 
                 time_span = recent_timestamps[-1] - recent_timestamps[0]
-                logger.info(f"Using {len(recent_features)} most recent features for {symbol} "
+                logger.info(f"Fallback strategy for {symbol}: using {len(recent_features)} most recent features "
                            f"spanning {time_span} (market gap detected)")
                 return recent_features
             
             # Strategy 3: Return all available features if we have less than minimum
-            logger.warning(f"Only {len(cached_timestamps)} cached features available for {symbol}, "
+            logger.debug(f"Not enough total features for {symbol}: {len(cached_timestamps)} < {min_required_features}, returning all available")
+            logger.warning(f"Insufficient data for {symbol}: only {len(cached_timestamps)} cached features available, "
                           f"less than minimum required {min_required_features}")
             
             recent_features = {
@@ -711,16 +779,17 @@ class DataPipeline:
                     if timestamp.tzinfo is None:
                         timestamp = timestamp.replace(tzinfo=timezone.utc)
                     
-                    # Add basic OHLCV columns
+                    # Prioritize OHLCV data from features JSONB column, fallback to market_data table
+                    # This fixes the issue where market_data table is empty but features contain OHLCV data
                     feature_dict.update({
                         'timestamp': timestamp,
-                        'open': float(row.open) if row.open is not None else None,
-                        'high': float(row.high) if row.high is not None else None,
-                        'low': float(row.low) if row.low is not None else None,
-                        'close': float(row.close) if row.close is not None else None,
-                        'volume': int(row.volume) if row.volume is not None else None,
-                        'vwap': float(row.vwap) if row.vwap is not None else None,
-                        'transactions': int(row.transactions) if row.transactions is not None else None
+                        'open': feature_dict.get('open') if feature_dict.get('open') is not None else (float(row.open) if row.open is not None else None),
+                        'high': feature_dict.get('high') if feature_dict.get('high') is not None else (float(row.high) if row.high is not None else None),
+                        'low': feature_dict.get('low') if feature_dict.get('low') is not None else (float(row.low) if row.low is not None else None),
+                        'close': feature_dict.get('close') if feature_dict.get('close') is not None else (float(row.close) if row.close is not None else None),
+                        'volume': feature_dict.get('volume') if feature_dict.get('volume') is not None else (int(row.volume) if row.volume is not None else None),
+                        'vwap': feature_dict.get('vwap') if feature_dict.get('vwap') is not None else (float(row.vwap) if row.vwap is not None else None),
+                        'transactions': feature_dict.get('transactions') if feature_dict.get('transactions') is not None else (int(row.transactions) if row.transactions is not None else None)
                     })
                     
                     data.append(feature_dict)

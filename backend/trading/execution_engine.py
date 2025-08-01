@@ -36,6 +36,7 @@ class OrderType(Enum):
     TRAILING_STOP = "trailing_stop"
 
 class OrderStatus(Enum):
+    NEW = "new"
     PENDING = "pending"
     FILLED = "filled"
     PARTIALLY_FILLED = "partially_filled"
@@ -818,7 +819,7 @@ class ExecutionEngine:
                 start_date = end_date - timedelta(days=30)
                 
                 result = session.execute(text("""
-                    SELECT close_price, timestamp
+                    SELECT close, timestamp
                     FROM market_data
                     WHERE symbol = :symbol
                     AND timestamp >= :start_date
@@ -830,7 +831,7 @@ class ExecutionEngine:
                     'end_date': end_date
                 })
                 
-                prices = [float(row.close_price) for row in result.fetchall()]
+                prices = [float(row.close) for row in result.fetchall()]
                 
                 if len(prices) >= 10:
                     returns = np.diff(np.log(prices))
@@ -962,7 +963,7 @@ class ExecutionEngine:
                 position = Position(
                     symbol=pos.symbol,
                     quantity=float(pos.qty),
-                    avg_price=float(pos.avg_cost),
+                    avg_price=float(pos.avg_entry_price),
                     market_value=float(pos.market_value),
                     unrealized_pnl=float(pos.unrealized_pl),
                     realized_pnl=0.0,  # Would need to track separately
@@ -996,11 +997,11 @@ class ExecutionEngine:
                     side=alpaca_order.side.value,
                     order_type=OrderType(alpaca_order.order_type.value),
                     status=OrderStatus(alpaca_order.status.value),
-                    filled_price=float(alpaca_order.filled_avg_price) if alpaca_order.filled_avg_price else None,
-                    filled_quantity=float(alpaca_order.filled_qty) if alpaca_order.filled_qty else 0,
-                    limit_price=float(alpaca_order.limit_price) if alpaca_order.limit_price else None,
-                    stop_price=float(alpaca_order.stop_price) if alpaca_order.stop_price else None,
-                    trail_amount=float(alpaca_order.trail_amount) if alpaca_order.trail_amount else None,
+                    filled_price=float(alpaca_order.filled_avg_price) if alpaca_order.filled_avg_price is not None else None,
+                    filled_quantity=float(alpaca_order.filled_qty) if alpaca_order.filled_qty is not None else 0,
+                    limit_price=float(alpaca_order.limit_price) if alpaca_order.limit_price is not None else None,
+                    stop_price=float(alpaca_order.stop_price) if alpaca_order.stop_price is not None else None,
+                    trail_amount=float(getattr(alpaca_order, 'trail_price', None) or getattr(alpaca_order, 'trail_percent', None)) if hasattr(alpaca_order, 'trail_price') or hasattr(alpaca_order, 'trail_percent') else None,
                     timestamp=alpaca_order.created_at,
                     updated_at=alpaca_order.updated_at
                 )
