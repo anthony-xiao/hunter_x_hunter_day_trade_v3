@@ -1126,6 +1126,127 @@ async def get_risk_metrics():
         logger.error(f"Error getting risk metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/trading/eod-liquidation")
+async def trigger_eod_liquidation():
+    """Manually trigger end-of-day liquidation to close all positions"""
+    try:
+        if not execution_engine:
+            raise HTTPException(status_code=500, detail="Execution engine not initialized")
+        
+        logger.info("Manual EOD liquidation triggered")
+        
+        # Execute end-of-day liquidation
+        success = await execution_engine.close_all_positions_eod()
+        
+        if success:
+            return {
+                "status": "success",
+                "message": "End-of-day liquidation completed successfully",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "End-of-day liquidation failed",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+    except Exception as e:
+        logger.error(f"Error during manual EOD liquidation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/trading/market-status")
+async def get_market_status():
+    """Get current market status including time until close and position restrictions"""
+    try:
+        if not execution_engine:
+            raise HTTPException(status_code=500, detail="Execution engine not initialized")
+        
+        # Get market clock from Alpaca
+        market_clock = execution_engine.get_market_clock()
+        
+        if not market_clock:
+            raise HTTPException(status_code=500, detail="Unable to retrieve market status")
+        
+        # Check various time-based restrictions
+        near_close_10min = execution_engine.is_market_near_close(10)
+        near_close_15min = execution_engine.is_market_near_close(15)
+        should_prevent_positions = execution_engine.should_prevent_new_positions()
+        
+        return {
+            "status": "success",
+            "market_clock": {
+                "timestamp": market_clock['timestamp'].isoformat(),
+                "is_open": market_clock['is_open'],
+                "next_open": market_clock['next_open'].isoformat(),
+                "next_close": market_clock['next_close'].isoformat()
+            },
+            "restrictions": {
+                "eod_liquidation_due": near_close_10min,
+                "new_positions_blocked": should_prevent_positions,
+                "near_close_15min": near_close_15min,
+                "near_close_10min": near_close_10min
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting market status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/trading/market-hours")
+async def get_market_hours():
+    """Get today's market hours in both ET and UTC"""
+    try:
+        if not execution_engine:
+            raise HTTPException(status_code=500, detail="Execution engine not initialized")
+        
+        # Get market clock
+        market_clock = execution_engine.get_market_clock()
+        
+        if not market_clock:
+            raise HTTPException(status_code=500, detail="Unable to retrieve market hours")
+        
+        # Get calendar for today to check if it's a trading day
+        from alpaca.trading.requests import GetCalendarRequest
+        from datetime import date
+        
+        today = date.today()
+        calendar_request = GetCalendarRequest(
+            start=today,
+            end=today
+        )
+        
+        calendar = execution_engine.trading_client.get_calendar(calendar_request)
+        is_trading_day = len(calendar) > 0
+        
+        market_hours_info = {
+            "status": "success",
+            "date": today.isoformat(),
+            "is_trading_day": is_trading_day,
+            "market_status": {
+                "is_open": market_clock['is_open'],
+                "timestamp_utc": market_clock['timestamp'].isoformat()
+            }
+        }
+        
+        if is_trading_day and calendar:
+            trading_day = calendar[0]
+            market_hours_info["market_hours"] = {
+                "open_et": trading_day.open.strftime("%H:%M:%S ET"),
+                "close_et": trading_day.close.strftime("%H:%M:%S ET"),
+                "open_utc": market_clock['next_open'].isoformat() if not market_clock['is_open'] else None,
+                "close_utc": market_clock['next_close'].isoformat()
+            }
+        else:
+            market_hours_info["message"] = "Market is closed today (holiday or weekend)"
+        
+        return market_hours_info
+        
+    except Exception as e:
+        logger.error(f"Error getting market hours: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/trading/execute-manual-trade")
 async def execute_manual_trade(
     symbol: str = Query(..., description="Stock symbol (e.g., AAPL)"),
