@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
 from loguru import logger
@@ -196,7 +196,7 @@ class RiskManager:
         for position in positions:
             position_sector = self.sector_mappings.get(position.symbol, 'Unknown')
             if position_sector == target_sector:
-                sector_value += position.market_value
+                sector_value += float(position.market_value)
         
         return sector_value
     
@@ -259,11 +259,11 @@ class RiskManager:
                     avg_position_size=0.0,
                     largest_position_pct=0.0,
                     risk_level=RiskLevel.LOW,
-                    timestamp=datetime.now()
+                    timestamp=datetime.now(timezone.utc)
                 )
             
             # Calculate basic metrics
-            total_exposure = sum(abs(pos.market_value) for pos in positions)
+            total_exposure = sum(abs(float(pos.market_value)) for pos in positions)
             cash_balance = portfolio_value - total_exposure
             leverage = total_exposure / portfolio_value if portfolio_value > 0 else 0
             
@@ -271,7 +271,7 @@ class RiskManager:
             sector_exposure = {}
             for position in positions:
                 sector = self.sector_mappings.get(position.symbol, 'Unknown')
-                sector_exposure[sector] = sector_exposure.get(sector, 0) + position.market_value
+                sector_exposure[sector] = sector_exposure.get(sector, 0) + float(position.market_value)
             
             # Convert to percentages
             sector_exposure_pct = {
@@ -280,7 +280,7 @@ class RiskManager:
             }
             
             # Calculate concentration risk
-            position_weights = [pos.market_value / portfolio_value for pos in positions]
+            position_weights = [float(pos.market_value) / portfolio_value for pos in positions]
             concentration_risk = max(position_weights) if position_weights else 0
             
             # Calculate VaR (simplified)
@@ -288,7 +288,7 @@ class RiskManager:
             for position in positions:
                 if position.symbol in market_data:
                     returns = market_data[position.symbol]['close'].pct_change().dropna().tail(60)
-                    weight = position.market_value / portfolio_value
+                    weight = float(position.market_value) / portfolio_value
                     portfolio_returns.append(returns * weight)
             
             if portfolio_returns:
@@ -325,7 +325,7 @@ class RiskManager:
                 avg_position_size=total_exposure / len(positions) if positions else 0,
                 largest_position_pct=concentration_risk,
                 risk_level=risk_level,
-                timestamp=datetime.now()
+                timestamp=datetime.now(timezone.utc)
             )
             
             # Store in history

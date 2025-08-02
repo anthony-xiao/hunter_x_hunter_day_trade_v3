@@ -1,7 +1,7 @@
 import asyncio
 import json
 from typing import Dict, List, Optional, Callable, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from loguru import logger
 import websockets
@@ -201,7 +201,7 @@ class PolygonWebSocketManager:
         try:
             data = RealTimeData(
                 symbol=trade.symbol,
-                timestamp=datetime.fromtimestamp(trade.timestamp / 1000),
+                timestamp=datetime.fromtimestamp(trade.timestamp / 1000, tz=timezone.utc),
                 volume=int(trade.size) if trade.size else None,
                 data_type="trade",
                 close=float(trade.price)  # Store trade price as close
@@ -228,7 +228,7 @@ class PolygonWebSocketManager:
             
             data = RealTimeData(
                 symbol=quote.symbol,
-                timestamp=datetime.fromtimestamp(quote.timestamp / 1000),
+                timestamp=datetime.fromtimestamp(quote.timestamp / 1000, tz=timezone.utc),
                 bid=float(quote.bid_price),
                 ask=float(quote.ask_price),
                 data_type="quote",
@@ -260,7 +260,7 @@ class PolygonWebSocketManager:
             # Extract all available OHLCV fields from the EquityAgg object
             data = RealTimeData(
                 symbol=agg.symbol,
-                timestamp=datetime.fromtimestamp(timestamp_ms / 1000),
+                timestamp=datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc),
                 volume=int(agg.volume) if agg.volume else None,
                 data_type="agg",
                 

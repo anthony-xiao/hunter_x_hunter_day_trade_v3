@@ -1,10 +1,11 @@
 import asyncio
 import time
 from typing import Dict, List, Optional, Set
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from loguru import logger
 import pandas as pd
+import pytz
 
 from data.polygon_websocket import RealTimeData, PolygonWebSocketManager
 from data.data_pipeline import DataPipeline
@@ -61,6 +62,11 @@ class TradingOrchestrator:
         self.is_running = False
         self.orchestrator_task: Optional[asyncio.Task] = None
         self.polling_task: Optional[asyncio.Task] = None
+        self.eod_liquidation_task: Optional[asyncio.Task] = None
+        
+        # End-of-day liquidation settings
+        self.eod_liquidation_enabled = True
+        self.eod_liquidation_minutes_before_close = 10  # Close positions 10 minutes before market close
         
     async def initialize(self, 
                         websocket_manager: PolygonWebSocketManager,
@@ -89,7 +95,7 @@ class TradingOrchestrator:
             return False
     
     async def start(self, trading_symbols: List[str]):
-        """Start the event-driven trading orchestrator"""
+        """Start the event-driven trading orchestrator with proactive data bootstrapping"""
         try:
             if self.is_running:
                 logger.warning("Trading orchestrator is already running")
@@ -102,6 +108,10 @@ class TradingOrchestrator:
             for symbol in trading_symbols:
                 self.processing_locks[symbol] = asyncio.Lock()
             
+            # Phase 1: Proactive Data Bootstrapping (Cold Start Solution)
+            logger.info("Starting proactive data bootstrapping to solve cold start problem...")
+            await self._bootstrap_historical_data(trading_symbols)
+            
             # Start WebSocket data streaming
             if self.websocket_manager:
                 await self.websocket_manager.subscribe_minute_aggs(trading_symbols)
@@ -112,11 +122,103 @@ class TradingOrchestrator:
                 self.polling_task = asyncio.create_task(self._polling_backup_loop())
                 logger.info("Started polling backup system")
             
-            logger.info(f"Event-driven trading orchestrator started for {len(trading_symbols)} symbols")
+            # Start end-of-day liquidation scheduler if enabled
+            if self.eod_liquidation_enabled:
+                self.eod_liquidation_task = asyncio.create_task(self._eod_liquidation_scheduler())
+                logger.info("Started end-of-day liquidation scheduler")
+            
+            logger.info(f"Event-driven trading orchestrator started for {len(trading_symbols)} symbols with data bootstrap complete")
             
         except Exception as e:
             logger.error(f"Failed to start trading orchestrator: {e}")
             self.is_running = False
+            raise
+    
+    async def _bootstrap_historical_data(self, trading_symbols: List[str]):
+        """Bootstrap historical data for all symbols to solve cold start problem"""
+        try:
+            if not self.feature_engineer or not self.data_pipeline:
+                logger.warning("Cannot bootstrap data: feature_engineer or data_pipeline not available")
+                return
+            
+            # Calculate required lookback period from feature engineering requirements
+            required_lookback_minutes = self.feature_engineer.calculate_required_lookback()
+            logger.info(f"Calculated required lookback period: {required_lookback_minutes} minutes")
+            
+            # Calculate bootstrap time window
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(minutes=required_lookback_minutes)
+            
+            logger.info(f"Bootstrapping historical data from {start_time} to {end_time} for {len(trading_symbols)} symbols")
+            
+            # Bootstrap data for each symbol
+            bootstrap_tasks = []
+            for symbol in trading_symbols:
+                task = asyncio.create_task(self._bootstrap_symbol_data(symbol, start_time, end_time))
+                bootstrap_tasks.append(task)
+            
+            # Execute all bootstrap tasks concurrently
+            results = await asyncio.gather(*bootstrap_tasks, return_exceptions=True)
+            
+            # Log bootstrap results
+            successful_bootstraps = 0
+            for i, result in enumerate(results):
+                symbol = trading_symbols[i]
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to bootstrap data for {symbol}: {result}")
+                else:
+                    successful_bootstraps += 1
+                    logger.debug(f"Successfully bootstrapped data for {symbol}")
+            
+            logger.info(f"Data bootstrap complete: {successful_bootstraps}/{len(trading_symbols)} symbols successful")
+            
+        except Exception as e:
+            logger.error(f"Error during data bootstrapping: {e}")
+    
+    async def _bootstrap_symbol_data(self, symbol: str, start_time: datetime, end_time: datetime):
+        """Bootstrap historical data for a single symbol with intelligent cache loading"""
+        try:
+            # Step 1: Try to bootstrap existing features from database first
+            logger.info(f"Attempting to bootstrap existing features for {symbol} from database")
+            bootstrap_count = await self.data_pipeline.bootstrap_feature_cache(symbol, minutes=240)  # 4 hours lookback
+            
+            if bootstrap_count > 60:  # Sufficient features available
+                logger.info(f"Successfully bootstrapped {bootstrap_count} existing features for {symbol} from database")
+                return
+            
+            logger.info(f"Insufficient existing features ({bootstrap_count}) for {symbol}, downloading fresh data")
+            
+            # Step 2: Download historical data for the required lookback period
+            historical_data = await self.data_pipeline.download_historical_data(
+                symbol=symbol,
+                start_date=start_time,
+                end_date=end_time
+            )
+            
+            if historical_data is None or len(historical_data) == 0:
+                logger.warning(f"No historical data available for {symbol} in bootstrap period")
+                return
+            
+            logger.debug(f"Downloaded {len(historical_data)} historical bars for {symbol}")
+            
+            # Step 3: Generate features for all historical data points
+            features = await self.feature_engineer.engineer_features(historical_data, symbol)
+            
+            if features is None or len(features) == 0:
+                logger.warning(f"No features generated for {symbol} during bootstrap")
+                return
+            
+            # Step 4: Cache all generated features for immediate availability
+            cached_count = 0
+            for timestamp, feature_row in features.iterrows():
+                feature_dict = feature_row.to_dict()
+                await self.data_pipeline.store_features(symbol, timestamp, feature_dict)
+                cached_count += 1
+            
+            logger.info(f"Bootstrapped and cached {cached_count} feature sets for {symbol}")
+            
+        except Exception as e:
+            logger.error(f"Error bootstrapping data for {symbol}: {e}")
             raise
     
     async def stop(self):
@@ -129,6 +231,14 @@ class TradingOrchestrator:
                 self.polling_task.cancel()
                 try:
                     await self.polling_task
+                except asyncio.CancelledError:
+                    pass
+            
+            # Cancel end-of-day liquidation task
+            if self.eod_liquidation_task and not self.eod_liquidation_task.done():
+                self.eod_liquidation_task.cancel()
+                try:
+                    await self.eod_liquidation_task
                 except asyncio.CancelledError:
                     pass
             
@@ -199,7 +309,7 @@ class TradingOrchestrator:
                 logger.error(f"Error processing minute bar event for {symbol}: {e}")
     
     async def _update_features_for_symbol(self, symbol: str, agg_data: RealTimeData):
-        """Update features for a symbol with new minute bar data using incremental approach"""
+        """Enhanced real-time feature updates using complete OHLCV + VWAP + transactions data (Priority 2)"""
         try:
             if not self.feature_engineer or not self.data_pipeline:
                 return
@@ -214,30 +324,28 @@ class TradingOrchestrator:
                 logger.debug(f"[{symbol}] Using cached features for {current_timestamp}")
                 return
             
-            # Check if we have recent features to determine if we need full historical data
-            recent_features = await self.data_pipeline.get_recent_cached_features(symbol, minutes=60)
+            # Get recent cached features for rolling window calculations (Priority 2: Enhanced Real-time Feature Updates)
+            recent_features = await self.data_pipeline.get_recent_cached_features(symbol, minutes=120)  # Extended lookback for better technical indicators
             
-            if recent_features and len(recent_features) >= 5:
-                # We have recent features, create a minimal DataFrame with just the new bar
-                # and calculate features incrementally
-                logger.debug(f"[{symbol}] Performing incremental feature update with new bar data")
+            if recent_features and len(recent_features) >= 20:  # Increased minimum for proper technical indicator calculation
+                # Priority 2: Calculate ALL technical indicators from WebSocket data using rolling windows
+                logger.debug(f"[{symbol}] Performing enhanced real-time feature update with complete OHLCV+VWAP+transactions data")
                 
-                # Create a minimal DataFrame with just the current bar using complete OHLCV data
+                # Convert recent cached features to DataFrame for rolling window calculations
                 import pandas as pd
-                current_bar_df = pd.DataFrame([{
-                    'timestamp': current_timestamp,
-                    'open': agg_data.open if agg_data.open is not None else agg_data.close,
-                    'high': agg_data.high if agg_data.high is not None else agg_data.close,
-                    'low': agg_data.low if agg_data.low is not None else agg_data.close,
-                    'close': agg_data.close if agg_data.close is not None else agg_data.close,
-                    'volume': agg_data.volume if agg_data.volume is not None else 1000,
-                    'vwap': agg_data.vwap if agg_data.vwap is not None else agg_data.close,
-                    'transactions': agg_data.transactions if agg_data.transactions is not None else 1
-                }])
-                current_bar_df.set_index('timestamp', inplace=True)
                 
-                # Calculate basic features for just this bar using complete OHLCV data
-                features_dict = {
+                # Sort features by timestamp and create DataFrame
+                sorted_timestamps = sorted(recent_features.keys())
+                data_rows = []
+                
+                for timestamp in sorted_timestamps:
+                    feature_dict = recent_features[timestamp].copy()
+                    feature_dict['timestamp'] = timestamp
+                    data_rows.append(feature_dict)
+                
+                # Add current bar with complete Polygon WebSocket fields (Priority 3: Model Input Optimization)
+                current_bar = {
+                    'timestamp': current_timestamp,
                     'open': float(agg_data.open if agg_data.open is not None else agg_data.close),
                     'high': float(agg_data.high if agg_data.high is not None else agg_data.close),
                     'low': float(agg_data.low if agg_data.low is not None else agg_data.close),
@@ -245,20 +353,63 @@ class TradingOrchestrator:
                     'volume': float(agg_data.volume if agg_data.volume is not None else 1000),
                     'vwap': float(agg_data.vwap if agg_data.vwap is not None else agg_data.close),
                     'transactions': float(agg_data.transactions if agg_data.transactions is not None else 1),
-                    'timestamp_hour': current_timestamp.hour,
-                    'timestamp_minute': current_timestamp.minute,
-                    'timestamp_weekday': current_timestamp.weekday()
+                    # Add accumulated_volume if available from WebSocket
+                    'accumulated_volume': float(getattr(agg_data, 'accumulated_volume', agg_data.volume) if agg_data.volume is not None else 1000)
                 }
                 
-                # Store only the current timestamp's features
-                await self.data_pipeline.store_features(symbol, current_timestamp, features_dict)
-                logger.debug(f"[{symbol}] Incremental features calculated and cached for {current_timestamp}")
+                # Create a copy without timestamp for feature storage (timestamp is passed separately)
+                current_bar_features = {k: v for k, v in current_bar.items() if k != 'timestamp'}
+                data_rows.append(current_bar)
+                
+                # Create DataFrame for feature engineering
+                rolling_df = pd.DataFrame(data_rows)
+                rolling_df.set_index('timestamp', inplace=True)
+                rolling_df.sort_index(inplace=True)
+                
+                # Ensure required OHLCV columns exist
+                required_cols = ['open', 'high', 'low', 'close', 'volume']
+                for col in required_cols:
+                    if col not in rolling_df.columns:
+                        if col == 'volume':
+                            rolling_df[col] = 1000
+                        else:
+                            rolling_df[col] = rolling_df.get('close', 100.0)
+                
+                # Priority 2 & 3: Use engineer_features function to calculate ALL technical indicators
+                # This leverages complete OHLCV + VWAP + transactions data with rolling window calculations
+                logger.debug(f"[{symbol}] Calculating comprehensive features using engineer_features with {len(rolling_df)} data points")
+                
+                # Use the existing engineer_features function for comprehensive feature calculation
+                engineered_features = await self.feature_engineer.engineer_features(rolling_df, symbol)
+                
+                if engineered_features is not None and len(engineered_features) > 0:
+                    # Extract features for the current timestamp only
+                    if current_timestamp in engineered_features.index:
+                        current_features = engineered_features.loc[current_timestamp].to_dict()
+                        
+                        # Ensure all Polygon WebSocket fields are included (Priority 3: Model Input Optimization)
+                        current_features.update(current_bar_features)
+                        
+                        # Store comprehensive features
+                        await self.data_pipeline.store_features(symbol, current_timestamp, current_features)
+                        logger.debug(f"[{symbol}] Enhanced real-time features calculated and cached for {current_timestamp} ({len(current_features)} features)")
+                    else:
+                        # Fallback: use the last available features
+                        latest_features = engineered_features.iloc[-1].to_dict()
+                        latest_features.update(current_bar_features)  # Ensure current bar data is included
+                        await self.data_pipeline.store_features(symbol, current_timestamp, latest_features)
+                        logger.debug(f"[{symbol}] Fallback features stored for {current_timestamp}")
+                else:
+                    logger.warning(f"[{symbol}] engineer_features returned no results, storing basic features")
+                    await self.data_pipeline.store_features(symbol, current_timestamp, current_bar_features)
                 
             else:
-                # No recent features, need to download minimal historical data for initial feature calculation
-                logger.info(f"[{symbol}] No recent features found, downloading minimal historical data for initial calculation")
+                # Cold start: insufficient recent features, use engineer_features with minimal historical data
+                logger.info(f"[{symbol}] Cold start: insufficient recent features ({len(recent_features) if recent_features else 0}), using minimal historical data")
+                
+                # Download minimal historical data for initial comprehensive feature calculation
                 end_date = current_timestamp
-                start_date = end_date - timedelta(hours=4)  # Minimal 4-hour window for initial features
+                start_date = end_date - timedelta(hours=6)  # Extended window for better technical indicators
                 
                 historical_data = await self.data_pipeline.download_historical_data(
                     symbol=symbol,
@@ -266,21 +417,56 @@ class TradingOrchestrator:
                     end_date=end_date
                 )
                 
-                if historical_data is not None and len(historical_data) >= 10:  # Reduced minimum requirement
-                    # Calculate features with the minimal historical data
-                    features = await self.feature_engineer.engineer_features(historical_data, symbol)
+                if historical_data is not None and len(historical_data) >= 20:
+                    # Add current bar to historical data
+                    import pandas as pd
+                    current_bar_df = pd.DataFrame([{
+                        'open': float(agg_data.open if agg_data.open is not None else agg_data.close),
+                        'high': float(agg_data.high if agg_data.high is not None else agg_data.close),
+                        'low': float(agg_data.low if agg_data.low is not None else agg_data.close),
+                        'close': float(agg_data.close if agg_data.close is not None else agg_data.close),
+                        'volume': float(agg_data.volume if agg_data.volume is not None else 1000),
+                        'vwap': float(agg_data.vwap if agg_data.vwap is not None else agg_data.close),
+                        'transactions': float(agg_data.transactions if agg_data.transactions is not None else 1),
+                        'accumulated_volume': float(getattr(agg_data, 'accumulated_volume', agg_data.volume) if agg_data.volume is not None else 1000)
+                    }], index=[current_timestamp])
                     
-                    # Only store features for the current timestamp to avoid bulk storage
-                    if len(features) > 0:
-                        # Find the row closest to current_timestamp
-                        closest_idx = features.index.get_indexer([current_timestamp], method='nearest')[0]
-                        if closest_idx >= 0 and closest_idx < len(features):
-                            latest_features = features.iloc[closest_idx].to_dict()
-                            await self.data_pipeline.store_features(symbol, current_timestamp, latest_features)
-                            logger.debug(f"[{symbol}] Initial features calculated and cached for {current_timestamp}")
+                    # Combine historical data with current bar
+                    combined_data = pd.concat([historical_data, current_bar_df])
+                    combined_data.sort_index(inplace=True)
+                    
+                    # Use engineer_features for comprehensive feature calculation
+                    features = await self.feature_engineer.engineer_features(combined_data, symbol)
+                    
+                    if features is not None and len(features) > 0:
+                        # Store only features for the current timestamp
+                        if current_timestamp in features.index:
+                            latest_features = features.loc[current_timestamp].to_dict()
+                        else:
+                            latest_features = features.iloc[-1].to_dict()
+                        
+                        await self.data_pipeline.store_features(symbol, current_timestamp, latest_features)
+                        logger.debug(f"[{symbol}] Cold start comprehensive features calculated and cached for {current_timestamp}")
+                else:
+                    # Absolute fallback: store basic WebSocket data
+                    basic_features = {
+                        'open': float(agg_data.open if agg_data.open is not None else agg_data.close),
+                        'high': float(agg_data.high if agg_data.high is not None else agg_data.close),
+                        'low': float(agg_data.low if agg_data.low is not None else agg_data.close),
+                        'close': float(agg_data.close if agg_data.close is not None else agg_data.close),
+                        'volume': float(agg_data.volume if agg_data.volume is not None else 1000),
+                        'vwap': float(agg_data.vwap if agg_data.vwap is not None else agg_data.close),
+                        'transactions': float(agg_data.transactions if agg_data.transactions is not None else 1),
+                        'accumulated_volume': float(getattr(agg_data, 'accumulated_volume', agg_data.volume) if agg_data.volume is not None else 1000),
+                        'timestamp_hour': current_timestamp.hour,
+                        'timestamp_minute': current_timestamp.minute,
+                        'timestamp_weekday': current_timestamp.weekday()
+                    }
+                    await self.data_pipeline.store_features(symbol, current_timestamp, basic_features)
+                    logger.debug(f"[{symbol}] Basic WebSocket features stored for {current_timestamp}")
                 
         except Exception as e:
-            logger.error(f"Error updating features for {symbol}: {e}")
+            logger.error(f"Error updating enhanced real-time features for {symbol}: {e}")
     
     async def _generate_signal_for_symbol(self, symbol: str) -> Optional[TradeSignal]:
         """Generate trading signal for a symbol using cached features when possible"""
@@ -288,15 +474,79 @@ class TradingOrchestrator:
             if not self.signal_generator or not self.data_pipeline:
                 return None
             
-            # First try to use recent cached features for signal generation
-            recent_features = await self.data_pipeline.get_recent_cached_features(symbol, minutes=30)
+            # Try to get recent cached features first (Priority 1: Optimize Feature Engineering Pipeline)
+            recent_features = await self.data_pipeline.get_recent_cached_features(symbol, minutes=60)
             
-            market_data = None
-            
-            if recent_features and len(recent_features) >= 10:  # If we have enough recent features
-                logger.debug(f"[{symbol}] Using cached features for signal generation")
+            # Use smart caching logic - let signal generator decide if features are sufficient
+            if recent_features:
+                feature_count = len(recent_features)
+                logger.info(f"Using cached features for signal generation: {symbol} ({feature_count} points)")
                 
-                # Convert cached features to DataFrame format expected by signal generator
+                # Generate signal directly from cached features (eliminates historical data download)
+                # The signal generator now handles smart feature count validation internally
+                signal = await self.signal_generator.generate_signals_from_features(symbol, recent_features)
+                
+                if signal:
+                    self.signals_generated += 1
+                    logger.info(f"[{symbol}] Generated signal from cached features: {signal.action} with confidence {signal.confidence:.3f}")
+                    return signal
+                else:
+                    logger.debug(f"Signal generator declined to generate signal for {symbol} with {feature_count} cached features")
+            
+            # Cold start mitigation: Skip signal generation instead of downloading historical data
+            logger.warning(f"No cached features available for {symbol}. Skipping signal generation to avoid historical data download.")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error generating signal for {symbol}: {e}")
+            return None
+    
+    async def _execute_signal_with_risk_management(self, signal: TradeSignal):
+        """Execute signal with risk management using cached features when possible"""
+        try:
+            if not self.execution_engine or not self.risk_manager:
+                return
+            
+            # Get recent cached features for risk management calculations
+            recent_features = await self.data_pipeline.get_recent_cached_features(
+                symbol=signal.symbol, 
+                minutes=60
+            )
+            
+            # Apply smart caching logic for risk management
+            if not recent_features:
+                logger.warning(f"No cached features available for risk management: {signal.symbol}")
+                # Still proceed with signal execution but with significantly reduced confidence
+                risk_adjusted_signal = TradeSignal(
+                    symbol=signal.symbol,
+                    action=signal.action,
+                    confidence=max(0.1, signal.confidence * 0.3),  # Significantly reduce confidence
+                    price=signal.price,
+                    quantity=min(signal.quantity, 25),  # Significantly reduce position size
+                    timestamp=signal.timestamp,
+                    strategy_name=signal.strategy_name,
+                    metadata={**signal.metadata, "risk_adjustment": "no_cached_features"}
+                )
+            elif len(recent_features) < 10:
+                logger.warning(f"Very limited cached features for risk management: {signal.symbol} ({len(recent_features)}/10)")
+                # Proceed with minimal risk management
+                risk_adjusted_signal = TradeSignal(
+                    symbol=signal.symbol,
+                    action=signal.action,
+                    confidence=max(0.1, signal.confidence * 0.6),  # Moderately reduce confidence
+                    price=signal.price,
+                    quantity=min(signal.quantity, 50),  # Moderately reduce position size
+                    timestamp=signal.timestamp,
+                    strategy_name=signal.strategy_name,
+                    metadata={**signal.metadata, "risk_adjustment": "minimal_features"}
+                )
+            else:
+                # Apply full risk management with available cached features
+                feature_count = len(recent_features)
+                logger.debug(f"Applying risk management with {feature_count} cached features for {signal.symbol}")
+                
+                # Convert cached features to DataFrame for risk calculations
+                market_data = None
                 try:
                     # Sort features by timestamp
                     sorted_timestamps = sorted(recent_features.keys())
@@ -312,7 +562,7 @@ class TradingOrchestrator:
                         df = pd.DataFrame(data_rows)
                         df.set_index('timestamp', inplace=True)
                         
-                        # Ensure required columns exist with fallback values
+                        # Ensure required columns exist for risk calculations
                         required_cols = ['open', 'high', 'low', 'close', 'volume']
                         for col in required_cols:
                             if col not in df.columns:
@@ -322,93 +572,63 @@ class TradingOrchestrator:
                                     df[col] = df.get('close', 100.0)  # Use close price as fallback
                         
                         market_data = df
-                        logger.debug(f"[{symbol}] Converted {len(df)} cached features to DataFrame")
+                        logger.debug(f"Converted {len(df)} cached features to DataFrame for risk management: {signal.symbol}")
                     
                 except Exception as e:
-                    logger.warning(f"[{symbol}] Failed to convert cached features to DataFrame: {e}")
+                    logger.error(f"Failed to convert cached features for risk management: {signal.symbol}: {e}")
+                    # Fallback to reduced confidence signal
+                    risk_adjusted_signal = TradeSignal(
+                        symbol=signal.symbol,
+                        action=signal.action,
+                        confidence=max(0.1, signal.confidence * 0.5),
+                        price=signal.price,
+                        quantity=min(signal.quantity, 50),
+                        timestamp=signal.timestamp,
+                        strategy_name=signal.strategy_name,
+                        metadata={**signal.metadata, "risk_adjustment": "feature_conversion_error"}
+                    )
                     market_data = None
-            
-            if market_data is None or len(market_data) < 10:
-                # Fallback: get minimal market data (reduced from 30 days to 5 days)
-                logger.debug(f"[{symbol}] Insufficient cached features, downloading minimal market data")
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=5)  # Reduced from 30 days
                 
-                market_data = await self.data_pipeline.download_historical_data(
-                    symbol=symbol,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-            
-            if market_data is not None and len(market_data) >= 10:  # Reduced minimum requirement
-                # Generate signal for this symbol
-                signals = await self.signal_generator.generate_signals({symbol: market_data})
-                
-                if signals and len(signals) > 0:
-                    self.signals_generated += 1
-                    logger.info(f"[{symbol}] Generated signal: {signals[0].action} with confidence {signals[0].confidence:.3f}")
-                    return signals[0]  # Return the first (and likely only) signal
-                else:
-                    logger.debug(f"[{symbol}] No signals generated from market data")
-            else:
-                logger.warning(f"[{symbol}] Insufficient market data for signal generation")
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error generating signal for {symbol}: {e}")
-            return None
-    
-    async def _execute_signal_with_risk_management(self, signal: TradeSignal):
-        """Execute signal with risk management using cached data when possible"""
-        try:
-            if not self.execution_engine or not self.risk_manager:
-                return
-            
-            # Try to use recent cached features for risk management calculations
-            recent_features = await self.data_pipeline.get_recent_cached_features(signal.symbol, minutes=60)
-            
-            market_data = None
-            if recent_features and len(recent_features) >= 5:  # If we have enough recent data
-                logger.debug(f"[{signal.symbol}] Using cached data for risk management")
-                # For now, still need market data for risk manager, but reduced timeframe
-                market_data = await self.data_pipeline.download_historical_data(
-                    symbol=signal.symbol,
-                    start_date=datetime.now() - timedelta(days=3),  # Reduced from 30 days to 3 days
-                    end_date=datetime.now()
-                )
-            else:
-                # Fallback: get minimal market data for risk management
-                logger.debug(f"[{signal.symbol}] Insufficient cached data, downloading minimal market data for risk management")
-                market_data = await self.data_pipeline.download_historical_data(
-                    symbol=signal.symbol,
-                    start_date=datetime.now() - timedelta(days=7),  # Reduced from 30 days to 7 days
-                    end_date=datetime.now()
-                )
-            
-            if market_data is not None and len(market_data) >= 10:  # Reduced minimum requirement
-                # Calculate position size with risk management
-                position_size = await self.risk_manager.calculate_position_size(
-                    signal=signal,
-                    market_data=market_data
-                )
-                
-                if position_size > 0:
-                    # Execute the trade
-                    success = await self.execution_engine.execute_signal(
+                if market_data is not None and len(market_data) >= 10:
+                    # Calculate position size with risk management
+                    position_size = await self.risk_manager.calculate_position_size(
                         signal=signal,
-                        position_size=position_size
+                        market_data=market_data
                     )
                     
-                    if success:
-                        self.trades_executed += 1
-                        logger.info(f"Event-driven trade executed: {signal.symbol} {signal.action}")
+                    if position_size > 0:
+                        risk_adjusted_signal = signal  # Use original signal with calculated position size
                     else:
-                        logger.warning(f"Failed to execute event-driven trade for {signal.symbol}")
+                        logger.debug(f"Signal for {signal.symbol} rejected by risk management")
+                        return
                 else:
-                    logger.debug(f"Signal for {signal.symbol} rejected by risk management")
+                    logger.warning(f"Insufficient market data for risk management: {signal.symbol}")
+                    # Use fallback signal with reduced parameters
+                    risk_adjusted_signal = TradeSignal(
+                        symbol=signal.symbol,
+                        action=signal.action,
+                        confidence=max(0.1, signal.confidence * 0.7),
+                        price=signal.price,
+                        quantity=min(signal.quantity, 75),
+                        timestamp=signal.timestamp,
+                        strategy_name=signal.strategy_name,
+                        metadata={**signal.metadata, "risk_adjustment": "insufficient_market_data"}
+                    )
+                    position_size = risk_adjusted_signal.quantity
+            
+            # Execute the risk-adjusted signal
+            if 'position_size' not in locals():
+                position_size = risk_adjusted_signal.quantity
+            
+            success = await self.execution_engine.execute_signal(
+                signal=risk_adjusted_signal
+            )
+            
+            if success:
+                self.trades_executed += 1
+                logger.info(f"Event-driven trade executed: {signal.symbol} {signal.action} (risk-adjusted)")
             else:
-                logger.warning(f"Insufficient market data for risk management: {signal.symbol}")
+                logger.warning(f"Failed to execute event-driven trade for {signal.symbol}")
             
         except Exception as e:
             logger.error(f"Error executing signal for {signal.symbol}: {e}")
@@ -420,7 +640,7 @@ class TradingOrchestrator:
         while self.is_running:
             try:
                 # Check if market is open
-                now = datetime.now()
+                now = datetime.now(timezone.utc)
                 
                 if (now.weekday() < 5 and  # Monday = 0, Friday = 4
                     9 <= now.hour < 16 and
@@ -438,7 +658,7 @@ class TradingOrchestrator:
     async def _process_stale_symbols(self):
         """Process symbols that haven't received recent minute bar events"""
         try:
-            current_time = datetime.now()
+            current_time = datetime.now(timezone.utc)
             stale_threshold = timedelta(minutes=2)  # Consider stale if no update in 2 minutes
             
             for symbol in self.active_symbols:
@@ -490,6 +710,48 @@ class TradingOrchestrator:
         self.signals_generated = 0
         self.trades_executed = 0
         logger.info("Trading orchestrator statistics reset")
+    
+    async def _eod_liquidation_scheduler(self):
+        """End-of-day liquidation scheduler that runs continuously"""
+        logger.info("End-of-day liquidation scheduler started")
+        
+        while self.is_running:
+            try:
+                # Check if we need to perform end-of-day liquidation
+                if await self._should_perform_eod_liquidation():
+                    logger.info("Triggering end-of-day liquidation")
+                    
+                    if self.execution_engine:
+                        success = await self.execution_engine.close_all_positions_eod()
+                        if success:
+                            logger.info("End-of-day liquidation completed successfully")
+                        else:
+                            logger.error("End-of-day liquidation failed")
+                    else:
+                        logger.error("Cannot perform end-of-day liquidation: execution_engine not available")
+                    
+                    # Sleep for 5 minutes after liquidation to avoid repeated triggers
+                    await asyncio.sleep(300)
+                else:
+                    # Check every minute when not near market close
+                    await asyncio.sleep(60)
+                    
+            except Exception as e:
+                logger.error(f"Error in end-of-day liquidation scheduler: {e}")
+                await asyncio.sleep(60)
+    
+    async def _should_perform_eod_liquidation(self) -> bool:
+        """Check if end-of-day liquidation should be performed"""
+        try:
+            if not self.execution_engine:
+                return False
+            
+            # Use execution engine's market clock functionality
+            return self.execution_engine.is_market_near_close(self.eod_liquidation_minutes_before_close)
+            
+        except Exception as e:
+            logger.error(f"Error checking if EOD liquidation should be performed: {e}")
+            return False
 
 # Global orchestrator instance
 orchestrator = TradingOrchestrator()

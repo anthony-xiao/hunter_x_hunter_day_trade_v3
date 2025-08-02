@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any
 from dataclasses import dataclass, asdict
 import logging
@@ -51,7 +51,7 @@ class EnsembleConfigManager:
             ensemble_config = EnsembleWeights(
                 weights=weights,
                 performance_metrics=performance_metrics,
-                optimization_timestamp=datetime.now().isoformat(),
+                optimization_timestamp=datetime.now(timezone.utc).isoformat(),
                 validation_period=validation_period,
                 symbols_used=symbols_used,
                 samples_count=samples_count,
