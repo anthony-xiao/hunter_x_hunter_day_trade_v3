@@ -1,6 +1,6 @@
 import asyncio
 from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 from enum import Enum
 import numpy as np
@@ -8,12 +8,14 @@ import pandas as pd
 from loguru import logger
 import json
 from pathlib import Path
+import pytz
 
 # Alpaca API (for trading only)
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest, LimitOrderRequest, StopOrderRequest, 
-    StopLimitOrderRequest, TrailingStopOrderRequest
+    StopLimitOrderRequest, TrailingStopOrderRequest,
+    TakeProfitRequest, StopLossRequest
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 from alpaca.common.exceptions import APIError
@@ -34,6 +36,7 @@ class OrderType(Enum):
     TRAILING_STOP = "trailing_stop"
 
 class OrderStatus(Enum):
+    NEW = "new"
     PENDING = "pending"
     FILLED = "filled"
     PARTIALLY_FILLED = "partially_filled"
@@ -97,7 +100,7 @@ class TradeSignal:
     
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.now()
+            self.timestamp = datetime.now(timezone.utc)
         if self.model_predictions is None:
             self.model_predictions = {}
 
@@ -307,6 +310,11 @@ class ExecutionEngine:
                 logger.warning(f"Invalid position size for {signal.symbol}")
                 return None
             
+            # Check for end-of-day position prevention (only for buy signals)
+            if signal.action == "buy" and self.should_prevent_new_positions():
+                logger.warning(f"Preventing new buy position for {signal.symbol} - market closes within 15 minutes")
+                return None
+            
             # Execute based on action
             order = None
             if signal.action == "buy":
@@ -468,7 +476,7 @@ class ExecutionEngine:
             return PositionSizing(0, 0, 0, 0, 0, 0, f"Error: {e}")
     
     async def _execute_buy_signal(self, signal: TradeSignal, sizing: PositionSizing) -> Optional[Order]:
-        """Execute buy signal with stop loss and take profit"""
+        """Execute buy signal with bracket order (stop loss and take profit)"""
         try:
             current_price = await self._get_current_price(signal.symbol)
             quantity = int(sizing.final_size)
@@ -481,12 +489,18 @@ class ExecutionEngine:
             stop_loss = self._round_price(stop_loss)
             take_profit = self._round_price(take_profit)
             
-            # Primary market order
+            # Create bracket order with stop loss and take profit
+            stop_loss_request = StopLossRequest(stop_price=stop_loss)
+            take_profit_request = TakeProfitRequest(limit_price=take_profit)
+            
             request = MarketOrderRequest(
                 symbol=signal.symbol,
                 qty=quantity,
                 side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.BRACKET,
+                stop_loss=stop_loss_request,
+                take_profit=take_profit_request
             )
             
             alpaca_order = self.trading_client.submit_order(request)
@@ -502,29 +516,25 @@ class ExecutionEngine:
                 filled_price=None,
                 filled_quantity=0,
                 limit_price=None,
-                stop_price=None,
+                stop_price=stop_loss,
                 trail_amount=None,
                 timestamp=datetime.now(),
                 updated_at=datetime.now()
             )
             
-            # Submit stop loss order (will be activated after fill)
-            await self._submit_stop_loss_order(signal.symbol, quantity, stop_loss)
-            
-            # Submit take profit order
-            await self._submit_take_profit_order(signal.symbol, quantity, take_profit)
+            logger.info(f"Bracket buy order submitted for {signal.symbol}: qty={quantity}, stop_loss=${stop_loss:.2f}, take_profit=${take_profit:.2f}")
             
             return order
             
         except APIError as e:
-            logger.error(f"Alpaca API error placing buy order for {signal.symbol}: {e}")
+            logger.error(f"Alpaca API error placing bracket buy order for {signal.symbol}: {e}")
             return None
         except Exception as e:
             logger.error(f"Error executing buy signal: {e}")
             return None
     
     async def _execute_sell_signal(self, signal: TradeSignal, sizing: PositionSizing) -> Optional[Order]:
-        """Execute sell signal (short position)"""
+        """Execute sell signal (short position) with bracket order"""
         try:
             current_price = await self._get_current_price(signal.symbol)
             quantity = int(sizing.final_size)
@@ -547,11 +557,18 @@ class ExecutionEngine:
             stop_loss = self._round_price(stop_loss)
             take_profit = self._round_price(take_profit)
             
+            # Create bracket order with stop loss and take profit for short position
+            stop_loss_request = StopLossRequest(stop_price=stop_loss)
+            take_profit_request = TakeProfitRequest(limit_price=take_profit)
+            
             request = MarketOrderRequest(
                 symbol=signal.symbol,
                 qty=quantity,
                 side=OrderSide.SELL,
-                time_in_force=TimeInForce.DAY
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.BRACKET,
+                stop_loss=stop_loss_request,
+                take_profit=take_profit_request
             )
             
             alpaca_order = self.trading_client.submit_order(request)
@@ -566,20 +583,18 @@ class ExecutionEngine:
                 filled_price=None,
                 filled_quantity=0,
                 limit_price=None,
-                stop_price=None,
+                stop_price=stop_loss,
                 trail_amount=None,
                 timestamp=datetime.now(),
                 updated_at=datetime.now()
             )
             
-            # Submit protective orders
-            await self._submit_stop_loss_order(signal.symbol, -quantity, stop_loss)  # Negative for short
-            await self._submit_take_profit_order(signal.symbol, -quantity, take_profit)
+            logger.info(f"Bracket sell order submitted for {signal.symbol}: qty={quantity}, stop_loss=${stop_loss:.2f}, take_profit=${take_profit:.2f}")
             
             return order
             
         except APIError as e:
-            logger.error(f"Alpaca API error placing sell order for {signal.symbol}: {e}")
+            logger.error(f"Alpaca API error placing bracket sell order for {signal.symbol}: {e}")
             return None
         except Exception as e:
             logger.error(f"Error executing sell signal: {e}")
@@ -632,49 +647,52 @@ class ExecutionEngine:
             logger.error(f"Error executing close signal: {e}")
             return None
     
-    async def _submit_stop_loss_order(self, symbol: str, quantity: float, stop_price: float) -> None:
-        """Submit stop loss order"""
-        try:
-            side = OrderSide.SELL if quantity > 0 else OrderSide.BUY
-            
-            # Round stop price to nearest penny
-            rounded_stop_price = self._round_price(stop_price)
-            
-            request = StopOrderRequest(
-                symbol=symbol,
-                qty=abs(quantity),
-                side=side,
-                stop_price=rounded_stop_price,
-                time_in_force=TimeInForce.GTC  # Good till cancelled
-            )
-            
-            self.trading_client.submit_order(request)
-            logger.info(f"Stop loss order submitted for {symbol} at ${stop_price:.2f}")
-            
-        except Exception as e:
-            logger.error(f"Error submitting stop loss for {symbol}: {e}")
+    # NOTE: These methods are no longer used as we now use bracket orders
+    # to avoid wash trade detection issues
     
-    async def _submit_take_profit_order(self, symbol: str, quantity: float, limit_price: float) -> None:
-        """Submit take profit order"""
-        try:
-            side = OrderSide.SELL if quantity > 0 else OrderSide.BUY
-            
-            # Round limit price to nearest penny
-            rounded_limit_price = self._round_price(limit_price)
-            
-            request = LimitOrderRequest(
-                symbol=symbol,
-                qty=abs(quantity),
-                side=side,
-                limit_price=rounded_limit_price,
-                time_in_force=TimeInForce.GTC
-            )
-            
-            self.trading_client.submit_order(request)
-            logger.info(f"Take profit order submitted for {symbol} at ${limit_price:.2f}")
-            
-        except Exception as e:
-            logger.error(f"Error submitting take profit for {symbol}: {e}")
+    # async def _submit_stop_loss_order(self, symbol: str, quantity: float, stop_price: float) -> None:
+    #     """Submit stop loss order - DEPRECATED: Use bracket orders instead"""
+    #     try:
+    #         side = OrderSide.SELL if quantity > 0 else OrderSide.BUY
+    #         
+    #         # Round stop price to nearest penny
+    #         rounded_stop_price = self._round_price(stop_price)
+    #         
+    #         request = StopOrderRequest(
+    #             symbol=symbol,
+    #             qty=abs(quantity),
+    #             side=side,
+    #             stop_price=rounded_stop_price,
+    #             time_in_force=TimeInForce.GTC  # Good till cancelled
+    #         )
+    #         
+    #         self.trading_client.submit_order(request)
+    #         logger.info(f"Stop loss order submitted for {symbol} at ${stop_price:.2f}")
+    #         
+    #     except Exception as e:
+    #         logger.error(f"Error submitting stop loss for {symbol}: {e}")
+    # 
+    # async def _submit_take_profit_order(self, symbol: str, quantity: float, limit_price: float) -> None:
+    #     """Submit take profit order - DEPRECATED: Use bracket orders instead"""
+    #     try:
+    #         side = OrderSide.SELL if quantity > 0 else OrderSide.BUY
+    #         
+    #         # Round limit price to nearest penny
+    #         rounded_limit_price = self._round_price(limit_price)
+    #         
+    #         request = LimitOrderRequest(
+    #             symbol=symbol,
+    #             qty=abs(quantity),
+    #             side=side,
+    #             limit_price=rounded_limit_price,
+    #             time_in_force=TimeInForce.GTC
+    #         )
+    #         
+    #         self.trading_client.submit_order(request)
+    #         logger.info(f"Take profit order submitted for {symbol} at ${limit_price:.2f}")
+    #         
+    #     except Exception as e:
+    #         logger.error(f"Error submitting take profit for {symbol}: {e}")
     
     async def _get_current_price(self, symbol: str) -> float:
         """Get current price for symbol using WebSocket (primary) or REST API (fallback)"""
@@ -759,7 +777,7 @@ class ExecutionEngine:
     async def _get_volatility_primary(self, symbol: str) -> Optional[float]:
         """Get volatility from primary data source (Polygon)"""
         try:
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=30)
             
             # Get daily bars from Polygon
@@ -797,11 +815,11 @@ class ExecutionEngine:
             
             with Session() as session:
                 # Get last 30 days of market data
-                end_date = datetime.now()
+                end_date = datetime.now(timezone.utc)
                 start_date = end_date - timedelta(days=30)
                 
                 result = session.execute(text("""
-                    SELECT close_price, timestamp
+                    SELECT close, timestamp
                     FROM market_data
                     WHERE symbol = :symbol
                     AND timestamp >= :start_date
@@ -813,7 +831,7 @@ class ExecutionEngine:
                     'end_date': end_date
                 })
                 
-                prices = [float(row.close_price) for row in result.fetchall()]
+                prices = [float(row.close) for row in result.fetchall()]
                 
                 if len(prices) >= 10:
                     returns = np.diff(np.log(prices))
@@ -878,7 +896,7 @@ class ExecutionEngine:
                 return True
             
             # Get recent volume data from Polygon
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=5)
             
             bars = self.polygon_client.get_aggs(
@@ -945,7 +963,7 @@ class ExecutionEngine:
                 position = Position(
                     symbol=pos.symbol,
                     quantity=float(pos.qty),
-                    avg_price=float(pos.avg_cost),
+                    avg_price=float(pos.avg_entry_price),
                     market_value=float(pos.market_value),
                     unrealized_pnl=float(pos.unrealized_pl),
                     realized_pnl=0.0,  # Would need to track separately
@@ -979,11 +997,11 @@ class ExecutionEngine:
                     side=alpaca_order.side.value,
                     order_type=OrderType(alpaca_order.order_type.value),
                     status=OrderStatus(alpaca_order.status.value),
-                    filled_price=float(alpaca_order.filled_avg_price) if alpaca_order.filled_avg_price else None,
-                    filled_quantity=float(alpaca_order.filled_qty) if alpaca_order.filled_qty else 0,
-                    limit_price=float(alpaca_order.limit_price) if alpaca_order.limit_price else None,
-                    stop_price=float(alpaca_order.stop_price) if alpaca_order.stop_price else None,
-                    trail_amount=float(alpaca_order.trail_amount) if alpaca_order.trail_amount else None,
+                    filled_price=float(alpaca_order.filled_avg_price) if alpaca_order.filled_avg_price is not None else None,
+                    filled_quantity=float(alpaca_order.filled_qty) if alpaca_order.filled_qty is not None else 0,
+                    limit_price=float(alpaca_order.limit_price) if alpaca_order.limit_price is not None else None,
+                    stop_price=float(alpaca_order.stop_price) if alpaca_order.stop_price is not None else None,
+                    trail_amount=float(getattr(alpaca_order, 'trail_price', None) or getattr(alpaca_order, 'trail_percent', None)) if hasattr(alpaca_order, 'trail_price') or hasattr(alpaca_order, 'trail_percent') else None,
                     timestamp=alpaca_order.created_at,
                     updated_at=alpaca_order.updated_at
                 )
@@ -1351,6 +1369,104 @@ class ExecutionEngine:
         except Exception as e:
             logger.error(f"Emergency stop failed: {e}")
             return False
+    
+    async def close_all_positions_eod(self) -> bool:
+        """End-of-day liquidation - close all positions for daily operations"""
+        try:
+            logger.info("END-OF-DAY LIQUIDATION - Closing all positions before market close")
+            
+            # Get all current positions
+            positions = self.trading_client.get_all_positions()
+            
+            if not positions:
+                logger.info("No positions to close for end-of-day liquidation")
+                return True
+            
+            closed_positions = 0
+            failed_positions = 0
+            
+            # Close all positions
+            for position in positions:
+                try:
+                    self.trading_client.close_position(position.symbol)
+                    logger.info(f"EOD: Closed position {position.symbol} (qty: {position.qty}, value: ${float(position.market_value):.2f})")
+                    closed_positions += 1
+                except APIError as e:
+                    logger.error(f"EOD: Failed to close position {position.symbol}: {e}")
+                    failed_positions += 1
+            
+            # Cancel all open orders to prevent new positions
+            await self._cancel_all_orders()
+            logger.info("EOD: Cancelled all open orders")
+            
+            # Log summary
+            logger.info(f"EOD LIQUIDATION COMPLETE - Closed: {closed_positions}, Failed: {failed_positions}")
+            
+            return failed_positions == 0
+            
+        except Exception as e:
+            logger.error(f"End-of-day liquidation failed: {e}")
+            return False
+    
+    def get_market_clock(self) -> Optional[Dict[str, Any]]:
+        """Get market clock from Alpaca and convert timestamps to UTC"""
+        try:
+            # Get market clock from Alpaca (returns Eastern Time)
+            clock = self.trading_client.get_clock()
+            
+            # Convert Eastern Time to UTC
+            eastern = pytz.timezone('US/Eastern')
+            utc = pytz.UTC
+            
+            # Convert timestamps to UTC
+            market_clock = {
+                'timestamp': datetime.now(utc),
+                'is_open': clock.is_open,
+                'next_open': eastern.localize(clock.next_open.replace(tzinfo=None)).astimezone(utc),
+                'next_close': eastern.localize(clock.next_close.replace(tzinfo=None)).astimezone(utc),
+                'raw_clock': clock  # Keep original for debugging
+            }
+            
+            return market_clock
+            
+        except Exception as e:
+            logger.error(f"Failed to get market clock: {e}")
+            return None
+    
+    def is_market_near_close(self, minutes_before_close: int = 10) -> bool:
+        """Check if market closes within specified minutes"""
+        try:
+            market_clock = self.get_market_clock()
+            if not market_clock:
+                logger.warning("Could not get market clock, assuming market not near close")
+                return False
+            
+            # If market is closed, return False
+            if not market_clock['is_open']:
+                return False
+            
+            # Calculate time until market close
+            now_utc = datetime.now(timezone.utc)
+            next_close_utc = market_clock['next_close']
+            
+            # Handle timezone-aware datetime comparison
+            if next_close_utc.tzinfo is None:
+                next_close_utc = next_close_utc.replace(tzinfo=timezone.utc)
+            
+            time_until_close = next_close_utc - now_utc
+            minutes_until_close = time_until_close.total_seconds() / 60
+            
+            logger.debug(f"Minutes until market close: {minutes_until_close:.1f}")
+            
+            return minutes_until_close <= minutes_before_close
+            
+        except Exception as e:
+            logger.error(f"Error checking if market near close: {e}")
+            return False
+    
+    def should_prevent_new_positions(self) -> bool:
+        """Check if new positions should be prevented (15 minutes before market close)"""
+        return self.is_market_near_close(minutes_before_close=15)
     
     async def get_system_status(self) -> Dict[str, Any]:
         """Get comprehensive system status"""

@@ -3,7 +3,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 import pandas as pd
 from loguru import logger
@@ -180,8 +180,8 @@ async def background_initialization(signal_generator, trading_symbols):
                 try:
                     await data_pipeline.download_historical_data(
                         symbol=symbol,
-                        start_date=datetime.now() - timedelta(days=760),
-                        end_date=datetime.now()
+                        start_date=datetime.now(timezone.utc) - timedelta(days=760),
+            end_date=datetime.now(timezone.utc)
                     )
                     logger.info(f"Downloaded historical data for {symbol}")
                 except Exception as e:
@@ -199,7 +199,7 @@ async def background_model_training():
     while True:
         try:
             # Check if it's time to retrain models (daily at market close)
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             
             # Train models daily at 4:30 PM ET (after market close)
             if (now.hour == 16 and now.minute >= 30 and 
@@ -216,8 +216,8 @@ async def background_model_training():
                             # Get historical data
                             historical_data = await data_pipeline.download_historical_data(
                                 symbol=symbol,
-                                start_date=datetime.now() - timedelta(days=760),
-                                end_date=datetime.now()
+                                start_date=datetime.now(timezone.utc) - timedelta(days=760),
+            end_date=datetime.now(timezone.utc)
                             )
                             
                             if historical_data is not None and len(historical_data) > 100:
@@ -293,7 +293,7 @@ async def trading_loop():
     while trading_active:
         try:
             # Check if market is open
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             
             # Trading hours: 9:30 AM - 4:00 PM ET (Monday-Friday)
             if (now.weekday() < 5 and  # Monday = 0, Friday = 4
@@ -309,8 +309,8 @@ async def trading_loop():
                         # Get recent historical data for analysis
                         data = await data_pipeline.download_historical_data(
                             symbol=symbol,
-                            start_date=datetime.now() - timedelta(days=30),
-                            end_date=datetime.now()
+                            start_date=datetime.now(timezone.utc) - timedelta(days=30),
+            end_date=datetime.now(timezone.utc)
                         )
                         
                         if data is not None and len(data) >= 60:
@@ -380,7 +380,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 @app.get("/health/detailed")
@@ -388,7 +388,7 @@ async def detailed_health_check():
     """Detailed health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "trading_active": trading_active,
         "components": {
             "data_pipeline": data_pipeline is not None,
@@ -407,7 +407,7 @@ async def get_trading_status():
         status = {
             "trading_active": trading_active,
             "event_driven_active": event_driven_active,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "last_model_training": last_model_training.isoformat() if last_model_training else None
         }
         
@@ -492,7 +492,7 @@ async def start_trading(background_tasks: BackgroundTasks):
             "event_driven_active": event_driven_active,
             "polling_backup_active": trading_active,
             "trading_symbols_count": len(trading_symbols),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:
@@ -538,7 +538,7 @@ async def stop_trading():
             "status": "inactive",
             "event_driven_stopped": True,
             "polling_stopped": True,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:
@@ -598,7 +598,7 @@ async def get_performance_validation(
     try:
         from datetime import datetime, timedelta
         
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
         
         validation_result = await execution_engine.performance_validator.validate_system_performance(
@@ -643,7 +643,7 @@ async def get_drift_detection():
         
         return {
             "status": "success",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "drift_results": drift_results,
             "recent_alerts": [
                 {
@@ -680,7 +680,7 @@ async def optimize_ensemble_weights():
         logger.info(f"Loaded {len(model_trainer.models)} models for optimization")
         
         # Get recent validation data for optimization (last 30 days)
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=30)
         
         # Get trading universe for multi-symbol ensemble optimization
@@ -893,7 +893,7 @@ async def emergency_stop():
         return {
             "message": "Emergency stop executed - all positions closed",
             "status": "emergency_stopped",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:
@@ -987,7 +987,7 @@ async def train_models(symbol: str, background_tasks: BackgroundTasks):
         return {
             "message": f"Model training started for {symbol}",
             "symbol": symbol,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except Exception as e:
@@ -1000,7 +1000,7 @@ async def train_symbol_models(symbol: str):
         logger.info(f"Starting model training for {symbol}")
         
         # Define date range for historical data
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=760)
         
         # First, try to load existing data from database
@@ -1126,6 +1126,127 @@ async def get_risk_metrics():
         logger.error(f"Error getting risk metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/trading/eod-liquidation")
+async def trigger_eod_liquidation():
+    """Manually trigger end-of-day liquidation to close all positions"""
+    try:
+        if not execution_engine:
+            raise HTTPException(status_code=500, detail="Execution engine not initialized")
+        
+        logger.info("Manual EOD liquidation triggered")
+        
+        # Execute end-of-day liquidation
+        success = await execution_engine.close_all_positions_eod()
+        
+        if success:
+            return {
+                "status": "success",
+                "message": "End-of-day liquidation completed successfully",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "End-of-day liquidation failed",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+    except Exception as e:
+        logger.error(f"Error during manual EOD liquidation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/trading/market-status")
+async def get_market_status():
+    """Get current market status including time until close and position restrictions"""
+    try:
+        if not execution_engine:
+            raise HTTPException(status_code=500, detail="Execution engine not initialized")
+        
+        # Get market clock from Alpaca
+        market_clock = execution_engine.get_market_clock()
+        
+        if not market_clock:
+            raise HTTPException(status_code=500, detail="Unable to retrieve market status")
+        
+        # Check various time-based restrictions
+        near_close_10min = execution_engine.is_market_near_close(10)
+        near_close_15min = execution_engine.is_market_near_close(15)
+        should_prevent_positions = execution_engine.should_prevent_new_positions()
+        
+        return {
+            "status": "success",
+            "market_clock": {
+                "timestamp": market_clock['timestamp'].isoformat(),
+                "is_open": market_clock['is_open'],
+                "next_open": market_clock['next_open'].isoformat(),
+                "next_close": market_clock['next_close'].isoformat()
+            },
+            "restrictions": {
+                "eod_liquidation_due": near_close_10min,
+                "new_positions_blocked": should_prevent_positions,
+                "near_close_15min": near_close_15min,
+                "near_close_10min": near_close_10min
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting market status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/trading/market-hours")
+async def get_market_hours():
+    """Get today's market hours in both ET and UTC"""
+    try:
+        if not execution_engine:
+            raise HTTPException(status_code=500, detail="Execution engine not initialized")
+        
+        # Get market clock
+        market_clock = execution_engine.get_market_clock()
+        
+        if not market_clock:
+            raise HTTPException(status_code=500, detail="Unable to retrieve market hours")
+        
+        # Get calendar for today to check if it's a trading day
+        from alpaca.trading.requests import GetCalendarRequest
+        from datetime import date
+        
+        today = date.today()
+        calendar_request = GetCalendarRequest(
+            start=today,
+            end=today
+        )
+        
+        calendar = execution_engine.trading_client.get_calendar(calendar_request)
+        is_trading_day = len(calendar) > 0
+        
+        market_hours_info = {
+            "status": "success",
+            "date": today.isoformat(),
+            "is_trading_day": is_trading_day,
+            "market_status": {
+                "is_open": market_clock['is_open'],
+                "timestamp_utc": market_clock['timestamp'].isoformat()
+            }
+        }
+        
+        if is_trading_day and calendar:
+            trading_day = calendar[0]
+            market_hours_info["market_hours"] = {
+                "open_et": trading_day.open.strftime("%H:%M:%S ET"),
+                "close_et": trading_day.close.strftime("%H:%M:%S ET"),
+                "open_utc": market_clock['next_open'].isoformat() if not market_clock['is_open'] else None,
+                "close_utc": market_clock['next_close'].isoformat()
+            }
+        else:
+            market_hours_info["message"] = "Market is closed today (holiday or weekend)"
+        
+        return market_hours_info
+        
+    except Exception as e:
+        logger.error(f"Error getting market hours: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/trading/execute-manual-trade")
 async def execute_manual_trade(
     symbol: str = Query(..., description="Stock symbol (e.g., AAPL)"),
@@ -1152,7 +1273,7 @@ async def execute_manual_trade(
             risk_score=0.5,         # Placeholder value
             quantity=quantity,
             price=price,
-            timestamp=datetime.now()
+            timestamp=datetime.now(timezone.utc)
         )
         
         # Execute the trade

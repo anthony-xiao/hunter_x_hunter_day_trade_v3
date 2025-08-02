@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import numpy as np
@@ -164,7 +164,7 @@ class ConceptDriftDetector:
     async def _get_baseline_performance(self, model_name: str) -> Optional[Dict]:
         """Get baseline performance data for comparison"""
         try:
-            end_date = datetime.now() - timedelta(days=self.windows['current_days'])
+            end_date = datetime.now(timezone.utc) - timedelta(days=self.windows['current_days'])
             start_date = end_date - timedelta(days=self.windows['baseline_days'])
             
             with self.Session() as session:
@@ -218,7 +218,7 @@ class ConceptDriftDetector:
     async def _get_current_performance(self, model_name: str) -> Optional[Dict]:
         """Get current performance data for comparison"""
         try:
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=self.windows['current_days'])
             
             with self.Session() as session:
@@ -486,7 +486,7 @@ class ConceptDriftDetector:
             drift_type = 'GENERAL_DRIFT'
         
         return DriftAlert(
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             model_name=model_name,
             drift_type=drift_type,
             severity=severity,
@@ -513,7 +513,7 @@ class ConceptDriftDetector:
                     FROM model_predictions
                     WHERE timestamp >= :cutoff_date
                 """), {
-                    'cutoff_date': datetime.now() - timedelta(days=7)
+                    'cutoff_date': datetime.now(timezone.utc) - timedelta(days=7)
                 })
                 
                 return [row.model_name for row in result.fetchall()]
@@ -549,7 +549,7 @@ class ConceptDriftDetector:
             self.performance_history[model_name] = []
         
         self.performance_history[model_name].append({
-            'timestamp': datetime.now(),
+            'timestamp': datetime.now(timezone.utc),
             'drift_score': drift_metrics.overall_drift_score,
             'drift_detected': drift_metrics.drift_detected
         })
