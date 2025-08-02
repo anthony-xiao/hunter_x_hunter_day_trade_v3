@@ -1,0 +1,13 @@
+[Unit]
+Description=PostgreSQL UTC Environment
+After=postgresql.service
+
+[Service]
+Type=oneshot
+Environment=PGTZ=UTC
+Environment=TZ=UTC
+ExecStart=/bin/true
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
