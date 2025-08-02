@@ -1,0 +1,47 @@
+{
+  "weights": {
+    "lstm": 0.3798585972981278,
+    "cnn": 0.17914848153433124,
+    "random_forest": 0.01856784455747249,
+    "xgboost": 0.36091530065843175,
+    "transformer": 0.0615097759516367
+  },
+  "performance_metrics": {
+    "lstm": {
+      "accuracy": 0.5300876726886291,
+      "predictions_count": 15056,
+      "weight": 0.3798585972981278
+    },
+    "cnn": {
+      "accuracy": 0.5302929868752486,
+      "predictions_count": 15086,
+      "weight": 0.17914848153433124
+    },
+    "random_forest": {
+      "accuracy": 0.5247767118756202,
+      "predictions_count": 15115,
+      "weight": 0.01856784455747249
+    },
+    "xgboost": {
+      "accuracy": 0.5143235196824346,
+      "predictions_count": 15115,
+      "weight": 0.36091530065843175
+    },
+    "transformer": {
+      "accuracy": 0.5298884165781084,
+      "predictions_count": 15056,
+      "weight": 0.0615097759516367
+    }
+  },
+  "optimization_timestamp": "2025-07-31T06:33:23.946771+00:00",
+  "validation_period": {
+    "start_date": "2025-07-01T06:01:51.612209+00:00",
+    "end_date": "2025-07-31T06:01:51.612209+00:00"
+  },
+  "symbols_used": [
+    "AAPL"
+  ],
+  "samples_count": 15116,
+  "sharpe_ratio": 19.032245157606226,
+  "version": "1.0"
+}
