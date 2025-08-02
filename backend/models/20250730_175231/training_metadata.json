@@ -1,0 +1,178 @@
+{
+  "timestamp": "2025-07-31T02:26:41.352528",
+  "model_configs": {
+    "lstm": {
+      "name": "lstm",
+      "model_type": "neural_network",
+      "parameters": {
+        "units": [
+          128,
+          64,
+          32
+        ],
+        "dropout": 0.2,
+        "epochs": 2,
+        "batch_size": 256,
+        "learning_rate": 0.001,
+        "optimizer": "adam",
+        "loss": "binary_crossentropy"
+      },
+      "training_window": 18,
+      "validation_window": 6,
+      "lookback_window": 60,
+      "feature_count": 164
+    },
+    "cnn": {
+      "name": "cnn",
+      "model_type": "neural_network",
+      "parameters": {
+        "filters": [
+          32,
+          64
+        ],
+        "kernel_size": [
+          3,
+          3
+        ],
+        "dropout": 0.3,
+        "l2_reg": 0.01,
+        "epochs": 2,
+        "batch_size": 128,
+        "learning_rate": 0.0005,
+        "optimizer": "rmsprop"
+      },
+      "training_window": 18,
+      "validation_window": 6,
+      "lookback_window": 30,
+      "feature_count": 20
+    },
+    "random_forest": {
+      "name": "random_forest",
+      "model_type": "ensemble",
+      "parameters": {
+        "n_estimators": 200,
+        "max_depth": 15,
+        "min_samples_split": 10,
+        "random_state": 42,
+        "oob_score": true
+      },
+      "training_window": 18,
+      "validation_window": 6,
+      "lookback_window": 1,
+      "feature_count": 164
+    },
+    "xgboost": {
+      "name": "xgboost",
+      "model_type": "gradient_boosting",
+      "parameters": {
+        "n_estimators": 500,
+        "learning_rate": 0.1,
+        "max_depth": 8,
+        "random_state": 42,
+        "tree_method": "hist"
+      },
+      "training_window": 18,
+      "validation_window": 6,
+      "lookback_window": 1,
+      "feature_count": 30
+    },
+    "transformer": {
+      "name": "transformer",
+      "model_type": "neural_network",
+      "parameters": {
+        "num_heads": 2,
+        "num_layers": 2,
+        "dropout": 0.1,
+        "epochs": 2,
+        "batch_size": 4,
+        "learning_rate": 0.001,
+        "warmup_steps": 100
+      },
+      "training_window": 18,
+      "validation_window": 6,
+      "lookback_window": 60,
+      "feature_count": 164
+    }
+  },
+  "performance_metrics": {
+    "lstm": {
+      "accuracy": 0.4686366963419409,
+      "precision": 0.4686366963419409,
+      "recall": 1.0,
+      "sharpe_ratio": -3.9976180434666064,
+      "max_drawdown": 24.05909018001901,
+      "win_rate": 0.4686366963419409,
+      "total_trades": 58747,
+      "validation_score": 0.4686366963419409,
+      "overfitting_score": 0.06272660731611823,
+      "profit_factor": 0.9747885699312496,
+      "last_updated": "2025-07-31T02:01:59.347417"
+    },
+    "cnn": {
+      "accuracy": 0.4686047897057071,
+      "precision": 0.4686047897057071,
+      "recall": 1.0,
+      "sharpe_ratio": -4.017678902173169,
+      "max_drawdown": 27.190067561974374,
+      "win_rate": 0.4686047897057071,
+      "total_trades": 58751,
+      "validation_score": 0.4686047897057071,
+      "overfitting_score": 0.06279042058858575,
+      "profit_factor": 0.9746636770971819,
+      "last_updated": "2025-07-31T02:11:20.843425"
+    },
+    "random_forest": {
+      "accuracy": 0.5263292259513922,
+      "precision": 0.4925216871073886,
+      "recall": 0.35883186226435654,
+      "sharpe_ratio": 6.416957667558016,
+      "max_drawdown": 6.026312617730317,
+      "win_rate": 0.1681360201511335,
+      "total_trades": 20058,
+      "validation_score": 0.5263292259513922,
+      "overfitting_score": 0.0526584519027844,
+      "profit_factor": 1.0726883520692558,
+      "last_updated": "2025-07-31T02:19:35.903190"
+    },
+    "xgboost": {
+      "accuracy": 0.5113690516713186,
+      "precision": 0.4772876131766519,
+      "recall": 0.4499654934437543,
+      "sharpe_ratio": 0.9542793991554387,
+      "max_drawdown": 2850000.0000000005,
+      "win_rate": 0.210838042072299,
+      "total_trades": 25955,
+      "validation_score": 0.5113690516713186,
+      "overfitting_score": 0.02273810334263726,
+      "profit_factor": 1.009213532758728,
+      "last_updated": "2025-07-31T02:19:51.328442"
+    },
+    "transformer": {
+      "accuracy": 0.4686366963419409,
+      "precision": 0.4686366963419409,
+      "recall": 1.0,
+      "sharpe_ratio": -3.9976180434666064,
+      "max_drawdown": 24.05909018001901,
+      "win_rate": 0.4686366963419409,
+      "total_trades": 58747,
+      "validation_score": 0.4686366963419409,
+      "overfitting_score": 0.06272660731611823,
+      "profit_factor": 0.9747885699312496,
+      "last_updated": "2025-07-31T02:26:40.492236"
+    }
+  },
+  "ensemble_weights": {
+    "lstm": 0.25,
+    "cnn": 0.2,
+    "random_forest": 0.2,
+    "xgboost": 0.2,
+    "transformer": 0.15
+  },
+  "trained_models": [
+    "lstm",
+    "cnn",
+    "random_forest",
+    "xgboost",
+    "transformer"
+  ]
+}
