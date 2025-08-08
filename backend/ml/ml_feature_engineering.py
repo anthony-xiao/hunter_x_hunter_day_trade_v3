@@ -120,7 +120,8 @@ class FeatureEngineering:
                         low,
                         close,
                         volume,
-                        vwap
+                        vwap,
+                        transactions
                     FROM market_data
                     WHERE symbol = :symbol
                     AND timestamp >= :start_date
@@ -138,14 +139,14 @@ class FeatureEngineering:
                     return None
                 
                 df = pd.DataFrame(data, columns=[
-                    'timestamp', 'open', 'high', 'low', 'close', 'volume', 'vwap'
+                    'timestamp', 'open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions'
                 ])
                 
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
                 df.set_index('timestamp', inplace=True)
                 
                 # Convert to numeric
-                numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'vwap']
+                numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions']
                 for col in numeric_columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
                 
@@ -166,8 +167,8 @@ class FeatureEngineering:
             
             # Moving averages
             for period in self.lookback_periods:
-                features[f'sma_{period}'] = talib.SMA(data['close'].values, timeperiod=period)
-                features[f'ema_{period}'] = talib.EMA(data['close'].values, timeperiod=period)
+                features[f'sma_{period}'] = talib.SMA(data['close'].values.astype(np.float64), timeperiod=period)
+                features[f'ema_{period}'] = talib.EMA(data['close'].values.astype(np.float64), timeperiod=period)
                 features[f'price_to_sma_{period}'] = data['close'] / features[f'sma_{period}']
                 features[f'price_to_ema_{period}'] = data['close'] / features[f'ema_{period}']
             
@@ -178,47 +179,47 @@ class FeatureEngineering:
             
             # Momentum indicators
             for period in self.momentum_periods:
-                features[f'roc_{period}'] = talib.ROC(data['close'].values, timeperiod=period)
-                features[f'momentum_{period}'] = talib.MOM(data['close'].values, timeperiod=period)
+                features[f'roc_{period}'] = talib.ROC(data['close'].values.astype(np.float64), timeperiod=period)
+                features[f'momentum_{period}'] = talib.MOM(data['close'].values.astype(np.float64), timeperiod=period)
             
             # RSI with multiple periods
             for period in [14, 21, 30]:
-                features[f'rsi_{period}'] = talib.RSI(data['close'].values, timeperiod=period)
+                features[f'rsi_{period}'] = talib.RSI(data['close'].values.astype(np.float64), timeperiod=period)
             
             # MACD
-            macd, macd_signal, macd_hist = talib.MACD(data['close'].values)
+            macd, macd_signal, macd_hist = talib.MACD(data['close'].values.astype(np.float64))
             features['macd'] = macd
             features['macd_signal'] = macd_signal
             features['macd_histogram'] = macd_hist
             
             # Bollinger Bands
             for period in [20, 50]:
-                bb_upper, bb_middle, bb_lower = talib.BBANDS(data['close'].values, timeperiod=period)
+                bb_upper, bb_middle, bb_lower = talib.BBANDS(data['close'].values.astype(np.float64), timeperiod=period)
                 features[f'bb_upper_{period}'] = bb_upper
                 features[f'bb_lower_{period}'] = bb_lower
                 features[f'bb_width_{period}'] = (bb_upper - bb_lower) / bb_middle
                 features[f'bb_position_{period}'] = (data['close'] - bb_lower) / (bb_upper - bb_lower)
             
             # Stochastic Oscillator
-            slowk, slowd = talib.STOCH(data['high'].values, data['low'].values, data['close'].values)
+            slowk, slowd = talib.STOCH(data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64))
             features['stoch_k'] = slowk
             features['stoch_d'] = slowd
             
             # Williams %R
-            features['williams_r'] = talib.WILLR(data['high'].values, data['low'].values, data['close'].values)
+            features['williams_r'] = talib.WILLR(data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64))
             
             # Average True Range
-            features['atr'] = talib.ATR(data['high'].values, data['low'].values, data['close'].values)
+            features['atr'] = talib.ATR(data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64))
             features['atr_pct'] = features['atr'] / data['close']
             
             # Commodity Channel Index
-            features['cci'] = talib.CCI(data['high'].values, data['low'].values, data['close'].values)
+            features['cci'] = talib.CCI(data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64))
             
             # Money Flow Index
-            features['mfi'] = talib.MFI(data['high'].values, data['low'].values, data['close'].values, data['volume'].values)
+            features['mfi'] = talib.MFI(data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64), data['volume'].values.astype(np.float64))
             
             # On Balance Volume
-            features['obv'] = talib.OBV(data['close'].values, data['volume'].values)
+            features['obv'] = talib.OBV(data['close'].values.astype(np.float64), data['volume'].values.astype(np.float64))
             features['obv_sma'] = features['obv'].rolling(20).mean()
             
             # Volume indicators
@@ -226,9 +227,9 @@ class FeatureEngineering:
             features['volume_ratio'] = data['volume'] / features['volume_sma_20']
             
             # Price patterns
-            features['doji'] = talib.CDLDOJI(data['open'].values, data['high'].values, data['low'].values, data['close'].values)
-            features['hammer'] = talib.CDLHAMMER(data['open'].values, data['high'].values, data['low'].values, data['close'].values)
-            features['engulfing'] = talib.CDLENGULFING(data['open'].values, data['high'].values, data['low'].values, data['close'].values)
+            features['doji'] = talib.CDLDOJI(data['open'].values.astype(np.float64), data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64))
+            features['hammer'] = talib.CDLHAMMER(data['open'].values.astype(np.float64), data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64))
+            features['engulfing'] = talib.CDLENGULFING(data['open'].values.astype(np.float64), data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64))
             
             return features.fillna(method='ffill').fillna(0)
             
@@ -241,26 +242,101 @@ class FeatureEngineering:
         try:
             features = pd.DataFrame(index=data.index)
             
-            # Price impact measures
+            # Calculate accumulated_volume as cumulative sum of volume
+            data = data.copy()
+            data['accumulated_volume'] = data['volume'].cumsum()
+            
+            # Basic microstructure features
+            features['spread_proxy'] = (data['high'] - data['low']) / data['close']
+            features['price_impact'] = abs(data['close'] - data['open']) / (data['volume'] + 1e-8)
+            
+            # Tick direction and momentum
+            features['tick_direction'] = np.sign(data['close'] - data['close'].shift(1))
+            
+            # Consecutive ticks
+            features['consecutive_up'] = (features['tick_direction'] == 1).astype(int).groupby(
+                (features['tick_direction'] != features['tick_direction'].shift()).cumsum()).cumsum()
+            features['consecutive_down'] = (features['tick_direction'] == -1).astype(int).groupby(
+                (features['tick_direction'] != features['tick_direction'].shift()).cumsum()).cumsum()
+            
+            # Order flow imbalance proxy
+            features['flow_imbalance'] = (data['close'] - (data['high'] + data['low']) / 2) / \
+                                        (data['high'] - data['low'] + 1e-8)
+            
+            # Enhanced microstructure features using VWAP
+            if 'vwap' in data.columns:
+                # VWAP-based features
+                features['price_vwap_ratio'] = data['close'] / (data['vwap'] + 1e-8)
+                features['vwap_deviation'] = (data['close'] - data['vwap']) / (data['vwap'] + 1e-8)
+                features['vwap_momentum'] = data['vwap'].pct_change()
+                
+                # VWAP trend strength
+                for period in [5, 10, 20]:
+                    vwap_sma = data['vwap'].rolling(period).mean()
+                    features[f'vwap_trend_{period}'] = (data['vwap'] - vwap_sma) / (vwap_sma + 1e-8)
+            
+            # Transaction-based microstructure indicators
+            if 'transactions' in data.columns:
+                # Transaction-based microstructure indicators
+                features['avg_trade_size'] = data['volume'] / (data['transactions'] + 1e-8)
+                features['trade_intensity'] = data['transactions'] / data['volume'].rolling(20).mean().fillna(1)
+                
+                # Transaction momentum and volatility
+                features['transaction_momentum'] = data['transactions'].pct_change()
+                features['transaction_volatility'] = data['transactions'].rolling(10).std() / (data['transactions'].rolling(10).mean() + 1e-8)
+                
+                # Market activity indicators
+                features['high_frequency_ratio'] = data['transactions'] / (data['volume'] + 1e-8)  # Transactions per unit volume
+                
+                # Rolling transaction statistics
+                for period in [5, 10, 20]:
+                    features[f'transactions_ma_{period}'] = data['transactions'].rolling(period).mean()
+                    features[f'transactions_ratio_{period}'] = data['transactions'] / (features[f'transactions_ma_{period}'] + 1e-8)
+            
+            # Accumulated volume features
+            if 'accumulated_volume' in data.columns:
+                # Accumulated volume features
+                features['volume_acceleration'] = data['accumulated_volume'].diff().diff()  # Second derivative
+                features['volume_momentum'] = data['accumulated_volume'].pct_change()
+                
+                # Volume distribution analysis
+                features['volume_concentration'] = data['volume'] / (data['accumulated_volume'] + 1e-8)
+                
+                # Intraday volume patterns
+                features['volume_profile'] = data['accumulated_volume'] / data['accumulated_volume'].rolling(20).max().fillna(1)
+            
+            # Advanced microstructure indicators combining multiple fields
+            if all(col in data.columns for col in ['vwap', 'transactions', 'volume']):
+                # Market efficiency indicators
+                features['price_efficiency'] = abs(data['close'] - data['vwap']) / (data['transactions'] + 1e-8)
+                features['liquidity_proxy'] = data['volume'] / (abs(data['close'] - data['vwap']) + 1e-8)
+                
+                # Order flow toxicity (Kyle's lambda proxy)
+                price_impact_per_trade = abs(data['close'] - data['close'].shift(1)) / (data['transactions'] + 1e-8)
+                features['order_flow_toxicity'] = price_impact_per_trade.rolling(10).mean()
+                
+                # Market depth proxy
+                features['market_depth_proxy'] = data['volume'] / (features['spread_proxy'] + 1e-8)
+            
+            # Legacy features for backward compatibility
             features['high_low_ratio'] = data['high'] / data['low']
             features['close_to_high'] = data['close'] / data['high']
             features['close_to_low'] = data['close'] / data['low']
-            
-            # Intraday patterns
             features['open_to_close'] = (data['close'] - data['open']) / data['open']
             features['high_to_close'] = (data['high'] - data['close']) / data['close']
             features['low_to_close'] = (data['close'] - data['low']) / data['close']
-            
-            # Volume-price relationship
-            features['vwap_deviation'] = (data['close'] - data['vwap']) / data['vwap']
-            features['volume_price_trend'] = talib.VPT(data['close'].values, data['volume'].values)
+            # Custom Volume Price Trend calculation (VPT = previous_VPT + volume * ((close - previous_close) / previous_close))
+            vpt = np.zeros(len(data))
+            for i in range(1, len(data)):
+                price_change_pct = (data['close'].iloc[i] - data['close'].iloc[i-1]) / data['close'].iloc[i-1]
+                vpt[i] = vpt[i-1] + data['volume'].iloc[i] * price_change_pct
+            features['volume_price_trend'] = vpt
             
             # Price efficiency measures
             for window in [5, 10, 20]:
                 features[f'price_efficiency_{window}'] = self._calculate_price_efficiency(data['close'], window)
             
-            # Bid-ask spread proxy (using high-low)
-            features['spread_proxy'] = (data['high'] - data['low']) / data['close']
+            # Bid-ask spread features
             features['spread_ma'] = features['spread_proxy'].rolling(20).mean()
             
             # Volume clustering
@@ -292,28 +368,21 @@ class FeatureEngineering:
     def _identify_volume_clusters(self, volume: pd.Series) -> pd.Series:
         """Identify volume clustering patterns"""
         try:
-            # Use quantiles to identify volume clusters
-            volume_quantiles = volume.rolling(50).quantile([0.25, 0.5, 0.75])
+            # Calculate rolling quantiles properly
+            q25 = volume.rolling(50).quantile(0.25)
+            q50 = volume.rolling(50).quantile(0.5)
+            q75 = volume.rolling(50).quantile(0.75)
             
-            clusters = pd.Series(0, index=volume.index)
+            clusters = pd.Series(1, index=volume.index)  # Default to cluster 1
             
-            for i in range(len(volume)):
-                if i < 50:
-                    clusters.iloc[i] = 1  # Default cluster
-                else:
-                    vol = volume.iloc[i]
-                    q25 = volume_quantiles.iloc[i-50:i].quantile(0.25).iloc[-1]
-                    q50 = volume_quantiles.iloc[i-50:i].quantile(0.5).iloc[-1]
-                    q75 = volume_quantiles.iloc[i-50:i].quantile(0.75).iloc[-1]
-                    
-                    if vol <= q25:
-                        clusters.iloc[i] = 1  # Low volume
-                    elif vol <= q50:
-                        clusters.iloc[i] = 2  # Medium-low volume
-                    elif vol <= q75:
-                        clusters.iloc[i] = 3  # Medium-high volume
-                    else:
-                        clusters.iloc[i] = 4  # High volume
+            # Classify volumes based on quantiles
+            clusters = pd.Series(1, index=volume.index)  # Low volume
+            clusters[volume > q25] = 2  # Medium-low volume
+            clusters[volume > q50] = 3  # Medium-high volume
+            clusters[volume > q75] = 4  # High volume
+            
+            # Fill NaN values (first 49 observations) with default cluster
+            clusters = clusters.fillna(1)
             
             return clusters
             

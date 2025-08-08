@@ -12,36 +12,36 @@
       "sharpe_ratio": 0.0,
       "total_predictions": 0,
       "correct_predictions": 0,
-      "last_updated": "2025-08-01 16:08:08.622930"
+      "last_updated": "2025-08-03 16:19:06.348277"
     },
     "cnn": {
       "accuracy": 0.5,
       "sharpe_ratio": 0.0,
       "total_predictions": 0,
       "correct_predictions": 0,
-      "last_updated": "2025-08-01 16:08:08.622940"
+      "last_updated": "2025-08-03 16:19:06.348280"
     },
     "transformer": {
       "accuracy": 0.5,
       "sharpe_ratio": 0.0,
       "total_predictions": 0,
       "correct_predictions": 0,
-      "last_updated": "2025-08-01 16:08:08.622943"
+      "last_updated": "2025-08-03 16:19:06.348281"
     },
     "random_forest": {
       "accuracy": 0.5,
       "sharpe_ratio": 0.0,
       "total_predictions": 0,
       "correct_predictions": 0,
-      "last_updated": "2025-08-01 16:08:08.622944"
+      "last_updated": "2025-08-03 16:19:06.348281"
     },
     "xgboost": {
       "accuracy": 0.5,
       "sharpe_ratio": 0.0,
       "total_predictions": 0,
       "correct_predictions": 0,
-      "last_updated": "2025-08-01 16:08:08.622945"
+      "last_updated": "2025-08-03 16:19:06.348282"
     }
   },
-  "last_updated": "2025-08-01T20:08:33.670951"
+  "last_updated": "2025-08-03T22:44:16.431749"
 }
