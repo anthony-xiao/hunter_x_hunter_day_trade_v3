@@ -280,11 +280,11 @@ class SignalGenerator:
     def _set_default_model_configs(self) -> None:
         """Set default model configurations if loading fails"""
         self.model_configs = {
-            'lstm': {'feature_count': 164},
+            'lstm': {'feature_count': 172},
             'cnn': {'feature_count': 20},
-            'random_forest': {'feature_count': 164},
+            'random_forest': {'feature_count': 172},
             'xgboost': {'feature_count': 30},
-            'transformer': {'feature_count': 164}
+            'transformer': {'feature_count': 172}
         }
         logger.info("Using default model configurations")
     
