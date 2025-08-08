@@ -1,0 +1,47 @@
+{
+  "weights": {
+    "lstm": 0.25,
+    "cnn": 0.2,
+    "transformer": 0.25,
+    "random_forest": 0.15,
+    "xgboost": 0.15
+  },
+  "performance": {
+    "lstm": {
+      "accuracy": 0.5,
+      "sharpe_ratio": 0.0,
+      "total_predictions": 0,
+      "correct_predictions": 0,
+      "last_updated": "2025-08-07 11:18:42.368363"
+    },
+    "cnn": {
+      "accuracy": 0.5,
+      "sharpe_ratio": 0.0,
+      "total_predictions": 0,
+      "correct_predictions": 0,
+      "last_updated": "2025-08-07 11:18:42.368366"
+    },
+    "transformer": {
+      "accuracy": 0.5,
+      "sharpe_ratio": 0.0,
+      "total_predictions": 0,
+      "correct_predictions": 0,
+      "last_updated": "2025-08-07 11:18:42.368366"
+    },
+    "random_forest": {
+      "accuracy": 0.5,
+      "sharpe_ratio": 0.0,
+      "total_predictions": 0,
+      "correct_predictions": 0,
+      "last_updated": "2025-08-07 11:18:42.368367"
+    },
+    "xgboost": {
+      "accuracy": 0.5,
+      "sharpe_ratio": 0.0,
+      "total_predictions": 0,
+      "correct_predictions": 0,
+      "last_updated": "2025-08-07 11:18:42.368367"
+    }
+  },
+  "last_updated": "2025-08-07T18:46:06.295627"
+}

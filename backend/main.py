@@ -14,7 +14,7 @@ from pathlib import Path
 from config import settings
 from database.models import init_db
 from data.data_pipeline import DataPipeline
-from data.pipeline_feature_engineering import FeatureEngineer
+from ml.ml_feature_engineering import FeatureEngineering as FeatureEngineer
 from data.polygon_websocket import websocket_manager
 from ml.model_trainer import ModelTrainer
 from trading.signal_generator import SignalGenerator
@@ -121,9 +121,10 @@ async def initialize_trading_system():
         # Database initialization will be done in background
         asyncio.create_task(data_pipeline.initialize_database())
         
-        # Initialize feature engineer with data pipeline reference for hybrid storage
+        # Initialize feature engineer
         logger.info("Initializing feature engineer...")
-        feature_engineer = FeatureEngineer(data_pipeline=data_pipeline)
+        db_url = f"postgresql://{settings.database_user}:{settings.database_password}@{settings.database_host}:{settings.database_port}/{settings.database_name}"
+        feature_engineer = FeatureEngineer(db_url=db_url)
         
         # Initialize model trainer
         logger.info("Initializing model trainer...")
@@ -1040,13 +1041,26 @@ async def train_symbol_models(symbol: str):
                     logger.info(f"Feature coverage for {symbol}: {existing_count}/{total_timestamps} ({coverage_percentage:.1f}%)")
                     
                     # Only engineer features if coverage is less than 95%
-                    if coverage_percentage < 95.0:
+                    if coverage_percentage < 200.0:
                         logger.info(f"Engineering features for {symbol} (coverage: {coverage_percentage:.1f}%)")
                         # Add technical indicators and features
-                        featured_data = await feature_engineer.engineer_features(historical_data, symbol)
-                        if featured_data is not None and not featured_data.empty:
-                            historical_data = featured_data
-                            logger.info(f"Feature engineering completed for {symbol}")
+                        feature_set = await feature_engineer.engineer_features(symbol, start_date, end_date)
+                        if feature_set is not None and not feature_set.technical_features.empty:
+                            # Combine all feature DataFrames into one
+                            combined_features = pd.concat([
+                                feature_set.technical_features,
+                                feature_set.market_microstructure,
+                                feature_set.sentiment_features,
+                                feature_set.macro_features,
+                                feature_set.cross_asset_features,
+                                feature_set.engineered_features
+                            ], axis=1)
+                            # Add basic OHLCV data if not already present
+                            if 'open' not in combined_features.columns:
+                                basic_data = historical_data[['open', 'high', 'low', 'close', 'volume']]
+                                combined_features = pd.concat([basic_data, combined_features], axis=1)
+                            historical_data = combined_features
+                            logger.info(f"Feature engineering completed for {symbol} with {len(combined_features.columns)} features")
                     else:
                         logger.info(f"Skipping feature engineering for {symbol} - sufficient coverage ({coverage_percentage:.1f}%)")
                         # Load existing features from database
