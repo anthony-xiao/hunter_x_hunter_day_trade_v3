@@ -1041,11 +1041,19 @@ async def train_symbol_models(symbol: str):
                     logger.info(f"Feature coverage for {symbol}: {existing_count}/{total_timestamps} ({coverage_percentage:.1f}%)")
                     
                     # Only engineer features if coverage is less than 95%
-                    if coverage_percentage < 200.0:
+                    if coverage_percentage < 95.0:
                         logger.info(f"Engineering features for {symbol} (coverage: {coverage_percentage:.1f}%)")
                         # Add technical indicators and features
                         feature_set = await feature_engineer.engineer_features(symbol, start_date, end_date)
                         if feature_set is not None and not feature_set.technical_features.empty:
+                            # DEBUG: Log individual feature set counts
+                            logger.info(f"FEATURE DEBUG - Technical features: {len(feature_set.technical_features.columns)} columns")
+                            logger.info(f"FEATURE DEBUG - Microstructure features: {len(feature_set.market_microstructure.columns)} columns")
+                            logger.info(f"FEATURE DEBUG - Sentiment features: {len(feature_set.sentiment_features.columns)} columns")
+                            logger.info(f"FEATURE DEBUG - Macro features: {len(feature_set.macro_features.columns)} columns")
+                            logger.info(f"FEATURE DEBUG - Cross-asset features: {len(feature_set.cross_asset_features.columns)} columns")
+                            logger.info(f"FEATURE DEBUG - Advanced features: {len(feature_set.engineered_features.columns)} columns")
+                            
                             # Combine all feature DataFrames into one
                             combined_features = pd.concat([
                                 feature_set.technical_features,
@@ -1055,12 +1063,96 @@ async def train_symbol_models(symbol: str):
                                 feature_set.cross_asset_features,
                                 feature_set.engineered_features
                             ], axis=1)
+                            
+                            # DEBUG: Log combined feature details
+                            logger.info(f"FEATURE DEBUG - Combined engineered features: {len(combined_features.columns)} columns")
+                            logger.info(f"FEATURE DEBUG - Combined feature columns: {list(combined_features.columns)[:20]}...")
+                            
                             # Add basic OHLCV data if not already present
                             if 'open' not in combined_features.columns:
                                 basic_data = historical_data[['open', 'high', 'low', 'close', 'volume']]
                                 combined_features = pd.concat([basic_data, combined_features], axis=1)
+                                logger.info(f"FEATURE DEBUG - Added basic OHLCV data, total columns now: {len(combined_features.columns)}")
+                            
                             historical_data = combined_features
-                            logger.info(f"Feature engineering completed for {symbol} with {len(combined_features.columns)} features")
+                            logger.info(f"Feature engineering completed for {symbol} with {len(combined_features.columns)} total features")
+                            logger.info(f"FEATURE DEBUG - Final feature count breakdown: Technical({len(feature_set.technical_features.columns)}) + Micro({len(feature_set.market_microstructure.columns)}) + Sentiment({len(feature_set.sentiment_features.columns)}) + Macro({len(feature_set.macro_features.columns)}) + CrossAsset({len(feature_set.cross_asset_features.columns)}) + Advanced({len(feature_set.engineered_features.columns)}) = {len(feature_set.technical_features.columns) + len(feature_set.market_microstructure.columns) + len(feature_set.sentiment_features.columns) + len(feature_set.macro_features.columns) + len(feature_set.cross_asset_features.columns) + len(feature_set.engineered_features.columns)} engineered features")
+                            
+                            # Save engineered features to database and cache
+                            logger.info(f"Saving engineered features for {symbol} to database and cache...")
+                            try:
+                                stored_count = 0
+                                # Get feature columns (exclude basic OHLCV columns that are already stored)
+                                basic_cols = ['open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions', 'accumulated_volume']
+                                feature_cols = [col for col in combined_features.columns if col not in basic_cols]
+                                
+                                # DEBUG: Log feature saving details
+                                logger.info(f"FEATURE SAVE DEBUG - Total columns to process: {len(combined_features.columns)}")
+                                logger.info(f"FEATURE SAVE DEBUG - Basic columns to include: {len([col for col in basic_cols if col in combined_features.columns])}")
+                                logger.info(f"FEATURE SAVE DEBUG - Engineered feature columns to save: {len(feature_cols)}")
+                                logger.info(f"FEATURE SAVE DEBUG - Feature columns: {feature_cols[:10]}...")
+                                logger.info(f"FEATURE SAVE DEBUG - Number of timestamp rows to process: {len(combined_features)}")
+                                
+                                # Store each row of features
+                                for timestamp, row in combined_features.iterrows():
+                                    if pd.isna(timestamp):
+                                        continue
+                                    
+                                    # Convert timestamp to datetime if needed, preserving UTC timezone
+                                    if hasattr(timestamp, 'to_pydatetime'):
+                                        timestamp = timestamp.to_pydatetime()
+                                        # Ensure timestamp is in UTC to match market data storage
+                                        if timestamp.tzinfo is None:
+                                            timestamp = timestamp.replace(tzinfo=timezone.utc)
+                                        elif timestamp.tzinfo != timezone.utc:
+                                            timestamp = timestamp.astimezone(timezone.utc)
+                                    elif not isinstance(timestamp, datetime):
+                                        continue
+                                    else:
+                                        # Ensure existing datetime objects are also in UTC
+                                        if timestamp.tzinfo is None:
+                                            timestamp = timestamp.replace(tzinfo=timezone.utc)
+                                        elif timestamp.tzinfo != timezone.utc:
+                                            timestamp = timestamp.astimezone(timezone.utc)
+                                    
+                                    # Prepare features dictionary
+                                    features = {}
+                                    feature_count_for_row = 0
+                                    
+                                    # Include basic OHLCV columns if available
+                                    for col in basic_cols:
+                                        if col in row and not pd.isna(row[col]):
+                                            value = row[col]
+                                            # Use data_pipeline's JSON serialization method to handle all types
+                                            features[col] = data_pipeline._make_json_serializable(value)
+                                            feature_count_for_row += 1
+                                    
+                                    # Add engineered features
+                                    for col in feature_cols:
+                                        if col in row and not pd.isna(row[col]):
+                                            value = row[col]
+                                            # Use data_pipeline's JSON serialization method to handle all types
+                                            features[col] = data_pipeline._make_json_serializable(value)
+                                            feature_count_for_row += 1
+                                    
+                                    # Store features if we have data
+                                    if features:
+                                        await data_pipeline.store_features(symbol, timestamp, features)
+                                        stored_count += 1
+                                        
+                                        # DEBUG: Log first few feature saves
+                                        if stored_count <= 3:
+                                            logger.info(f"FEATURE SAVE DEBUG - Row {stored_count}: Saved {feature_count_for_row} features for timestamp {timestamp}")
+                                            logger.info(f"FEATURE SAVE DEBUG - Row {stored_count}: Feature keys: {list(features.keys())[:10]}...")
+                                
+                                logger.info(f"Successfully stored {stored_count} feature records for {symbol} to database and cache")
+                                logger.info(f"FEATURE SAVE DEBUG - Average features per record: {sum(len([col for col in combined_features.columns if col in row and not pd.isna(row[col])]) for _, row in combined_features.iterrows()) / len(combined_features) if len(combined_features) > 0 else 0:.1f}")
+                                
+                            except Exception as save_error:
+                                logger.error(f"Failed to save engineered features for {symbol}: {save_error}")
+                                import traceback
+                                logger.error(f"FEATURE SAVE DEBUG - Full traceback: {traceback.format_exc()}")
+                                # Continue with training even if saving fails
                     else:
                         logger.info(f"Skipping feature engineering for {symbol} - sufficient coverage ({coverage_percentage:.1f}%)")
                         # Load existing features from database

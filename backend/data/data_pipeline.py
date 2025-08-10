@@ -49,7 +49,7 @@ class DataPipeline:
         
         # Trading universe
         self.trading_universe = [
-            'AAPL'
+            'AAPL','TSLA'
             # Technology
             # 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META'
             # Biotechnology
@@ -420,8 +420,12 @@ class DataPipeline:
     
     def _make_json_serializable(self, obj: Any) -> Any:
         """Convert objects to JSON-serializable format"""
+        from decimal import Decimal
+        
         if isinstance(obj, datetime):
             return obj.isoformat()
+        elif isinstance(obj, Decimal):
+            return float(obj)
         elif isinstance(obj, np.integer):
             return int(obj)
         elif isinstance(obj, np.floating):
