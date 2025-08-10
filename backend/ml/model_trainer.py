@@ -124,8 +124,8 @@ class ModelTrainer:
                 },
                 training_window=18,
                 validation_window=6,
-                lookback_window=30,  # 30x20 matrix (30 minutes × 20 features)
-                feature_count=20,
+                lookback_window=30,  # 30x153 matrix (30 minutes × 153 features)
+                feature_count=feature_count,
                 learning_rate=0.0005,
                 prediction_threshold=0.35
             ),
@@ -157,7 +157,7 @@ class ModelTrainer:
                 training_window=18,
                 validation_window=6,
                 lookback_window=1,
-                feature_count=30,  # Top 30 features by importance
+                feature_count=feature_count,  # Use all features
                 learning_rate=0.1
             ),
             'transformer': ModelConfig(
@@ -264,15 +264,12 @@ class ModelTrainer:
         """Update model configurations with actual feature count from data"""
         logger.info(f"Updating model configurations with actual feature count: {actual_feature_count}")
         
-        # Update feature count for models that use all features
-        for model_name in ['lstm', 'random_forest', 'transformer']:
+        # Update feature count for all models to use all features
+        for model_name in ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']:
             if model_name in self.model_configs:
                 old_count = self.model_configs[model_name].feature_count
                 self.model_configs[model_name].feature_count = actual_feature_count
                 logger.info(f"Updated {model_name} feature_count from {old_count} to {actual_feature_count}")
-        
-        # Keep specific feature counts for CNN and XGBoost as they use feature selection
-        # CNN uses 20 features, XGBoost uses 30 features
         
         # Update the global feature count
         self.feature_count = actual_feature_count
@@ -336,6 +333,13 @@ class ModelTrainer:
             # Exclude symbol and other non-numeric identifier columns
             exclude_cols = basic_cols + ['symbol', 'timestamp']
             feature_cols = [col for col in data.columns if col not in exclude_cols]
+            
+            # Log detailed column information
+            logger.info(f"Total columns in data: {len(data.columns)}")
+            logger.info(f"Excluded columns ({len(exclude_cols)}): {exclude_cols}")
+            logger.info(f"Feature columns ({len(feature_cols)}): {feature_cols[:10]}{'...' if len(feature_cols) > 10 else ''}")
+            logger.info(f"Column exclusion breakdown: OHLCV={len(basic_cols)}, symbol/timestamp=2, Total excluded={len(exclude_cols)}")
+            logger.info(f"Features to use for training: {len(feature_cols)} (148 engineered - {len(exclude_cols)} excluded = {148 - len(exclude_cols)})")
             
             if not feature_cols:
                 # If no engineered features, use basic price features
@@ -1398,12 +1402,37 @@ class ModelTrainer:
                         missing_models.append(f"{model_name} (missing {model_path})")
                         logger.warning(f"✗ Missing {model_name} model file: {model_path}")
             
-            # Load metadata if available
+            # Load metadata if available and update model configurations
             metadata_path = load_dir / "training_metadata.json"
             if metadata_path.exists():
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
                 logger.info(f"Loaded models from version: {metadata.get('timestamp', 'unknown')}")
+                
+                # Update model configurations with the actual training parameters
+                saved_model_configs = metadata.get('model_configs', {})
+                if saved_model_configs:
+                    logger.info("Updating model configurations with training metadata...")
+                    for model_name, saved_config in saved_model_configs.items():
+                        if model_name in self.model_configs:
+                            # Update feature count and other critical parameters
+                            old_feature_count = self.model_configs[model_name].feature_count
+                            new_feature_count = saved_config.get('feature_count', old_feature_count)
+                            
+                            self.model_configs[model_name].feature_count = new_feature_count
+                            self.model_configs[model_name].lookback_window = saved_config.get('lookback_window', self.model_configs[model_name].lookback_window)
+                            
+                            logger.info(f"Updated {model_name}: feature_count {old_feature_count} -> {new_feature_count}")
+                    
+                    # Update global feature count to match the training data
+                    training_feature_count = saved_model_configs.get('lstm', {}).get('feature_count')
+                    if training_feature_count:
+                        self.feature_count = training_feature_count
+                        logger.info(f"Updated global feature_count to {training_feature_count} from training metadata")
+                else:
+                    logger.warning("No model_configs found in training metadata")
+            else:
+                logger.warning("No training metadata found - using default model configurations")
             
             logger.info(f"Loaded {len(loaded_models)}/{len(self.model_configs)} models from {load_dir}: {loaded_models}")
             if missing_models:
@@ -1949,8 +1978,13 @@ class ModelTrainer:
         dynamic_weight_space = [Real(0.0, 1.0, name=f'{model_name}_weight') for model_name in loaded_model_names]
         
         # Define objective function for Bayesian optimization
+        iteration_count = 0
+        
         @use_named_args(dynamic_weight_space)
         def objective(**weights):
+            nonlocal iteration_count
+            iteration_count += 1
+            
             # Normalize weights to sum to 1
             weight_values = list(weights.values())
             weight_sum = sum(weight_values)
@@ -1959,17 +1993,34 @@ class ModelTrainer:
             
             normalized_weights = [w / weight_sum for w in weight_values]
             
+            # Log weight combination being tested
+            model_names = list(model_predictions.keys())
+            logger.info(f"\n--- Optimization Iteration {iteration_count} ---")
+            logger.info("Testing weight combination:")
+            for i, model_name in enumerate(model_names):
+                if i < len(normalized_weights):
+                    logger.info(f"  {model_name}: {normalized_weights[i]:.4f}")
+            
             # Apply constraint: no single model > 40%
             if max(normalized_weights) > 0.4:
+                logger.info("Constraint violation: Single model weight > 40%, returning penalty")
                 return 1.0  # Penalty for violating constraint
             
             # Calculate ensemble predictions
             ensemble_pred = np.zeros(len(val_targets))
-            model_names = list(model_predictions.keys())
             
             for i, model_name in enumerate(model_names):
                 if i < len(normalized_weights):
                     ensemble_pred += normalized_weights[i] * model_predictions[model_name]
+            
+            # Log sample predictions for debugging (first 5 values)
+            logger.info("Sample individual model predictions (first 5):")
+            for i, model_name in enumerate(model_names):
+                if i < len(normalized_weights):
+                    sample_preds = model_predictions[model_name][:5]
+                    logger.info(f"  {model_name}: {[f'{p:.4f}' for p in sample_preds]}")
+            
+            logger.info(f"Sample ensemble predictions (first 5): {[f'{p:.4f}' for p in ensemble_pred[:5]]}")
             
             # Convert to binary predictions using weighted average of model thresholds
             # Calculate weighted threshold based on ensemble weights
@@ -2007,6 +2058,13 @@ class ModelTrainer:
                 sharpe = np.mean(returns) / np.std(returns) * np.sqrt(252 * 390)
             else:
                 sharpe = 0
+            
+            # Log performance metrics
+            logger.info(f"Performance metrics:")
+            logger.info(f"  Mean return: {np.mean(returns):.6f}")
+            logger.info(f"  Return std: {np.std(returns):.6f}")
+            logger.info(f"  Sharpe ratio: {sharpe:.4f}")
+            logger.info(f"  Objective value (negative Sharpe): {-sharpe:.4f}")
             
             # Return negative Sharpe (since we minimize)
             return -sharpe
@@ -2064,12 +2122,34 @@ class ModelTrainer:
         return optimized_ensemble_weights
     
     async def _get_model_predictions(self, model_name: str, features: pd.DataFrame) -> np.ndarray:
-        """Get predictions from a specific model"""
+        """Get predictions from a specific model with feature alignment"""
         model = self.models[model_name]
         config = self.model_configs[model_name]
         
+        # Get expected feature count for this model
+        expected_feature_count = config.feature_count
+        current_feature_count = len(features.columns)
+        
+        # Log feature count information for debugging
+        logger.info(f"{model_name}: Expected {expected_feature_count} features, received {current_feature_count}")
+        
+        # Align features to match model expectations
+        if current_feature_count != expected_feature_count:
+            if current_feature_count > expected_feature_count:
+                # Take the first N features that match the model's expected count
+                aligned_features = features.iloc[:, :expected_feature_count]
+                logger.info(f"{model_name}: Truncated features from {current_feature_count} to {expected_feature_count}")
+            else:
+                # Pad with zeros if we have fewer features than expected
+                aligned_features = features.copy()
+                for i in range(current_feature_count, expected_feature_count):
+                    aligned_features[f'padding_feature_{i}'] = 0.0
+                logger.info(f"{model_name}: Padded features from {current_feature_count} to {expected_feature_count}")
+        else:
+            aligned_features = features
+        
         # Prepare features for prediction
-        feature_values = features.values
+        feature_values = aligned_features.values
         predictions = []
         
         # Generate predictions for each time step
@@ -2080,6 +2160,18 @@ class ModelTrainer:
                 if model_name in ["random_forest", "xgboost"]:
                     # Flatten for traditional ML models
                     feature_flat = feature_window.flatten().reshape(1, -1)
+                    
+                    # Additional check for flattened feature dimensions
+                    expected_flat_size = config.lookback_window * expected_feature_count
+                    if feature_flat.shape[1] != expected_flat_size:
+                        logger.warning(f"{model_name}: Flattened feature size mismatch. Expected {expected_flat_size}, got {feature_flat.shape[1]}")
+                        # Truncate or pad the flattened features
+                        if feature_flat.shape[1] > expected_flat_size:
+                            feature_flat = feature_flat[:, :expected_flat_size]
+                        else:
+                            padding = np.zeros((1, expected_flat_size - feature_flat.shape[1]))
+                            feature_flat = np.concatenate([feature_flat, padding], axis=1)
+                    
                     if model_name in self.scalers:
                         feature_scaled = self.scalers[model_name].transform(feature_flat)
                         # Get prediction probabilities with safety check for single class
@@ -2102,7 +2194,16 @@ class ModelTrainer:
                     feature_cnn = feature_window.reshape(1, feature_window.shape[0], feature_window.shape[1], 1)
                     pred_proba = model.predict(feature_cnn, verbose=0)[0, 0]
                 else:
-                    # LSTM and Transformer
+                    # LSTM and Transformer - check feature dimension
+                    if feature_window.shape[1] != expected_feature_count:
+                        logger.warning(f"{model_name}: Feature dimension mismatch in window. Expected {expected_feature_count}, got {feature_window.shape[1]}")
+                        # This should not happen after alignment above, but add safety check
+                        if feature_window.shape[1] > expected_feature_count:
+                            feature_window = feature_window[:, :expected_feature_count]
+                        else:
+                            padding = np.zeros((feature_window.shape[0], expected_feature_count - feature_window.shape[1]))
+                            feature_window = np.concatenate([feature_window, padding], axis=1)
+                    
                     feature_reshaped = feature_window.reshape(1, feature_window.shape[0], feature_window.shape[1])
                     pred_proba = model.predict(feature_reshaped, verbose=0)[0, 0]
                 
@@ -2110,6 +2211,8 @@ class ModelTrainer:
                 
             except Exception as e:
                 logger.error(f"Prediction error for {model_name}: {e}")
+                logger.error(f"Feature window shape: {feature_window.shape if 'feature_window' in locals() else 'undefined'}")
+                logger.error(f"Expected feature count: {expected_feature_count}")
                 predictions.append(0.5)  # Neutral prediction
         
         return np.array(predictions)

@@ -51,6 +51,65 @@ class FeatureEngineering:
         
         logger.info("Feature Engineering initialized")
     
+    def calculate_required_lookback(self) -> int:
+        """
+        Calculate the maximum lookback period required by all technical indicators.
+        This ensures we have sufficient historical data for feature engineering.
+        
+        Returns:
+            int: Maximum lookback period in minutes (with safety buffer)
+        """
+        # Define all lookback periods used in feature engineering
+        lookback_periods = {
+            # Moving averages (SMA, EMA)
+            'moving_averages': [5, 10, 20, 50, 100, 200],
+            
+            # Bollinger Bands
+            'bollinger_bands': [20, 50],
+            
+            # RSI
+            'rsi': [14, 21, 30],
+            
+            # MACD components
+            'macd': [12, 26, 9],  # EMA12, EMA26, Signal line
+            
+            # Stochastic, Williams %R, ATR, CCI, MFI
+            'oscillators': [14],
+            
+            # Volume features
+            'volume_features': [5, 10, 20],
+            
+            # VWAP and microstructure
+            'vwap_features': [5, 10, 20],
+            
+            # Volatility features
+            'volatility': [5, 10, 20, 30],
+            
+            # Momentum features
+            'momentum': [3, 5, 10, 15, 20],
+            
+            # Statistical features
+            'statistical': [10, 20],
+            
+            # Mean reversion features
+            'mean_reversion': [5, 10, 20],
+        }
+        
+        # Find maximum lookback across all categories
+        max_lookback = 0
+        for category, periods in lookback_periods.items():
+            category_max = max(periods)
+            max_lookback = max(max_lookback, category_max)
+            logger.debug(f"Category {category}: max lookback = {category_max}")
+        
+        # Add safety buffer (20% extra) to ensure all indicators have sufficient data
+        safety_buffer = int(max_lookback * 0.2)
+        total_lookback = max_lookback + safety_buffer
+        
+        logger.info(f"Calculated required lookback: {max_lookback} minutes + {safety_buffer} buffer = {total_lookback} minutes")
+        
+        return total_lookback
+    
     async def engineer_features(self, 
                               symbol: str, 
                               start_date: datetime, 
