@@ -279,14 +279,16 @@ class SignalGenerator:
     
     def _set_default_model_configs(self) -> None:
         """Set default model configurations if loading fails"""
+        # All models now use all available features (no filtering)
+        default_feature_count = 153  # Expected feature count from feature engineering
         self.model_configs = {
-            'lstm': {'feature_count': 172},
-            'cnn': {'feature_count': 20},
-            'random_forest': {'feature_count': 172},
-            'xgboost': {'feature_count': 30},
-            'transformer': {'feature_count': 172}
+            'lstm': {'feature_count': default_feature_count},
+            'cnn': {'feature_count': default_feature_count},
+            'random_forest': {'feature_count': default_feature_count},
+            'xgboost': {'feature_count': default_feature_count},
+            'transformer': {'feature_count': default_feature_count}
         }
-        logger.info("Using default model configurations")
+        logger.info(f"Using default model configurations with {default_feature_count} features for all models")
     
     def _determine_feature_count_from_data(self, data: pd.DataFrame) -> int:
         """Determine the actual feature count from cached data"""
@@ -472,12 +474,12 @@ class SignalGenerator:
     
     def _create_cnn_model(self, feature_count: int = None) -> tf.keras.Model:
         """Create CNN model architecture with dynamic feature count"""
-        # Use provided feature_count or default to 20 (CNN default from model configs)
+        # Use provided feature_count or default to 153 (all features)
         if feature_count is None:
-            feature_count = 20
+            feature_count = 153
             
         # Create 1D CNN architecture that works better with time series data
-        # Input shape: (time_steps, features) = (60, 20)
+        # Input shape: (time_steps, features) = (60, 153)
         model = tf.keras.Sequential([
             tf.keras.layers.Conv1D(32, 3, activation='relu', input_shape=(60, feature_count)),
             tf.keras.layers.MaxPooling1D(2),
@@ -726,21 +728,17 @@ class SignalGenerator:
                 
                 time_steps = features.shape[0]
                 
-                # CNN model was trained with ACTUAL input shape (30, 164, 1) based on training logs:
-                # X_train.shape = (274171, 30, 164) - discovered from log analysis
+                # CNN model now uses all available features (153) with dynamic input shape
                 # CNN architecture: Conv2D(32,(3,3)) -> MaxPool(2,2) -> Conv2D(64,(3,3)) -> MaxPool(2,2) -> Flatten()
                 # 
-                # Calculating actual dense layer input size:
-                # Input: (30, 164, 1)
-                # After Conv2D(32,(3,3)): (30-3+1, 164-3+1) = (28, 162)
-                # After MaxPool(2,2): (28//2, 162//2) = (14, 81)
-                # After Conv2D(64,(3,3)): (14-3+1, 81-3+1) = (12, 79)
-                # After MaxPool(2,2): (12//2, 79//2) = (6, 39)
-                # After Flatten(): 64 * 6 * 39 = 14976 features ✓
+                # Input dimensions are dynamically determined from actual feature count
+                # Input: (30, actual_feature_count, 1)
+                # Dense layer input size is calculated based on actual feature dimensions
+                # after convolution and pooling operations
                 #
-                # This matches the expected 14976 features from the error message.
+                # Use actual feature dimensions from data (no hardcoded filtering)
                 required_height = 30   # Match actual training lookback_window
-                required_width = 164   # Match actual training feature_count (not config value)
+                required_width = actual_feature_count   # Use actual feature count from data
                 
                 if len(features.shape) == 2:
                     # Features are in (time_steps, features) format
@@ -797,38 +795,8 @@ class SignalGenerator:
                     # Already flattened
                     latest_features = features.reshape(1, -1)
                 
-                # Get expected feature count from model configuration
-                model_name = model_type.value.lower()
-                if hasattr(self, 'model_configs') and model_name in self.model_configs:
-                    config_feature_count = self.model_configs[model_name].get('feature_count', 30)
-                else:
-                    # Default feature counts based on training metadata
-                    config_feature_count = 164 if model_type == ModelType.RANDOM_FOREST else 30
-                
-                # XGBoost model file expects 164 features despite being trained with 30
-                # This is due to the model being saved with the full feature space
-                if model_type == ModelType.XGBOOST:
-                    expected_features = 164  # Model file expects 164 features
-                else:
-                    expected_features = config_feature_count
-                
-                current_features = latest_features.shape[1]
-                
-                if current_features != expected_features:
-                    if current_features > expected_features:
-                        # Select top features by variance if we have too many
-                        if len(features.shape) > 1:
-                            feature_variances = np.var(features, axis=0)
-                            top_indices = np.argsort(feature_variances)[-expected_features:]
-                            latest_features = features[-1, top_indices].reshape(1, -1)
-                        else:
-                            latest_features = latest_features[:, :expected_features]
-                    else:
-                        # Pad with zeros if we have fewer features
-                        padding = np.zeros((1, expected_features - current_features))
-                        latest_features = np.concatenate([latest_features, padding], axis=1)
-                
-                logger.debug(f"Features shape for {model_type.value}: {latest_features.shape} (expected: {expected_features})")
+                # All models now use all available features (no filtering)
+                logger.debug(f"Features shape for {model_type.value}: {latest_features.shape}")
                 prediction = model.predict(latest_features)[0]
                 
                 # Calculate confidence based on feature importance and prediction strength
@@ -1167,26 +1135,7 @@ class SignalGenerator:
                 logger.error(f"Features array contains non-numeric values for {symbol}")
                 return None
             
-            # Apply model-specific feature filtering if model_type is provided
-            if model_type and feature_count:
-                target_feature_count = feature_count
-                current_feature_count = features_array.shape[1]
-                
-                if current_feature_count != target_feature_count:
-                    logger.info(f"Filtering features for {model_type} model: {current_feature_count} -> {target_feature_count}")
-                    
-                    if current_feature_count > target_feature_count:
-                        # Select top features based on variance (simple feature selection)
-                        feature_variances = np.var(features_array, axis=0)
-                        top_feature_indices = np.argsort(feature_variances)[-target_feature_count:]
-                        features_array = features_array[:, top_feature_indices]
-                        logger.debug(f"Selected top {target_feature_count} features by variance for {model_type}")
-                    elif current_feature_count < target_feature_count:
-                        # Pad with zeros if we have fewer features than expected
-                        padding_needed = target_feature_count - current_feature_count
-                        padding = np.zeros((features_array.shape[0], padding_needed))
-                        features_array = np.concatenate([features_array, padding], axis=1)
-                        logger.debug(f"Padded {padding_needed} zero features for {model_type}")
+            # All models now use all available features (no filtering)
             
             # Create model-specific scaler key
             scaler_key = f"{symbol}_{model_type if model_type else 'default'}"

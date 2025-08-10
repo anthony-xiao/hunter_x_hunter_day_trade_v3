@@ -1,6 +1,8 @@
 # TODO:
 
-- [x] fix_data_types: Fix data type conversion issue - ensure all numpy arrays passed to TA-Lib functions are float64 (priority: High)
-- [x] fix_vpt_function: Replace non-existent talib.VPT with custom Volume Price Trend calculation (priority: High)
-- [x] fix_volume_clustering: Fix _identify_volume_clusters method - replace complex quantile logic with proper rolling quantile calculations (priority: High)
-- [x] test_fixes: Test the fixed feature engineering functions (priority: Medium)
+- [x] 1: Add detailed progress logging to performance_validator.py walk_forward_test method (priority: High)
+- [x] 2: Add progress logging to model_trainer.py walk_forward_test method with timing and memory tracking (priority: High)
+- [x] 3: Add progress logging to data_pipeline.py load_features_from_db method for database operations (priority: High)
+- [x] 4: Add timeout handling to prevent indefinite hangs in critical operations (priority: Medium)
+- [x] 5: Add memory usage monitoring throughout the pipeline (priority: Medium)
+- [x] 6: Test the new logging system with a sample walk-forward test (priority: Medium)

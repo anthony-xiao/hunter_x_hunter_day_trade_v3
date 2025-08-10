@@ -1,47 +1,47 @@
 {
   "weights": {
-    "lstm": 0.08591734435563411,
-    "cnn": 0.32032965086200593,
-    "random_forest": 0.20501741789108208,
-    "xgboost": 0.206920886931889,
-    "transformer": 0.18181469995938895
+    "lstm": 0.2747168708499068,
+    "cnn": 0.33106147451251106,
+    "random_forest": 0.053602024073606654,
+    "xgboost": 0.29445533500375465,
+    "transformer": 0.04616429556022079
   },
   "performance_metrics": {
     "lstm": {
-      "accuracy": 0.604225352112676,
-      "predictions_count": 710,
-      "weight": 0.08591734435563411
+      "accuracy": 0.5305982571232742,
+      "predictions_count": 10213,
+      "weight": 0.2747168708499068
     },
     "cnn": {
-      "accuracy": 0.6013513513513513,
-      "predictions_count": 740,
-      "weight": 0.32032965086200593
+      "accuracy": 0.5308991506394611,
+      "predictions_count": 10243,
+      "weight": 0.33106147451251106
     },
     "random_forest": {
-      "accuracy": 0.599479843953186,
-      "predictions_count": 769,
-      "weight": 0.20501741789108208
+      "accuracy": 0.5245327102803738,
+      "predictions_count": 10272,
+      "weight": 0.053602024073606654
     },
     "xgboost": {
-      "accuracy": 0.599479843953186,
-      "predictions_count": 769,
-      "weight": 0.206920886931889
+      "accuracy": 0.5111954828660437,
+      "predictions_count": 10272,
+      "weight": 0.29445533500375465
     },
     "transformer": {
-      "accuracy": 0.604225352112676,
-      "predictions_count": 710,
-      "weight": 0.18181469995938895
+      "accuracy": 0.5309899148144521,
+      "predictions_count": 10213,
+      "weight": 0.04616429556022079
     }
   },
-  "optimization_timestamp": "2025-08-07T20:01:20.243852+00:00",
+  "optimization_timestamp": "2025-08-10T03:51:31.033730+00:00",
   "validation_period": {
-    "start_date": "2025-07-08T19:59:52.351530+00:00",
-    "end_date": "2025-08-07T19:59:52.351530+00:00"
+    "start_date": "2025-07-11T03:24:44.907610+00:00",
+    "end_date": "2025-08-10T03:24:44.907610+00:00"
   },
   "symbols_used": [
     "AAPL"
   ],
-  "samples_count": 770,
-  "sharpe_ratio": 63.99218702310464,
+  "samples_count": 10273,
+  "sharpe_ratio": 19.476514354091297,
   "version": "1.0"
 }
