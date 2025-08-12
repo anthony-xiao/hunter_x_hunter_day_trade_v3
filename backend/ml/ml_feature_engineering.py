@@ -5,8 +5,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+# SQLAlchemy imports removed - using Supabase only
 import talib
 from scipy import stats
 from sklearn.preprocessing import StandardScaler, RobustScaler
@@ -31,9 +30,16 @@ class FeatureSet:
 class FeatureEngineering:
     """Advanced feature engineering for algorithmic trading"""
     
-    def __init__(self, db_url: str):
-        self.engine = create_engine(db_url)
-        self.Session = sessionmaker(bind=self.engine)
+    def __init__(self, db_url: str = None, supabase_client=None):
+        # Only support Supabase client approach
+        if supabase_client:
+            self.supabase_client = supabase_client
+        else:
+            raise ValueError("supabase_client must be provided")
+        
+        # No SQLAlchemy support
+        self.engine = None
+        self.Session = None
         
         # Feature engineering parameters
         self.lookback_periods = [5, 10, 20, 50, 100, 200]
@@ -170,46 +176,28 @@ class FeatureEngineering:
     async def _get_market_data(self, symbol: str, start_date: datetime, end_date: datetime) -> Optional[pd.DataFrame]:
         """Get market data for feature engineering"""
         try:
-            with self.Session() as session:
-                result = session.execute(text("""
-                    SELECT 
-                        timestamp,
-                        open,
-                        high,
-                        low,
-                        close,
-                        volume,
-                        vwap,
-                        transactions
-                    FROM market_data
-                    WHERE symbol = :symbol
-                    AND timestamp >= :start_date
-                    AND timestamp <= :end_date
-                    ORDER BY timestamp
-                """), {
-                    'symbol': symbol,
-                    'start_date': start_date,
-                    'end_date': end_date
-                })
+            # Use Supabase client for data retrieval
+            if self.supabase_client:
+                result = self.supabase_client.table('market_data').select(
+                    'timestamp,open,high,low,close,volume,vwap'
+                ).eq('symbol', symbol).gte('timestamp', start_date.isoformat()).lte('timestamp', end_date.isoformat()).order('timestamp').execute()
                 
-                data = result.fetchall()
-                
-                if not data:
+                if not result.data:
                     return None
                 
-                df = pd.DataFrame(data, columns=[
-                    'timestamp', 'open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions'
-                ])
-                
+                df = pd.DataFrame(result.data)
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
                 df.set_index('timestamp', inplace=True)
                 
                 # Convert to numeric
-                numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions']
+                numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'vwap']
                 for col in numeric_columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
                 
                 return df
+            else:
+                logger.error(f"No Supabase client available for getting market data for {symbol}")
+                return None
                 
         except Exception as e:
             logger.error(f"Failed to get market data for {symbol}: {e}")

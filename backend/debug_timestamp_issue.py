@@ -19,21 +19,28 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from loguru import logger
 import pandas as pd
+from config import settings
 
-# Database configuration
-DATABASE_URL = "postgresql://postgres:password@localhost:5432/algo_trading"
-
-def create_db_engine():
-    """Create database engine"""
-    return create_engine(DATABASE_URL, echo=False)
+def get_supabase_client():
+    """Get Supabase client for database operations"""
+    from database import db_manager
+    return db_manager.get_supabase_client()
 
 async def check_timestamp_consistency():
     """Check timestamp consistency between market_data and features tables"""
-    engine = create_db_engine()
-    Session = sessionmaker(bind=engine)
+    supabase = get_supabase_client()
+    if not supabase:
+        logger.error("Supabase client not available")
+        return
     
     try:
-        with Session() as session:
+        # Note: This function needs to be refactored to use Supabase client
+        # For now, using a placeholder implementation
+        logger.warning("debug_timestamp_issue.py needs to be refactored for Supabase client usage")
+        return
+        
+        # TODO: Refactor the following SQLAlchemy code to use Supabase client
+        # with Session() as session:
             # Check market_data timestamps
             logger.info("Checking market_data timestamps...")
             market_result = session.execute(text("""
@@ -156,13 +163,21 @@ async def check_timestamp_consistency():
 
 async def fix_timezone_issues():
     """Fix timezone issues in existing data (if needed)"""
-    engine = create_db_engine()
-    Session = sessionmaker(bind=engine)
+    supabase = get_supabase_client()
+    if not supabase:
+        logger.error("Supabase client not available")
+        return
     
     logger.info("Checking if timezone fixes are needed...")
     
     try:
-        with Session() as session:
+        # Note: This function needs to be refactored to use Supabase client
+        # For now, using a placeholder implementation
+        logger.warning("fix_timezone_issues function needs to be refactored for Supabase client usage")
+        return
+        
+        # TODO: Refactor the following SQLAlchemy code to use Supabase client
+        # with Session() as session:
             # Check if we have timezone-naive timestamps that need fixing
             naive_features = session.execute(text("""
                 SELECT COUNT(*) 

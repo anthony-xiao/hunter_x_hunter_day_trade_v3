@@ -138,7 +138,7 @@ class FeatureEngineer:
         feature_cols = [col for col in df.columns if col not in required_cols]
         self.feature_columns = feature_cols
         
-        # Store features using hybrid strategy (PostgreSQL + in-memory cache)
+        # Store features using hybrid strategy (Supabase + in-memory cache)
         if self.data_pipeline:
             await self._store_features_hybrid(df, symbol, feature_cols)
         
@@ -147,7 +147,7 @@ class FeatureEngineer:
         return df
     
     async def _store_features_hybrid(self, df: pd.DataFrame, symbol: str, feature_cols: List[str]):
-        """Store features using hybrid strategy: PostgreSQL + in-memory cache"""
+        """Store features using hybrid strategy: Supabase + in-memory cache"""
         try:
             if not hasattr(df.index, 'to_pydatetime'):
                 logger.warning(f"DataFrame index is not datetime for {symbol}, skipping feature storage")

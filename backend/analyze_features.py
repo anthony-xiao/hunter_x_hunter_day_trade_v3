@@ -24,9 +24,10 @@ class FeatureCounter:
     
     def __init__(self):
         # Initialize database connection
-        database_url = f"postgresql://{settings.database_user}:{settings.database_password}@{settings.database_host}:{settings.database_port}/{settings.database_name}"
-        self.engine = create_engine(database_url)
-        self.Session = sessionmaker(bind=self.engine)
+        from database import db_manager
+        self.supabase = db_manager.get_supabase_client()
+        self.engine = None
+        self.Session = None
         
     def count_technical_features(self) -> int:
         """Count technical indicator features"""
@@ -186,25 +187,26 @@ class FeatureCounter:
     def check_database_features(self, symbol: str = 'AAPL') -> Optional[int]:
         """Check actual feature count in database"""
         try:
-            with self.Session() as session:
-                # Get recent feature data from database
-                result = session.execute(text("""
-                    SELECT features 
-                    FROM features 
-                    WHERE symbol = :symbol 
-                    ORDER BY timestamp DESC 
-                    LIMIT 1
-                """), {'symbol': symbol})
+            if not self.supabase:
+                print("Supabase client not available")
+                return None
                 
-                row = result.fetchone()
-                if row and row.features:
-                    feature_count = len(row.features)
+            # Get recent feature data from database using Supabase
+            response = self.supabase.table('features').select('features').eq('symbol', symbol).order('timestamp', desc=True).limit(1).execute()
+            
+            if response.data and len(response.data) > 0:
+                features_data = response.data[0]['features']
+                if features_data:
+                    feature_count = len(features_data)
                     print(f"Database feature count for {symbol}: {feature_count}")
-                    print(f"Sample feature keys: {list(row.features.keys())[:20]}")
+                    print(f"Sample feature keys: {list(features_data.keys())[:20]}")
                     return feature_count
                 else:
                     print(f"No features found in database for {symbol}")
                     return None
+            else:
+                print(f"No features found in database for {symbol}")
+                return None
                     
         except Exception as e:
             print(f"Error checking database features: {e}")
@@ -249,7 +251,7 @@ def main():
         else:
             print(f"\n❓ Database count ({db_count}) doesn't match expected values")
     
-    counter.engine.dispose()
+    # No need to dispose engine since we're using Supabase client
 
 if __name__ == "__main__":
     main()

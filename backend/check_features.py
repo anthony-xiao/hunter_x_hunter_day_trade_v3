@@ -1,26 +1,25 @@
-import psycopg2
 import json
+from sqlalchemy import create_engine, text
 from config import settings
 
 try:
-    # Connect to PostgreSQL
-    database_url = f"postgresql://{settings.database_user}:{settings.database_password}@{settings.database_host}:{settings.database_port}/{settings.database_name}"
-    conn = psycopg2.connect(database_url)
-    cur = conn.cursor()
+    # Connect to Supabase
+    from database import db_manager
+    supabase = db_manager.get_supabase_client()
+    
+    if not supabase:
+        print("Error: Supabase client not available")
+        exit(1)
     
     # Get the most recent features for AAPL
-    cur.execute("""
-        SELECT symbol, timestamp, features 
-        FROM features 
-        WHERE symbol = %s 
-        ORDER BY timestamp DESC 
-        LIMIT 1
-    """, ('AAPL',))
+    result = supabase.table('features').select('symbol, timestamp, features').eq('symbol', 'AAPL').order('timestamp', desc=True).limit(1).execute()
     
-    result = cur.fetchone()
+    row = result.data[0] if result.data else None
     
-    if result:
-        symbol, timestamp, features = result
+    if row:
+        symbol = row['symbol']
+        timestamp = row['timestamp']
+        features = row['features']
         print(f"Symbol: {symbol}")
         print(f"Timestamp: {timestamp}")
         print(f"Number of features: {len(features)}")
@@ -84,11 +83,9 @@ try:
         print("No features found for AAPL")
     
     # Also check how many feature records exist for AAPL
-    cur.execute("SELECT COUNT(*) FROM features WHERE symbol = %s", ('AAPL',))
-    count = cur.fetchone()[0]
+    result = supabase.table('features').select('id', count='exact').eq('symbol', 'AAPL').execute()
+    count = result.count
     print(f"\nTotal feature records for AAPL: {count}")
-    
-    conn.close()
     
 except Exception as e:
     print(f"Error: {e}")
