@@ -1,0 +1,73 @@
+================================================================================
+TIMEZONE VALIDATION REPORT
+Generated: 2025-08-12T10:50:24.062701+00:00
+================================================================================
+
+1. POSTGRESQL TIMEZONE CONFIGURATION
+----------------------------------------
+✓ PostgreSQL timezone is correctly set to UTC
+
+2. ENVIRONMENT VARIABLES
+----------------------------------------
+✓ TZ not set (good)
+✓ PGTZ not set (good)
+✓ TIMEZONE not set (good)
+
+3. CODE ANALYSIS
+----------------------------------------
+Files scanned: 39
+Files with issues: 6
+Total issues found: 9
+Critical issues: 0
+Warning issues: 7
+
+5. WARNING ISSUES (SHOULD FIX)
+----------------------------------------
+⚠ clear_all_tables.py:113
+  Pattern: datetime_now_no_tz
+  Code: print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+  Fix: Use datetime.now(timezone.utc) instead
+
+⚠ timezone_validation_report.py:267
+  Pattern: datetime_utcnow
+  Code: report.append("3. Avoid datetime.utcnow() as it's deprecated in Python 3.12+")
+  Fix: Use datetime.now(timezone.utc) instead (utcnow is deprecated)
+
+⚠ test_trading_system.py:109
+  Pattern: datetime_now_no_tz
+  Code: base_time = datetime.now()
+  Fix: Use datetime.now(timezone.utc) instead
+
+⚠ test_trading_system.py:247
+  Pattern: datetime_now_no_tz
+  Code: self.test_results.start_time = datetime.now()
+  Fix: Use datetime.now(timezone.utc) instead
+
+⚠ test_trading_system.py:294
+  Pattern: datetime_now_no_tz
+  Code: self.test_results.end_time = datetime.now()
+  Fix: Use datetime.now(timezone.utc) instead
+
+⚠ count_ml_features.py:24
+  Pattern: datetime_now_no_tz
+  Code: end_date = datetime.now()
+  Fix: Use datetime.now(timezone.utc) instead
+
+⚠ configure_postgresql_utc.py:65
+  Pattern: datetime_now_no_tz
+  Code: backup_path = f"{postgresql_conf_path}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+  Fix: Use datetime.now(timezone.utc) instead
+
+
+6. SUMMARY
+----------------------------------------
+✓ No critical timezone issues found
+⚠ 7 warning issues should be addressed
+
+7. RECOMMENDATIONS
+----------------------------------------
+1. Always use datetime.now(timezone.utc) for UTC timestamps
+2. Use datetime.fromtimestamp(ts, tz=timezone.utc) when converting timestamps
+3. Avoid datetime.utcnow() as it's deprecated in Python 3.12+
+4. Ensure all stored timestamps are in UTC
+5. Convert to local timezone only for display purposes
