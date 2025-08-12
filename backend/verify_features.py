@@ -1,5 +1,5 @@
-import psycopg2
 import json
+from sqlalchemy import create_engine, text
 from config import settings
 
 # Expected features based on the code analysis
@@ -62,24 +62,26 @@ expected_features = {
 }
 
 try:
-    # Connect to PostgreSQL
-    database_url = f"postgresql://{settings.database_user}:{settings.database_password}@{settings.database_host}:{settings.database_port}/{settings.database_name}"
-    conn = psycopg2.connect(database_url)
-    cur = conn.cursor()
+    # Connect to Supabase
+    from database import db_manager
+    supabase = db_manager.get_supabase_client()
+    
+    if not supabase:
+        print("Error: Supabase client not available")
+        exit(1)
     
     # Get the most recent features for AAPL
-    cur.execute("""
-        SELECT features 
-        FROM features 
-        WHERE symbol = %s 
-        ORDER BY timestamp DESC 
-        LIMIT 1
-    """, ('AAPL',))
+    result = supabase.table('features').select('features').eq('symbol', 'AAPL').order('timestamp', desc=True).limit(1).execute()
     
-    result = cur.fetchone()
+    if result.data:
+        row = result.data[0]
+        features_data = row['features']
+    else:
+        row = None
+        features_data = None
     
-    if result:
-        stored_features = set(result[0].keys())
+    if row:
+        stored_features = set(features_data.keys())
         
         print("FEATURE VERIFICATION REPORT")
         print("=" * 50)
@@ -139,8 +141,6 @@ try:
             print("\n🎉 SUCCESS: All expected features are being stored correctly!")
         else:
             print(f"\n⚠️  WARNING: {total_missing} features are missing from storage.")
-    
-    conn.close()
     
 except Exception as e:
     print(f"Error: {e}")

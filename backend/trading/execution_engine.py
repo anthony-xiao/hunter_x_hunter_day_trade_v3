@@ -157,9 +157,9 @@ class ExecutionEngine:
         
         # Initialize ML validation components
         from database import db_manager
-        db_url = f"postgresql://{settings.database_user}:{settings.database_password}@{settings.database_host}:{settings.database_port}/{settings.database_name}"
-        self.performance_validator = PerformanceValidator(db_url)
-        self.drift_detector = ConceptDriftDetector(db_url)
+        supabase_client = db_manager.get_supabase_client()
+        self.performance_validator = PerformanceValidator(db_url=None, supabase_client=supabase_client)
+        self.drift_detector = ConceptDriftDetector(db_url=None, supabase_client=supabase_client)
         
         self.is_trading = False
         self.positions: Dict[str, Position] = {}
@@ -807,38 +807,26 @@ class ExecutionEngine:
     async def _get_volatility_from_db(self, symbol: str) -> Optional[float]:
         """Get volatility from stored database data"""
         try:
-            from sqlalchemy import create_engine, text
-            from sqlalchemy.orm import sessionmaker
+            from database import db_manager
             
-            engine = create_engine(f"postgresql://{settings.database_user}:{settings.database_password}@{settings.database_host}:{settings.database_port}/{settings.database_name}")
-            Session = sessionmaker(bind=engine)
+            supabase = db_manager.get_supabase_client()
+            if not supabase:
+                logger.warning("Supabase client not available for volatility calculation")
+                return None
+            # Get last 30 days of market data
+            end_date = datetime.now(timezone.utc)
+            start_date = end_date - timedelta(days=30)
             
-            with Session() as session:
-                # Get last 30 days of market data
-                end_date = datetime.now(timezone.utc)
-                start_date = end_date - timedelta(days=30)
+            result = supabase.table('market_data').select('close, timestamp').eq('symbol', symbol).gte('timestamp', start_date.isoformat()).lte('timestamp', end_date.isoformat()).order('timestamp').execute()
+            
+            prices = [float(row['close']) for row in result.data]
+            
+            if len(prices) >= 10:
+                returns = np.diff(np.log(prices))
+                volatility = np.std(returns) * np.sqrt(252)  # Annualized
                 
-                result = session.execute(text("""
-                    SELECT close, timestamp
-                    FROM market_data
-                    WHERE symbol = :symbol
-                    AND timestamp >= :start_date
-                    AND timestamp <= :end_date
-                    ORDER BY timestamp
-                """), {
-                    'symbol': symbol,
-                    'start_date': start_date,
-                    'end_date': end_date
-                })
-                
-                prices = [float(row.close) for row in result.fetchall()]
-                
-                if len(prices) >= 10:
-                    returns = np.diff(np.log(prices))
-                    volatility = np.std(returns) * np.sqrt(252)  # Annualized
-                    
-                    logger.info(f"Calculated volatility for {symbol} from database: {volatility:.4f}")
-                    return volatility
+                logger.info(f"Calculated volatility for {symbol} from database: {volatility:.4f}")
+                return volatility
             
             return None
             

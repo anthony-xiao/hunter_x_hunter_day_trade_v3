@@ -15,7 +15,7 @@ The timezone mismatch issue occurs when:
 - `set_postgresql_timezone_utc.sql` - SQL commands for immediate timezone changes
 - `set_postgresql_env.sh` - Environment variable setup script
 - `postgresql-utc.service` - Systemd service file (Linux)
-- `.env.postgresql` - Docker environment file
+- `.env` - Docker environment file
 - `com.postgresql.utc.plist` - macOS launchd configuration
 
 ## 🚀 Quick Start
@@ -147,7 +147,7 @@ SHOW timezone;
 4. **Docker:**
    ```bash
    # Use environment file
-   docker run --env-file .env.postgresql postgres
+   docker run --env-file .env postgres
    
    # Or in docker-compose.yml
    services:

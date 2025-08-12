@@ -221,7 +221,7 @@ TZ=UTC
 POSTGRES_INITDB_ARGS=--timezone=UTC
 '''
         
-        docker_env_path = '/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/.env.postgresql'
+        docker_env_path = '/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/.env'
         with open(docker_env_path, 'w') as f:
             f.write(docker_env_content)
         print(f"📝 Created Docker environment file: {docker_env_path}")
@@ -239,7 +239,7 @@ POSTGRES_INITDB_ARGS=--timezone=UTC
         
         print("\n3. For Docker containers:")
         print(f"   Use the environment file: {docker_env_path}")
-        print("   docker run --env-file .env.postgresql postgres")
+        print("   docker run --env-file .env postgres")
         
         print("\n4. For systemd services (Linux):")
         print(f"   sudo cp {systemd_path} /etc/systemd/system/")
