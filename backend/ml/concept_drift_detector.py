@@ -5,8 +5,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+# SQLAlchemy imports removed - using Supabase only
 from scipy import stats
 from sklearn.metrics import accuracy_score, precision_score, recall_score
 import warnings
@@ -44,9 +43,16 @@ class DriftAlert:
 class ConceptDriftDetector:
     """Advanced concept drift detection system"""
     
-    def __init__(self, db_url: str):
-        self.engine = create_engine(db_url)
-        self.Session = sessionmaker(bind=self.engine)
+    def __init__(self, db_url: str = None, supabase_client=None):
+        # Only support Supabase client approach
+        if supabase_client:
+            self.supabase_client = supabase_client
+        else:
+            raise ValueError("supabase_client must be provided")
+        
+        # No SQLAlchemy support
+        self.engine = None
+        self.Session = None
         
         # Drift detection thresholds
         self.thresholds = {
@@ -164,52 +170,81 @@ class ConceptDriftDetector:
     async def _get_baseline_performance(self, model_name: str) -> Optional[Dict]:
         """Get baseline performance data for comparison"""
         try:
+            if not self.supabase_client:
+                logger.error("Supabase client not available for baseline performance")
+                return None
+                
             end_date = datetime.now(timezone.utc) - timedelta(days=self.windows['current_days'])
             start_date = end_date - timedelta(days=self.windows['baseline_days'])
             
-            with self.Session() as session:
-                # Get model predictions and actual results
-                result = session.execute(text("""
-                    SELECT 
-                        mp.timestamp,
-                        mp.symbol,
-                        mp.prediction,
-                        mp.confidence,
-                        md.close as actual_price,
-                        LAG(md.close) OVER (PARTITION BY mp.symbol ORDER BY mp.timestamp) as prev_price
-                    FROM model_predictions mp
-                    JOIN market_data md ON mp.symbol = md.symbol 
-                        AND DATE(mp.timestamp) = DATE(md.timestamp)
-                    WHERE mp.model_name = :model_name
-                    AND mp.timestamp >= :start_date
-                    AND mp.timestamp <= :end_date
-                    ORDER BY mp.timestamp
-                """), {
-                    'model_name': model_name,
-                    'start_date': start_date,
-                    'end_date': end_date
-                })
+            # Get model predictions
+            predictions_response = self.supabase_client.table('model_predictions').select(
+                'timestamp, symbol, prediction, confidence'
+            ).eq('model_name', model_name).gte(
+                'timestamp', start_date.isoformat()
+            ).lte('timestamp', end_date.isoformat()).order('timestamp').execute()
+            
+            if not predictions_response.data:
+                return None
+            
+            # Get market data for the same period and symbols
+            symbols = list(set(pred['symbol'] for pred in predictions_response.data))
+            market_data_response = self.supabase_client.table('market_data').select(
+                'timestamp, symbol, close'
+            ).in_('symbol', symbols).gte(
+                'timestamp', start_date.isoformat()
+            ).lte('timestamp', end_date.isoformat()).order('timestamp').execute()
+            
+            if not market_data_response.data:
+                return None
+            
+            # Create market data lookup by symbol and date
+            market_lookup = {}
+            for md in market_data_response.data:
+                date_key = md['timestamp'][:10]  # Extract date part
+                key = f"{md['symbol']}_{date_key}"
+                market_lookup[key] = md['close']
+            
+            # Process baseline data with actual returns
+            baseline = {
+                'predictions': [],
+                'confidences': [],
+                'actual_returns': [],
+                'timestamps': []
+            }
+            
+            # Sort market data by symbol and timestamp for prev_price calculation
+            market_by_symbol = {}
+            for md in sorted(market_data_response.data, key=lambda x: (x['symbol'], x['timestamp'])):
+                if md['symbol'] not in market_by_symbol:
+                    market_by_symbol[md['symbol']] = []
+                market_by_symbol[md['symbol']].append(md)
+            
+            for pred in predictions_response.data:
+                pred_date = pred['timestamp'][:10]
+                market_key = f"{pred['symbol']}_{pred_date}"
                 
-                data = result.fetchall()
-                
-                if not data:
-                    return None
-                
-                # Process baseline data
-                baseline = {
-                    'predictions': [float(row.prediction) for row in data],
-                    'confidences': [float(row.confidence) for row in data],
-                    'actual_returns': [],
-                    'timestamps': [row.timestamp for row in data]
-                }
-                
-                # Calculate actual returns
-                for row in data:
-                    if row.prev_price and row.prev_price > 0:
-                        actual_return = (row.actual_price - row.prev_price) / row.prev_price
+                if market_key in market_lookup:
+                    baseline['predictions'].append(float(pred['prediction']))
+                    baseline['confidences'].append(float(pred['confidence']))
+                    baseline['timestamps'].append(pred['timestamp'])
+                    
+                    # Calculate actual return
+                    current_price = market_lookup[market_key]
+                    symbol_data = market_by_symbol.get(pred['symbol'], [])
+                    
+                    # Find previous price
+                    prev_price = None
+                    for i, md in enumerate(symbol_data):
+                        if md['timestamp'][:10] == pred_date and i > 0:
+                            prev_price = symbol_data[i-1]['close']
+                            break
+                    
+                    if prev_price and prev_price > 0:
+                        actual_return = (current_price - prev_price) / prev_price
                         baseline['actual_returns'].append(actual_return)
-                
-                return baseline
+            
+            return baseline if baseline['predictions'] else None
                 
         except Exception as e:
             logger.error(f"Failed to get baseline performance for {model_name}: {e}")
@@ -218,52 +253,81 @@ class ConceptDriftDetector:
     async def _get_current_performance(self, model_name: str) -> Optional[Dict]:
         """Get current performance data for comparison"""
         try:
+            if not self.supabase_client:
+                logger.error("Supabase client not available for current performance")
+                return None
+                
             end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=self.windows['current_days'])
             
-            with self.Session() as session:
-                # Get recent model predictions and actual results
-                result = session.execute(text("""
-                    SELECT 
-                        mp.timestamp,
-                        mp.symbol,
-                        mp.prediction,
-                        mp.confidence,
-                        md.close as actual_price,
-                        LAG(md.close) OVER (PARTITION BY mp.symbol ORDER BY mp.timestamp) as prev_price
-                    FROM model_predictions mp
-                    JOIN market_data md ON mp.symbol = md.symbol 
-                        AND DATE(mp.timestamp) = DATE(md.timestamp)
-                    WHERE mp.model_name = :model_name
-                    AND mp.timestamp >= :start_date
-                    AND mp.timestamp <= :end_date
-                    ORDER BY mp.timestamp
-                """), {
-                    'model_name': model_name,
-                    'start_date': start_date,
-                    'end_date': end_date
-                })
+            # Get model predictions
+            predictions_response = self.supabase_client.table('model_predictions').select(
+                'timestamp, symbol, prediction, confidence'
+            ).eq('model_name', model_name).gte(
+                'timestamp', start_date.isoformat()
+            ).lte('timestamp', end_date.isoformat()).order('timestamp').execute()
+            
+            if not predictions_response.data:
+                return None
+            
+            # Get market data for the same period and symbols
+            symbols = list(set(pred['symbol'] for pred in predictions_response.data))
+            market_data_response = self.supabase_client.table('market_data').select(
+                'timestamp, symbol, close'
+            ).in_('symbol', symbols).gte(
+                'timestamp', start_date.isoformat()
+            ).lte('timestamp', end_date.isoformat()).order('timestamp').execute()
+            
+            if not market_data_response.data:
+                return None
+            
+            # Create market data lookup by symbol and date
+            market_lookup = {}
+            for md in market_data_response.data:
+                date_key = md['timestamp'][:10]  # Extract date part
+                key = f"{md['symbol']}_{date_key}"
+                market_lookup[key] = md['close']
+            
+            # Process current data with actual returns
+            current = {
+                'predictions': [],
+                'confidences': [],
+                'actual_returns': [],
+                'timestamps': []
+            }
+            
+            # Sort market data by symbol and timestamp for prev_price calculation
+            market_by_symbol = {}
+            for md in sorted(market_data_response.data, key=lambda x: (x['symbol'], x['timestamp'])):
+                if md['symbol'] not in market_by_symbol:
+                    market_by_symbol[md['symbol']] = []
+                market_by_symbol[md['symbol']].append(md)
+            
+            for pred in predictions_response.data:
+                pred_date = pred['timestamp'][:10]
+                market_key = f"{pred['symbol']}_{pred_date}"
                 
-                data = result.fetchall()
-                
-                if not data:
-                    return None
-                
-                # Process current data
-                current = {
-                    'predictions': [float(row.prediction) for row in data],
-                    'confidences': [float(row.confidence) for row in data],
-                    'actual_returns': [],
-                    'timestamps': [row.timestamp for row in data]
-                }
-                
-                # Calculate actual returns
-                for row in data:
-                    if row.prev_price and row.prev_price > 0:
-                        actual_return = (row.actual_price - row.prev_price) / row.prev_price
+                if market_key in market_lookup:
+                    current['predictions'].append(float(pred['prediction']))
+                    current['confidences'].append(float(pred['confidence']))
+                    current['timestamps'].append(pred['timestamp'])
+                    
+                    # Calculate actual return
+                    current_price = market_lookup[market_key]
+                    symbol_data = market_by_symbol.get(pred['symbol'], [])
+                    
+                    # Find previous price
+                    prev_price = None
+                    for i, md in enumerate(symbol_data):
+                        if md['timestamp'][:10] == pred_date and i > 0:
+                            prev_price = symbol_data[i-1]['close']
+                            break
+                    
+                    if prev_price and prev_price > 0:
+                        actual_return = (current_price - prev_price) / prev_price
                         current['actual_returns'].append(actual_return)
-                
-                return current
+            
+            return current if current['predictions'] else None
                 
         except Exception as e:
             logger.error(f"Failed to get current performance for {model_name}: {e}")
@@ -507,16 +571,22 @@ class ConceptDriftDetector:
     async def _get_active_models(self) -> List[str]:
         """Get list of active models"""
         try:
-            with self.Session() as session:
-                result = session.execute(text("""
-                    SELECT DISTINCT model_name
-                    FROM model_predictions
-                    WHERE timestamp >= :cutoff_date
-                """), {
-                    'cutoff_date': datetime.now(timezone.utc) - timedelta(days=7)
-                })
+            if not self.supabase_client:
+                logger.error("Supabase client not available for getting active models")
+                return ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']  # Default models
                 
-                return [row.model_name for row in result.fetchall()]
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=7)
+            
+            response = self.supabase_client.table('model_predictions').select(
+                'model_name'
+            ).gte('timestamp', cutoff_date.isoformat()).execute()
+            
+            if response.data:
+                # Get unique model names
+                model_names = list(set(row['model_name'] for row in response.data))
+                return model_names
+            else:
+                return ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']  # Default models
                 
         except Exception as e:
             logger.error(f"Failed to get active models: {e}")

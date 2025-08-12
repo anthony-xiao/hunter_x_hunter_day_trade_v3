@@ -967,7 +967,7 @@ class ModelTrainer:
     
     async def _calculate_realistic_returns_market_based(self, y_pred: np.ndarray, y_test: np.ndarray, 
                                                        symbol: str, test_timestamps: pd.DatetimeIndex) -> np.ndarray:
-        """Calculate realistic trading returns using actual historical market data from PostgreSQL"""
+        """Calculate realistic trading returns using actual historical market data from Supabase"""
         if symbol is None or test_timestamps is None:
             logger.warning("Symbol or timestamps not provided, falling back to simplified calculation")
             return await self._calculate_realistic_returns_simplified(y_pred, y_test)
