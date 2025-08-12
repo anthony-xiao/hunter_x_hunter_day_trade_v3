@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import numpy as np
@@ -648,7 +648,7 @@ class FeatureEngineering:
                     'microstructure': list(microstructure.columns),
                     'composite': list(engineered.columns)
                 },
-                'generation_time': datetime.now().isoformat()
+                'generation_time': datetime.now(timezone.utc).isoformat()
             }
             
             return metadata

@@ -211,7 +211,7 @@ class ModelTrainer:
             base_models_dir.mkdir(exist_ok=True)
             
             # Create timestamped directory for this training run
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             self.model_dir = base_models_dir / timestamp
             self.model_dir.mkdir(exist_ok=True)
             
@@ -931,11 +931,11 @@ class ModelTrainer:
             max_drawdown=max_drawdown,
             total_trades=total_trades,
             returns=returns.tolist(),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             validation_score=accuracy,  # Use accuracy as validation score
             overfitting_score=abs(accuracy - 0.5) * 2,  # Simple overfitting measure
             profit_factor=profit_factor,
-            last_updated=datetime.now()
+            last_updated=datetime.now(timezone.utc)
         )
     
     async def _calculate_realistic_returns_simplified(self, y_pred: np.ndarray, y_test: np.ndarray) -> np.ndarray:
@@ -1152,7 +1152,7 @@ class ModelTrainer:
                     return obj
             
             metadata = {
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'model_configs': {name: {
                     'name': config.name,
                     'model_type': config.model_type,
@@ -1830,11 +1830,11 @@ class ModelTrainer:
                 win_rate=0.0,
                 total_trades=0,
                 returns=[],
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
                 validation_score=0.0,
                 overfitting_score=1.0,
                 profit_factor=0.0,
-                last_updated=datetime.now()
+                last_updated=datetime.now(timezone.utc)
             )
     
     async def _evaluate_model_detailed(self, model_name: str, model: any, X_test: np.ndarray, 
@@ -1927,11 +1927,11 @@ class ModelTrainer:
             win_rate=float(win_rate),
             total_trades=int(total_trades),
             returns=returns.tolist(),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             validation_score=float(accuracy),  # Use accuracy as validation score
             overfitting_score=float(abs(accuracy - 0.5) * 2),  # Simple overfitting measure
             profit_factor=float(profit_factor),
-            last_updated=datetime.now()
+            last_updated=datetime.now(timezone.utc)
          )
     
     async def optimize_ensemble_weights(self, validation_features: pd.DataFrame, 

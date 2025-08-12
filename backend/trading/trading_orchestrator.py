@@ -9,7 +9,7 @@ import pytz
 
 from data.polygon_websocket import RealTimeData, PolygonWebSocketManager
 from data.data_pipeline import DataPipeline
-from data.pipeline_feature_engineering import FeatureEngineer
+from ml.ml_feature_engineering import FeatureEngineering as FeatureEngineer
 from trading.signal_generator import SignalGenerator
 from trading.execution_engine import ExecutionEngine, TradeSignal
 from trading.risk_manager import RiskManager
@@ -180,7 +180,7 @@ class TradingOrchestrator:
         try:
             # Step 1: Try to bootstrap existing features from database first
             logger.info(f"Attempting to bootstrap existing features for {symbol} from database")
-            bootstrap_count = await self.data_pipeline.bootstrap_feature_cache(symbol, minutes=240)  # 4 hours lookback
+            bootstrap_count = await self.data_pipeline.bootstrap_feature_cache(symbol, minutes=240)  # 8 hours lookback for sufficient data
             
             if bootstrap_count > 60:  # Sufficient features available
                 logger.info(f"Successfully bootstrapped {bootstrap_count} existing features for {symbol} from database")
@@ -210,22 +210,48 @@ class TradingOrchestrator:
             
             # Check if FeatureSet is valid by verifying it has non-empty DataFrames
             if (features is None or 
-                features.technical_features.empty or 
-                len(features.technical_features) == 0):
+                features.technical_features.empty):
                 logger.warning(f"No features generated for {symbol} during bootstrap")
                 return
             
             # Step 4: Cache all generated features for immediate availability
-            # Combine all feature DataFrames and iterate over the combined result
+            # Properly combine all feature DataFrames from FeatureSet
             import pandas as pd
-            combined_features = pd.concat([
-                features.technical_features,
-                features.market_microstructure,
-                features.sentiment_features,
-                features.macro_features,
-                features.cross_asset_features,
-                features.engineered_features
-            ], axis=1)
+            
+            # Collect non-empty DataFrames for concatenation
+            feature_dfs = []
+            
+            if not features.technical_features.empty:
+                feature_dfs.append(features.technical_features)
+                logger.debug(f"Technical features: {len(features.technical_features.columns)} columns")
+            
+            if not features.market_microstructure.empty:
+                feature_dfs.append(features.market_microstructure)
+                logger.debug(f"Microstructure features: {len(features.market_microstructure.columns)} columns")
+            
+            if not features.sentiment_features.empty:
+                feature_dfs.append(features.sentiment_features)
+                logger.debug(f"Sentiment features: {len(features.sentiment_features.columns)} columns")
+            
+            if not features.macro_features.empty:
+                feature_dfs.append(features.macro_features)
+                logger.debug(f"Macro features: {len(features.macro_features.columns)} columns")
+            
+            if not features.cross_asset_features.empty:
+                feature_dfs.append(features.cross_asset_features)
+                logger.debug(f"Cross-asset features: {len(features.cross_asset_features.columns)} columns")
+            
+            if not features.engineered_features.empty:
+                feature_dfs.append(features.engineered_features)
+                logger.debug(f"Engineered features: {len(features.engineered_features.columns)} columns")
+            
+            if not feature_dfs:
+                logger.warning(f"No valid feature DataFrames found for {symbol}")
+                return
+            
+            # Combine all non-empty feature DataFrames
+            combined_features = pd.concat(feature_dfs, axis=1)
+            logger.info(f"Combined {len(combined_features.columns)} total features for {symbol} from {len(feature_dfs)} categories")
             
             cached_count = 0
             for timestamp, feature_row in combined_features.iterrows():
@@ -345,7 +371,7 @@ class TradingOrchestrator:
             # Get recent cached features for rolling window calculations (Priority 2: Enhanced Real-time Feature Updates)
             recent_features = await self.data_pipeline.get_recent_cached_features(symbol, minutes=120)  # Extended lookback for better technical indicators
             
-            if recent_features and len(recent_features) >= 20:  # Increased minimum for proper technical indicator calculation
+            if recent_features and len(recent_features.keys()) >= 20:  # Increased minimum for proper technical indicator calculation
                 # Priority 2: Calculate ALL technical indicators from WebSocket data using rolling windows
                 logger.debug(f"[{symbol}] Performing enhanced real-time feature update with complete OHLCV+VWAP+transactions data")
                 
@@ -402,12 +428,99 @@ class TradingOrchestrator:
                 start_date = rolling_df.index.min()
                 end_date = rolling_df.index.max()
                 
-                engineered_features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+                logger.info(f"[{symbol}] FEATURE_DEBUG: Calling engineer_features with start_date={start_date}, end_date={end_date}, data_points={len(rolling_df)}")
                 
-                if engineered_features is not None and len(engineered_features) > 0:
+                try:
+                    engineered_features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+                    
+                    if engineered_features is None:
+                        logger.error(f"[{symbol}] FEATURE_DEBUG: engineer_features returned None - ML feature engineering failed completely")
+                    elif not hasattr(engineered_features, 'technical_features'):
+                        logger.error(f"[{symbol}] FEATURE_DEBUG: engineer_features returned object without technical_features attribute: {type(engineered_features)}")
+                    elif engineered_features.technical_features.empty:
+                        logger.error(f"[{symbol}] FEATURE_DEBUG: engineer_features returned empty technical_features DataFrame")
+                    else:
+                        # Count total features across all DataFrames
+                        feature_counts = {
+                            'technical_features': len(engineered_features.technical_features.columns) if hasattr(engineered_features, 'technical_features') and not engineered_features.technical_features.empty else 0,
+                            'market_microstructure': len(engineered_features.market_microstructure.columns) if hasattr(engineered_features, 'market_microstructure') and not engineered_features.market_microstructure.empty else 0,
+                            'sentiment_features': len(engineered_features.sentiment_features.columns) if hasattr(engineered_features, 'sentiment_features') and not engineered_features.sentiment_features.empty else 0,
+                            'macro_features': len(engineered_features.macro_features.columns) if hasattr(engineered_features, 'macro_features') and not engineered_features.macro_features.empty else 0,
+                            'cross_asset_features': len(engineered_features.cross_asset_features.columns) if hasattr(engineered_features, 'cross_asset_features') and not engineered_features.cross_asset_features.empty else 0,
+                            'engineered_features': len(engineered_features.engineered_features.columns) if hasattr(engineered_features, 'engineered_features') and not engineered_features.engineered_features.empty else 0
+                        }
+                        total_features = sum(feature_counts.values())
+                        logger.info(f"[{symbol}] FEATURE_DEBUG: engineer_features SUCCESS - Generated {total_features} total features: {feature_counts}")
+                        
+                        if total_features < 100:
+                            logger.warning(f"[{symbol}] FEATURE_DEBUG: Low feature count ({total_features}) - Expected 150+ features")
+                        
+                except Exception as e:
+                    logger.error(f"[{symbol}] FEATURE_DEBUG: engineer_features FAILED with exception: {type(e).__name__}: {str(e)}")
+                    logger.error(f"[{symbol}] FEATURE_DEBUG: Exception traceback:", exc_info=True)
+                    engineered_features = None
+                
+                # Validate feature count and retry if needed
+                max_retries = 2
+                retry_count = 0
+                valid_engineered_features = None
+                
+                while retry_count <= max_retries and valid_engineered_features is None:
+                    if (engineered_features is not None and 
+                        hasattr(engineered_features, 'technical_features') and 
+                        not engineered_features.technical_features.empty):
+                        
+                        # Count total features to validate
+                        feature_counts = {
+                            'technical_features': len(engineered_features.technical_features.columns) if hasattr(engineered_features, 'technical_features') and not engineered_features.technical_features.empty else 0,
+                            'market_microstructure': len(engineered_features.market_microstructure.columns) if hasattr(engineered_features, 'market_microstructure') and not engineered_features.market_microstructure.empty else 0,
+                            'sentiment_features': len(engineered_features.sentiment_features.columns) if hasattr(engineered_features, 'sentiment_features') and not engineered_features.sentiment_features.empty else 0,
+                            'macro_features': len(engineered_features.macro_features.columns) if hasattr(engineered_features, 'macro_features') and not engineered_features.macro_features.empty else 0,
+                            'cross_asset_features': len(engineered_features.cross_asset_features.columns) if hasattr(engineered_features, 'cross_asset_features') and not engineered_features.cross_asset_features.empty else 0,
+                            'engineered_features': len(engineered_features.engineered_features.columns) if hasattr(engineered_features, 'engineered_features') and not engineered_features.engineered_features.empty else 0
+                        }
+                        total_features = sum(feature_counts.values())
+                        
+                        if total_features >= 100:  # Accept if we have at least 100 features
+                            valid_engineered_features = engineered_features
+                            logger.info(f"[{symbol}] FEATURE_VALIDATION: Regular update - Accepted {total_features} features")
+                            break
+                        else:
+                            logger.warning(f"[{symbol}] FEATURE_VALIDATION: Regular update - Insufficient features ({total_features}), retry {retry_count + 1}/{max_retries}")
+                    
+                    # Retry feature engineering if validation failed
+                    if retry_count < max_retries:
+                        retry_count += 1
+                        logger.info(f"[{symbol}] FEATURE_RETRY: Regular update - Attempting retry {retry_count}/{max_retries}")
+                        
+                        try:
+                            engineered_features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+                            logger.info(f"[{symbol}] FEATURE_RETRY: Regular update - Retry {retry_count} completed")
+                        except Exception as e:
+                            logger.error(f"[{symbol}] FEATURE_RETRY: Regular update - Retry {retry_count} failed: {type(e).__name__}: {str(e)}")
+                            engineered_features = None
+                    else:
+                        break
+                
+                # Use validated features
+                engineered_features = valid_engineered_features
+                    
+                if (engineered_features is not None and 
+                    hasattr(engineered_features, 'technical_features') and 
+                    not engineered_features.technical_features.empty):
+                    # Combine all feature DataFrames into one for extraction
+                    combined_features = pd.concat([
+                        engineered_features.technical_features,
+                        engineered_features.market_microstructure,
+                        engineered_features.sentiment_features,
+                        engineered_features.macro_features,
+                        engineered_features.cross_asset_features,
+                        engineered_features.engineered_features
+                    ], axis=1)
+                    
                     # Extract features for the current timestamp only
-                    if current_timestamp in engineered_features.index:
-                        current_features = engineered_features.loc[current_timestamp].to_dict()
+                    if current_timestamp in combined_features.index:
+                        current_features = combined_features.loc[current_timestamp].to_dict()
                         
                         # Ensure all Polygon WebSocket fields are included (Priority 3: Model Input Optimization)
                         current_features.update(current_bar_features)
@@ -417,17 +530,20 @@ class TradingOrchestrator:
                         logger.debug(f"[{symbol}] Enhanced real-time features calculated and cached for {current_timestamp} ({len(current_features)} features)")
                     else:
                         # Fallback: use the last available features
-                        latest_features = engineered_features.iloc[-1].to_dict()
+                        latest_features = combined_features.iloc[-1].to_dict()
                         latest_features.update(current_bar_features)  # Ensure current bar data is included
                         await self.data_pipeline.store_features(symbol, current_timestamp, latest_features)
                         logger.debug(f"[{symbol}] Fallback features stored for {current_timestamp}")
                 else:
-                    logger.warning(f"[{symbol}] engineer_features returned no results, storing basic features")
+                    if valid_engineered_features is None:
+                        logger.error(f"[{symbol}] CRITICAL: Regular update feature engineering failed after {max_retries} retries - falling back to basic features")
+                    else:
+                        logger.warning(f"[{symbol}] engineer_features returned no results, storing basic features")
                     await self.data_pipeline.store_features(symbol, current_timestamp, current_bar_features)
                 
             else:
                 # Cold start: insufficient recent features, use engineer_features with minimal historical data
-                logger.info(f"[{symbol}] Cold start: insufficient recent features ({len(recent_features) if recent_features else 0}), using minimal historical data")
+                logger.info(f"[{symbol}] Cold start: insufficient recent features ({len(recent_features.keys()) if recent_features else 0}), using minimal historical data")
                 
                 # Download minimal historical data for initial comprehensive feature calculation
                 end_date = current_timestamp
@@ -462,17 +578,101 @@ class TradingOrchestrator:
                     start_date = combined_data.index.min()
                     end_date = combined_data.index.max()
                     
-                    features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+                    logger.info(f"[{symbol}] FEATURE_DEBUG: Cold start - Calling engineer_features with start_date={start_date}, end_date={end_date}, data_points={len(combined_data)}")
                     
-                    if features is not None and len(features) > 0:
-                        # Store only features for the current timestamp
-                        if current_timestamp in features.index:
-                            latest_features = features.loc[current_timestamp].to_dict()
+                    try:
+                        features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+                        
+                        if features is None:
+                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - engineer_features returned None")
+                        elif not hasattr(features, 'technical_features'):
+                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - engineer_features returned object without technical_features: {type(features)}")
+                        elif features.technical_features.empty:
+                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - engineer_features returned empty technical_features")
                         else:
-                            latest_features = features.iloc[-1].to_dict()
+                            # Count total features across all DataFrames
+                            feature_counts = {
+                                'technical_features': len(features.technical_features.columns) if hasattr(features, 'technical_features') and not features.technical_features.empty else 0,
+                                'market_microstructure': len(features.market_microstructure.columns) if hasattr(features, 'market_microstructure') and not features.market_microstructure.empty else 0,
+                                'sentiment_features': len(features.sentiment_features.columns) if hasattr(features, 'sentiment_features') and not features.sentiment_features.empty else 0,
+                                'macro_features': len(features.macro_features.columns) if hasattr(features, 'macro_features') and not features.macro_features.empty else 0,
+                                'cross_asset_features': len(features.cross_asset_features.columns) if hasattr(features, 'cross_asset_features') and not features.cross_asset_features.empty else 0,
+                                'engineered_features': len(features.engineered_features.columns) if hasattr(features, 'engineered_features') and not features.engineered_features.empty else 0
+                            }
+                            total_features = sum(feature_counts.values())
+                            logger.info(f"[{symbol}] FEATURE_DEBUG: Cold start - engineer_features SUCCESS - Generated {total_features} total features: {feature_counts}")
+                            
+                            if total_features < 100:
+                                logger.warning(f"[{symbol}] FEATURE_DEBUG: Cold start - Low feature count ({total_features}) - Expected 150+ features")
+                                
+                    except Exception as e:
+                        logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - engineer_features FAILED with exception: {type(e).__name__}: {str(e)}")
+                        logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - Exception traceback:", exc_info=True)
+                        features = None
+                    
+                    # Validate feature count and retry if needed
+                    max_retries = 2
+                    retry_count = 0
+                    valid_features = None
+                    
+                    while retry_count <= max_retries and valid_features is None:
+                        if (features is not None and 
+                            hasattr(features, 'technical_features') and 
+                            not features.technical_features.empty):
+                            
+                            # Count total features to validate
+                            feature_counts = {
+                                'technical_features': len(features.technical_features.columns) if hasattr(features, 'technical_features') and not features.technical_features.empty else 0,
+                                'market_microstructure': len(features.market_microstructure.columns) if hasattr(features, 'market_microstructure') and not features.market_microstructure.empty else 0,
+                                'sentiment_features': len(features.sentiment_features.columns) if hasattr(features, 'sentiment_features') and not features.sentiment_features.empty else 0,
+                                'macro_features': len(features.macro_features.columns) if hasattr(features, 'macro_features') and not features.macro_features.empty else 0,
+                                'cross_asset_features': len(features.cross_asset_features.columns) if hasattr(features, 'cross_asset_features') and not features.cross_asset_features.empty else 0,
+                                'engineered_features': len(features.engineered_features.columns) if hasattr(features, 'engineered_features') and not features.engineered_features.empty else 0
+                            }
+                            total_features = sum(feature_counts.values())
+                            
+                            if total_features >= 100:  # Accept if we have at least 100 features
+                                valid_features = features
+                                logger.info(f"[{symbol}] FEATURE_VALIDATION: Cold start - Accepted {total_features} features")
+                                break
+                            else:
+                                logger.warning(f"[{symbol}] FEATURE_VALIDATION: Cold start - Insufficient features ({total_features}), retry {retry_count + 1}/{max_retries}")
+                        
+                        # Retry feature engineering if validation failed
+                        if retry_count < max_retries:
+                            retry_count += 1
+                            logger.info(f"[{symbol}] FEATURE_RETRY: Cold start - Attempting retry {retry_count}/{max_retries}")
+                            
+                            try:
+                                features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+                                logger.info(f"[{symbol}] FEATURE_RETRY: Cold start - Retry {retry_count} completed")
+                            except Exception as e:
+                                logger.error(f"[{symbol}] FEATURE_RETRY: Cold start - Retry {retry_count} failed: {type(e).__name__}: {str(e)}")
+                                features = None
+                        else:
+                            break
+                    
+                    if valid_features is not None:
+                        # Combine all feature DataFrames into one for storage
+                        combined_features = pd.concat([
+                            valid_features.technical_features,
+                            valid_features.market_microstructure,
+                            valid_features.sentiment_features,
+                            valid_features.macro_features,
+                            valid_features.cross_asset_features,
+                            valid_features.engineered_features
+                        ], axis=1)
+                        
+                        # Store only features for the current timestamp
+                        if current_timestamp in combined_features.index:
+                            latest_features = combined_features.loc[current_timestamp].to_dict()
+                        else:
+                            latest_features = combined_features.iloc[-1].to_dict()
                         
                         await self.data_pipeline.store_features(symbol, current_timestamp, latest_features)
-                        logger.debug(f"[{symbol}] Cold start comprehensive features calculated and cached for {current_timestamp}")
+                        logger.info(f"[{symbol}] Cold start comprehensive features calculated and cached for {current_timestamp} - {len(latest_features)} features stored")
+                    else:
+                        logger.error(f"[{symbol}] CRITICAL: Cold start feature engineering failed after {max_retries} retries - falling back to basic features")
                 else:
                     # Absolute fallback: store basic WebSocket data
                     basic_features = {
@@ -505,7 +705,7 @@ class TradingOrchestrator:
             
             # Use smart caching logic - let signal generator decide if features are sufficient
             if recent_features:
-                feature_count = len(recent_features)
+                feature_count = len(recent_features.keys())
                 logger.info(f"Using cached features for signal generation: {symbol} ({feature_count} points)")
                 
                 # Generate signal directly from cached features (eliminates historical data download)
@@ -553,8 +753,8 @@ class TradingOrchestrator:
                     strategy_name=signal.strategy_name,
                     metadata={**signal.metadata, "risk_adjustment": "no_cached_features"}
                 )
-            elif len(recent_features) < 10:
-                logger.warning(f"Very limited cached features for risk management: {signal.symbol} ({len(recent_features)}/10)")
+            elif len(recent_features.keys()) < 10:
+                logger.warning(f"Very limited cached features for risk management: {signal.symbol} ({len(recent_features.keys())}/10)")
                 # Proceed with minimal risk management
                 risk_adjusted_signal = TradeSignal(
                     symbol=signal.symbol,
@@ -568,7 +768,7 @@ class TradingOrchestrator:
                 )
             else:
                 # Apply full risk management with available cached features
-                feature_count = len(recent_features)
+                feature_count = len(recent_features.keys())
                 logger.debug(f"Applying risk management with {feature_count} cached features for {signal.symbol}")
                 
                 # Convert cached features to DataFrame for risk calculations

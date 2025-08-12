@@ -477,6 +477,10 @@ class DataPipeline:
             if symbol not in self.feature_cache:
                 self.feature_cache[symbol] = {}
             
+            # Debug: Log what's being cached (only for first few entries to avoid spam)
+            if len(self.feature_cache[symbol]) < 3:
+                logger.info(f"[CACHE_DEBUG] {symbol}: Caching {len(features)} features at {timestamp}: {list(features.keys())[:10]}...")
+            
             # Add features to cache
             self.feature_cache[symbol][timestamp] = features.copy()
             
@@ -580,11 +584,45 @@ class DataPipeline:
                 logger.info(f"Downloaded {len(market_data)} market data points for {symbol} from Polygon")
                 
                 # Generate features from the downloaded market data
-                from .pipeline_feature_engineering import FeatureEngineer
-                feature_engineer = FeatureEngineer(data_pipeline=self)
+                from ml.ml_feature_engineering import FeatureEngineering
+                feature_engineer = FeatureEngineering(db_url=str(self.engine.url))
                 
                 # Engineer features from market data
-                features_df = await feature_engineer.engineer_features(market_data, symbol)
+                start_date = market_data.index.min()
+                end_date = market_data.index.max()
+                feature_set = await feature_engineer.engineer_features(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                
+                # Combine all feature categories from FeatureSet
+                feature_dfs = []
+                if hasattr(feature_set, 'technical_features') and not feature_set.technical_features.empty:
+                    feature_dfs.append(feature_set.technical_features)
+                    logger.info(f"Technical features: {len(feature_set.technical_features.columns)} columns")
+                if hasattr(feature_set, 'market_microstructure') and not feature_set.market_microstructure.empty:
+                    feature_dfs.append(feature_set.market_microstructure)
+                    logger.info(f"Market microstructure features: {len(feature_set.market_microstructure.columns)} columns")
+                if hasattr(feature_set, 'sentiment_features') and not feature_set.sentiment_features.empty:
+                    feature_dfs.append(feature_set.sentiment_features)
+                    logger.info(f"Sentiment features: {len(feature_set.sentiment_features.columns)} columns")
+                if hasattr(feature_set, 'macro_features') and not feature_set.macro_features.empty:
+                    feature_dfs.append(feature_set.macro_features)
+                    logger.info(f"Macro features: {len(feature_set.macro_features.columns)} columns")
+                if hasattr(feature_set, 'cross_asset_features') and not feature_set.cross_asset_features.empty:
+                    feature_dfs.append(feature_set.cross_asset_features)
+                    logger.info(f"Cross-asset features: {len(feature_set.cross_asset_features.columns)} columns")
+                if hasattr(feature_set, 'engineered_features') and not feature_set.engineered_features.empty:
+                    feature_dfs.append(feature_set.engineered_features)
+                    logger.info(f"Engineered features: {len(feature_set.engineered_features.columns)} columns")
+                
+                if feature_dfs:
+                    features_df = pd.concat(feature_dfs, axis=1)
+                    logger.info(f"Combined features: {len(features_df.columns)} total columns")
+                else:
+                    logger.warning("No features generated from ML FeatureEngineering")
+                    features_df = pd.DataFrame()
                 
                 if features_df is None or len(features_df) == 0:
                     logger.warning(f"Failed to generate features from market data for {symbol}")
@@ -593,9 +631,15 @@ class DataPipeline:
                 logger.info(f"Generated {len(features_df)} features for {symbol} from downloaded data")
                 
                 # Cache the newly generated features
+                logger.info(f"[BOOTSTRAP_DEBUG] {symbol}: features_df has {len(features_df.columns)} columns: {list(features_df.columns)[:10]}...")
+                
                 for timestamp, row in features_df.iterrows():
                     # Convert row to dictionary, excluding NaN values
                     feature_dict = {k: v for k, v in row.to_dict().items() if pd.notna(v)}
+                    
+                    # Debug: Log feature count being cached
+                    if loaded_count == 0:  # Only log for first row to avoid spam
+                        logger.info(f"[BOOTSTRAP_DEBUG] {symbol}: Caching {len(feature_dict)} features: {list(feature_dict.keys())[:10]}...")
                     
                     # Cache the features
                     await self._cache_features(symbol, timestamp, feature_dict)
@@ -613,6 +657,26 @@ class DataPipeline:
             
         except Exception as e:
             logger.error(f"Failed to bootstrap feature cache for {symbol}: {e}")
+            return 0
+    
+    def clear_feature_cache(self) -> int:
+        """Clear the in-memory feature cache completely
+        
+        Returns:
+            int: Number of symbols that had cached features cleared
+        """
+        try:
+            symbols_cleared = len(self.feature_cache)
+            total_features_cleared = sum(len(symbol_cache) for symbol_cache in self.feature_cache.values())
+            
+            # Clear the entire feature cache
+            self.feature_cache.clear()
+            
+            logger.info(f"Cleared in-memory feature cache: {symbols_cleared} symbols, {total_features_cleared} total cached features")
+            return symbols_cleared
+            
+        except Exception as e:
+            logger.error(f"Failed to clear feature cache: {e}")
             return 0
     
     async def get_recent_cached_features(self, symbol: str, minutes: int = 60) -> Dict[datetime, Dict]:

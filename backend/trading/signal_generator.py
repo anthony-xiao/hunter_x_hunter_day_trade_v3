@@ -331,7 +331,7 @@ class SignalGenerator:
                         'sharpe_ratio': 0.0,
                         'total_predictions': 0,
                         'correct_predictions': 0,
-                        'last_updated': datetime.now()
+                        'last_updated': datetime.now(timezone.utc)
                     }
             
             logger.info(f"Models initialized for {len(symbols)} symbols")
@@ -610,6 +610,10 @@ class SignalGenerator:
             if features_df is None:
                 return None
             
+            # FEATURE COUNT DEBUG: Log DataFrame shape after conversion
+            logger.info(f"[FEATURE_DEBUG] {symbol}: generate_signals_from_features - DataFrame after conversion: shape {features_df.shape}, columns: {len(features_df.columns)}")
+            logger.debug(f"[FEATURE_DEBUG] {symbol}: DataFrame columns: {list(features_df.columns)[:10]}...")  # Show first 10 columns
+            
             # Update market regime using cached features (simplified)
             await self._update_market_regime_from_features({symbol: features_df})
             
@@ -728,7 +732,7 @@ class SignalGenerator:
                 ensemble_weights=weights.copy(),
                 risk_score=risk_metrics.overall_risk_score,
                 signal_strength=signal_strength,
-                timestamp=datetime.now()
+                timestamp=datetime.now(timezone.utc)
             )
             
             # Store prediction history
@@ -745,6 +749,9 @@ class SignalGenerator:
         try:
             # Determine actual feature count from the features array
             actual_feature_count = features.shape[1] if len(features.shape) > 1 else features.shape[0]
+            
+            # FEATURE COUNT DEBUG: Log feature count being passed to model
+            logger.info(f"[FEATURE_DEBUG] {symbol}: _get_model_prediction - {model_type.value} model receiving features with shape {features.shape}, actual_feature_count: {actual_feature_count}, requested_feature_count: {feature_count}")
             
             if model_type == ModelType.CNN:
                 # CNN model - expects 4D input (batch_size, height, width, channels) for 2D CNN
@@ -867,7 +874,7 @@ class SignalGenerator:
                 confidence=float(confidence),
                 probability=float(probability),
                 features_used=list(range(features.shape[-1])),  # Feature indices
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
                 model_version="1.0"
             )
             
@@ -1036,6 +1043,8 @@ class SignalGenerator:
             if columns_before_drop != columns_after_drop:
                 logger.debug(f"[DEBUG] {symbol}: Dropped {columns_before_drop - columns_after_drop} all-NaN columns")
 
+            # FEATURE COUNT DEBUG: Log final feature count after DataFrame processing
+            logger.info(f"[FEATURE_DEBUG] {symbol}: _convert_cached_features_to_dataframe - Final DataFrame has {len(df.columns)} features")
             logger.debug(f"Converted {len(df)} cached feature records to DataFrame for {symbol} with {len(df.columns)} numeric features")
             return df
 
@@ -1087,7 +1096,7 @@ class SignalGenerator:
                     volatility_level=volatility,
                     trend_strength=trend_strength,
                     market_stress=market_stress,
-                    timestamp=datetime.now()
+                    timestamp=datetime.now(timezone.utc)
                 )
                 
                 self.regime_history.append(self.current_market_regime)
@@ -1151,6 +1160,9 @@ class SignalGenerator:
             # Get all feature columns (everything except excluded columns)
             feature_columns = [col for col in recent_data.columns if col not in exclude_columns]
             
+            # FEATURE COUNT DEBUG: Log initial feature count
+            logger.info(f"[FEATURE_DEBUG] {symbol}: _prepare_features - Input data has {len(recent_data.columns)} total columns, {len(feature_columns)} feature columns")
+            
             if not feature_columns:
                 logger.error(f"No feature columns found for {symbol}")
                 return None
@@ -1161,7 +1173,11 @@ class SignalGenerator:
                 numeric_data[col] = pd.to_numeric(numeric_data[col], errors='coerce')
             
             # Drop columns that are all NaN (failed numeric conversion)
+            columns_before_nan_drop = len(numeric_data.columns)
             numeric_data = numeric_data.dropna(axis=1, how='all')
+            
+            # FEATURE COUNT DEBUG: Log after NaN column removal
+            logger.info(f"[FEATURE_DEBUG] {symbol}: _prepare_features - After NaN removal: {len(numeric_data.columns)} features (dropped {columns_before_nan_drop - len(numeric_data.columns)} NaN columns)")
             
             if numeric_data.empty or len(numeric_data.columns) == 0:
                 logger.error(f"No valid numeric features found for {symbol}")
@@ -1183,6 +1199,9 @@ class SignalGenerator:
                 logger.error(f"Features array contains non-numeric values for {symbol}")
                 return None
             
+            # FEATURE COUNT DEBUG: Log before feature selection
+            logger.info(f"[FEATURE_DEBUG] {symbol}: _prepare_features - Before feature selection: {features_array.shape[1]} features available, requested: {feature_count}")
+            
             # Apply feature selection if feature_count is specified and less than available features
             if feature_count and feature_count < features_array.shape[1]:
                 logger.debug(f"Selecting top {feature_count} features from {features_array.shape[1]} available for {symbol}")
@@ -1192,6 +1211,12 @@ class SignalGenerator:
                 # Update the column names accordingly
                 numeric_data = numeric_data.iloc[:, :feature_count]
                 logger.debug(f"Feature selection applied: {features_array.shape[1]} features selected")
+                
+                # FEATURE COUNT DEBUG: Log after feature selection
+                logger.info(f"[FEATURE_DEBUG] {symbol}: _prepare_features - After feature selection: {features_array.shape[1]} features")
+            else:
+                # FEATURE COUNT DEBUG: Log when no feature selection is applied
+                logger.info(f"[FEATURE_DEBUG] {symbol}: _prepare_features - No feature selection applied, using all {features_array.shape[1]} features")
             
             # Create model-specific scaler key
             scaler_key = f"{symbol}_{model_type if model_type else 'default'}"
@@ -1340,7 +1365,7 @@ class SignalGenerator:
                 volatility_level=volatility,
                 trend_strength=trend_strength,
                 market_stress=market_stress,
-                timestamp=datetime.now()
+                timestamp=datetime.now(timezone.utc)
             )
             
             self.regime_history.append(self.current_market_regime)
@@ -1418,7 +1443,7 @@ class SignalGenerator:
                 confidence=confidence,
                 predicted_return=predicted_return,
                 risk_score=ensemble_pred.risk_score,
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
                 model_predictions=model_predictions
             )
             
@@ -1636,7 +1661,7 @@ class SignalGenerator:
                         returns_array = np.array(perf['returns'][-100:])  # Last 100 trades
                         perf['sharpe_ratio'] = np.mean(returns_array) / np.std(returns_array) if np.std(returns_array) > 0 else 0
                     
-                    perf['last_updated'] = datetime.now()
+                    perf['last_updated'] = datetime.now(timezone.utc)
                     
                 except ValueError:
                     continue  # Skip unknown model types
@@ -1673,7 +1698,7 @@ class SignalGenerator:
             }
             
             # Save to file
-            filename = f"logs/signals/signal_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{signal.symbol}.json"
+            filename = f"logs/signals/signal_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{signal.symbol}.json"
             with open(filename, 'w') as f:
                 json.dump(signal_log, f, indent=2, default=str)
             
@@ -1771,7 +1796,7 @@ class SignalGenerator:
                 json.dump({
                     'weights': {k.value: v for k, v in self.ensemble_weights[symbol].items()},
                     'performance': {k.value: v for k, v in self.model_performance[symbol].items()},
-                    'last_updated': datetime.now().isoformat()
+                    'last_updated': datetime.now(timezone.utc).isoformat()
                 }, f, indent=2, default=str)
             
             return True
