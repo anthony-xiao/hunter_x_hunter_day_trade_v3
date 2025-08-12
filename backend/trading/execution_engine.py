@@ -518,8 +518,8 @@ class ExecutionEngine:
                 limit_price=None,
                 stop_price=stop_loss,
                 trail_amount=None,
-                timestamp=datetime.now(),
-                updated_at=datetime.now()
+                timestamp=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
             )
             
             logger.info(f"Bracket buy order submitted for {signal.symbol}: qty={quantity}, stop_loss=${stop_loss:.2f}, take_profit=${take_profit:.2f}")
@@ -585,8 +585,8 @@ class ExecutionEngine:
                 limit_price=None,
                 stop_price=stop_loss,
                 trail_amount=None,
-                timestamp=datetime.now(),
-                updated_at=datetime.now()
+                timestamp=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
             )
             
             logger.info(f"Bracket sell order submitted for {signal.symbol}: qty={quantity}, stop_loss=${stop_loss:.2f}, take_profit=${take_profit:.2f}")
@@ -634,8 +634,8 @@ class ExecutionEngine:
                 limit_price=None,
                 stop_price=None,
                 trail_amount=None,
-                timestamp=datetime.now(),
-                updated_at=datetime.now()
+                timestamp=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
             )
             
             return order
@@ -708,7 +708,7 @@ class ExecutionEngine:
             # Fallback to REST API with caching
             if symbol in self.price_cache:
                 cache_time = self.price_cache[symbol].get('timestamp', datetime.min)
-                if datetime.now() - cache_time < timedelta(seconds=30):  # 30-second cache
+                if datetime.now(timezone.utc) - cache_time < timedelta(seconds=30):  # 30-second cache
                     return self.price_cache[symbol]['price']
             
             # Get latest quote from Polygon REST API
@@ -720,7 +720,7 @@ class ExecutionEngine:
                 # Update cache
                 self.price_cache[symbol] = {
                     'price': price,
-                    'timestamp': datetime.now()
+                    'timestamp': datetime.now(timezone.utc)
                 }
                 
                 logger.debug(f"Got price for {symbol} from Polygon REST quote: ${price:.2f}")
@@ -734,7 +734,7 @@ class ExecutionEngine:
                     # Update cache
                     self.price_cache[symbol] = {
                         'price': price,
-                        'timestamp': datetime.now()
+                        'timestamp': datetime.now(timezone.utc)
                     }
                     
                     logger.debug(f"Got price for {symbol} from Polygon REST trade: ${price:.2f}")
@@ -971,8 +971,8 @@ class ExecutionEngine:
                     cost_basis=float(pos.cost_basis),
                     market_price=current_price,
                     pnl_percentage=float(pos.unrealized_plpc),
-                    timestamp=datetime.now(),
-                    entry_time=datetime.now()  # Would need to track separately
+                    timestamp=datetime.now(timezone.utc),
+            entry_time=datetime.now(timezone.utc)  # Would need to track separately
                 )
                 
                 self.positions[pos.symbol] = position
@@ -1035,7 +1035,7 @@ class ExecutionEngine:
             
             if validation_result.get('is_valid', False):
                 self.system_validated = True
-                self.last_validation_time = datetime.now()
+                self.last_validation_time = datetime.now(timezone.utc)
                 logger.info(f"Model validation passed: {validation_result}")
             else:
                 logger.warning(f"Model validation failed: {validation_result}")
@@ -1043,7 +1043,7 @@ class ExecutionEngine:
             
             # Initialize drift detection
             await self.drift_detector.initialize_baseline()
-            self.last_drift_check = datetime.now()
+            self.last_drift_check = datetime.now(timezone.utc)
             
             logger.info("ML validation systems initialized")
             
@@ -1099,7 +1099,7 @@ class ExecutionEngine:
         """Save trading session data"""
         try:
             session_data = {
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'daily_pnl': self.daily_pnl,
                 'daily_trades': self.daily_trades,
                 'positions': {k: asdict(v) for k, v in self.positions.items()},
@@ -1111,7 +1111,7 @@ class ExecutionEngine:
                 }
             }
             
-            filename = f"logs/trades/session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filename = f"logs/trades/session_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
             with open(filename, 'w') as f:
                 json.dump(session_data, f, indent=2, default=str)
             
@@ -1124,7 +1124,7 @@ class ExecutionEngine:
         """Log trade details"""
         try:
             trade_log = {
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'signal': asdict(signal),
                 'order': asdict(order),
                 'sizing': asdict(sizing),
@@ -1138,7 +1138,7 @@ class ExecutionEngine:
             self.trade_history.append(trade_log)
             
             # Save to file
-            filename = f"logs/trades/trade_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{order.symbol}.json"
+            filename = f"logs/trades/trade_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{order.symbol}.json"
             with open(filename, 'w') as f:
                 json.dump(trade_log, f, indent=2, default=str)
             
@@ -1187,7 +1187,7 @@ class ExecutionEngine:
     async def _check_system_validation(self) -> bool:
         """Check if system validation is current and models are performing well"""
         try:
-            current_time = datetime.now()
+            current_time = datetime.now(timezone.utc)
             
             # Check if validation is recent (within last 24 hours)
             if (self.last_validation_time is None or 
@@ -1269,7 +1269,7 @@ class ExecutionEngine:
                 beta=beta,
                 correlation_risk=0.3,  # Simplified
                 concentration_risk=concentration_risk,
-                timestamp=datetime.now()
+                timestamp=datetime.now(timezone.utc)
             )
             
             return risk_metrics
@@ -1281,7 +1281,7 @@ class ExecutionEngine:
                 total_exposure=0, leverage_ratio=0, daily_pnl=0,
                 daily_pnl_percentage=0, max_drawdown=0, sharpe_ratio=0,
                 var_95=0, beta=1, correlation_risk=0, concentration_risk=0,
-                timestamp=datetime.now()
+                timestamp=datetime.now(timezone.utc)
             )
     
     def get_positions(self) -> Dict[str, Position]:
@@ -1482,7 +1482,7 @@ class ExecutionEngine:
             }
             
             return {
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'trading_active': self.is_trading,
                 'account_info': account_info,
                 'risk_metrics': {
@@ -1587,7 +1587,7 @@ class ExecutionEngine:
             logger.info("Starting comprehensive live trading readiness validation")
             
             # 1. Run recent walk-forward test (last 3 months)
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=90)
             
             walk_forward_results = await self.run_walk_forward_test(start_date, end_date)
@@ -1620,7 +1620,7 @@ class ExecutionEngine:
             overall_ready = all(readiness_checks.values())
             
             readiness_result = {
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'overall_ready': overall_ready,
                 'readiness_checks': readiness_checks,
                 'detailed_results': {
@@ -1629,13 +1629,13 @@ class ExecutionEngine:
                     'drift_analysis': drift_check
                 },
                 'recommendations': self._generate_readiness_recommendations(readiness_checks),
-                'next_validation_due': (datetime.now() + timedelta(hours=24)).isoformat()
+                'next_validation_due': (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
             }
             
             if overall_ready:
                 logger.info("✅ System is READY for live trading")
                 self.system_validated = True
-                self.last_validation_time = datetime.now()
+                self.last_validation_time = datetime.now(timezone.utc)
             else:
                 logger.warning("❌ System is NOT READY for live trading")
                 self.system_validated = False
@@ -1647,7 +1647,7 @@ class ExecutionEngine:
             return {
                 'overall_ready': False,
                 'error': str(e),
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
     
     def _calculate_confidence_score(self, walk_forward_results, validation_result, drift_results: Dict) -> float:

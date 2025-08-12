@@ -68,7 +68,7 @@ Build the system from end-to-start to ensure each component knows exactly what f
 
    * Implement Polygon.io data ingestion
 
-   * Build PostgreSQL storage layer
+   * Build Supabase storage layer
 
    * Ensure data format matches feature engineering requirements
 
@@ -368,7 +368,7 @@ Desktop-only design focused on functionality over aesthetics. No mobile responsi
 
 * Native Python execution on macOS (no Docker overhead)
 
-* Direct PostgreSQL connection (local installation)
+* Direct Supabase connection (cloud-hosted PostgreSQL)
 
 * In-memory caching instead of Redis for simplicity
 
@@ -386,7 +386,9 @@ Desktop-only design focused on functionality over aesthetics. No mobile responsi
 
 * **Backend**: Python 3.11+ with FastAPI for API endpoints
 
-* **Database**: PostgreSQL with time-series optimizations (port 5433)
+* **Database**: Supabase (managed PostgreSQL) with real-time subscriptions and built-in authentication
+
+* **Database Client**: supabase-py for Python integration with Supabase services
 
 * **Caching**: In-memory Python dictionaries and pandas DataFrames for real-time features
 
@@ -398,7 +400,7 @@ Desktop-only design focused on functionality over aesthetics. No mobile responsi
 
 * **Parallel Processing**: Native Python multiprocessing for M4 chip optimization, asyncio for concurrent data processing
 
-* **Deployment**: Native Python processes (no Docker containerization for V1)
+* **Deployment**: Native Python processes with Supabase cloud database (no Docker containerization for V1)
 
 ### 5.2 Real-Time Data Streaming
 
@@ -493,12 +495,11 @@ ALPACA_LIVE_API_KEY="AKSFPBJ6DGZEZWQKKRC7"
 ALPACA_LIVE_SECRET_KEY="oguJlLqFmBnUKIMgg9PWtLmnvUYmAzjdZkXqxxKk"
 ALPACA_LIVE_BASE_URL="https://api.alpaca.markets"
 
-# DATABASE CONFIGURATION
-DATABASE_HOST="localhost"
-DATABASE_PORT="5433"
-DATABASE_NAME="algo_trading_db"
-DATABASE_USER="trading_user"
-DATABASE_PASSWORD="your_secure_password"
+# SUPABASE CONFIGURATION
+SUPABASE_URL="https://your-project-ref.supabase.co"
+SUPABASE_ANON_KEY="your_supabase_anon_key"
+SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_role_key"
+SUPABASE_PROJECT_REF="hunter_x_hunter_day_trade_v3"
 
 # TRADING CONFIGURATION
 TRADING_MODE="paper"  # Options: "paper" or "live"
@@ -520,7 +521,7 @@ TRADING_MODE="paper"  # Options: "paper" or "live"
 
 * **No Redis**: 32GB RAM allows efficient in-memory caching with Python data structures
 
-* **Direct PostgreSQL**: Eliminates network overhead and connection pooling complexity
+* **Direct Supabase**: Provides managed PostgreSQL with built-in authentication and real-time features
 
 * **Native Python**: Faster development iteration and debugging without container layers
 
@@ -555,12 +556,11 @@ TRADING_MODE="paper"  # Options: "paper" or "live"
       "base_url": "https://api.alpaca.markets"
     }
   },
-  "database": {
-    "host": "localhost",
-    "port": 5433,
-    "database": "trading_system",
-    "user": "trader",
-    "password": "secure_password"
+  "supabase": {
+    "url": "https://hunter-x-hunter-day-trade-v3.supabase.co",
+    "anon_key": "your_supabase_anon_key",
+    "service_role_key": "your_supabase_service_role_key",
+    "project_ref": "hunter_x_hunter_day_trade_v3"
   }
 }
 ```
@@ -606,7 +606,7 @@ The system implements a hybrid storage strategy for engineered features and tech
 
 * **Logging enhancement**: Detailed logs showing feature coverage percentages and skipped vs. newly generated features
 
-**1. PostgreSQL Storage (Persistence Layer):**
+**1. Supabase Storage (Persistence Layer):**
 
 * **Purpose**: Long-term storage of all computed features with timestamps
 
@@ -614,9 +614,9 @@ The system implements a hybrid storage strategy for engineered features and tech
 
 * **Indexing**: Optimized indexes on (symbol, timestamp) for millisecond lookups
 
-* **Partitioning**: Time-series partitioning for fast historical queries
+* **Real-time Features**: Built-in real-time subscriptions for live data updates
 
-* **Benefits**: Data persistence, historical analysis, model training consistency
+* **Benefits**: Data persistence, historical analysis, model training consistency, managed infrastructure
 
 **2. In-Memory Caching (Performance Layer):**
 
