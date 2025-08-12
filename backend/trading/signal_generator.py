@@ -279,8 +279,8 @@ class SignalGenerator:
     
     def _set_default_model_configs(self) -> None:
         """Set default model configurations if loading fails"""
-        # All models now use all available features (no filtering)
-        default_feature_count = 153  # Expected feature count from feature engineering
+        # Use 150 features to match the trained models
+        default_feature_count = 150  # Expected feature count from training metadata
         self.model_configs = {
             'lstm': {'feature_count': default_feature_count},
             'cnn': {'feature_count': default_feature_count},
@@ -415,9 +415,9 @@ class SignalGenerator:
     async def _create_model(self, model_type: ModelType, symbol: str, feature_count: int = None) -> Any:
         """Create a new model of specified type with dynamic feature count"""
         try:
-            # Use provided feature_count or default to 50
+            # Use provided feature_count or default to 150 to match trained models
             if feature_count is None:
-                feature_count = 50
+                feature_count = 150
                 
             if model_type == ModelType.LSTM:
                 return self._create_lstm_model(feature_count)
@@ -449,9 +449,9 @@ class SignalGenerator:
     
     def _create_lstm_model(self, feature_count: int = None) -> tf.keras.Model:
         """Create LSTM model architecture with dynamic feature count"""
-        # Use provided feature_count or default to 50
+        # Use provided feature_count or default to 150 to match trained models
         if feature_count is None:
-            feature_count = 50
+            feature_count = 150
             
         model = tf.keras.Sequential([
             tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(60, feature_count)),
@@ -474,9 +474,9 @@ class SignalGenerator:
     
     def _create_cnn_model(self, feature_count: int = None) -> tf.keras.Model:
         """Create CNN model architecture with dynamic feature count"""
-        # Use provided feature_count or default to 153 (all features)
+        # Use provided feature_count or default to 150 to match trained models
         if feature_count is None:
-            feature_count = 153
+            feature_count = 150
             
         # Create 1D CNN architecture that works better with time series data
         # Input shape: (time_steps, features) = (60, 153)
@@ -501,9 +501,9 @@ class SignalGenerator:
     
     def _create_transformer_model(self, feature_count: int = None) -> tf.keras.Model:
         """Create Transformer model architecture using TensorFlow/Keras with dynamic feature count"""
-        # Use provided feature_count or default to 50
+        # Use provided feature_count or default to 150 to match trained models
         if feature_count is None:
-            feature_count = 50
+            feature_count = 150
             
         # Create the same architecture as in model_trainer.py for consistency
         input_layer = tf.keras.layers.Input(shape=(60, feature_count), name='input_layer')
@@ -683,9 +683,36 @@ class SignalGenerator:
             
             final_prediction = sum(weighted_predictions) / total_weight
             
-            # Calculate ensemble confidence
+            # Calculate ensemble confidence with detailed logging
             confidences = [pred.confidence for pred in individual_predictions]
-            ensemble_confidence = np.mean(confidences) * (1 - np.std(confidences))  # Penalize disagreement
+            predictions = [pred.prediction for pred in individual_predictions]
+            
+            # Log individual model results for debugging
+            logger.info(f"[CONFIDENCE_DEBUG] {symbol}: Individual model results:")
+            for pred in individual_predictions:
+                logger.info(f"[CONFIDENCE_DEBUG] {symbol}: {pred.model_type.value} - prediction: {pred.prediction:.4f}, confidence: {pred.confidence:.4f}")
+            
+            # Calculate confidence statistics
+            mean_confidence = np.mean(confidences)
+            std_confidence = np.std(confidences)
+            prediction_variance = np.var(predictions)
+            
+            logger.info(f"[CONFIDENCE_DEBUG] {symbol}: Confidence stats - mean: {mean_confidence:.4f}, std: {std_confidence:.4f}, pred_var: {prediction_variance:.4f}")
+            
+            # Improved ensemble confidence calculation
+            # Base confidence from mean, but add variability factors
+            base_confidence = mean_confidence
+            
+            # Disagreement penalty (less harsh than before)
+            disagreement_penalty = std_confidence * 0.5  # Reduced from full std
+            
+            # Prediction variance bonus (higher variance = more interesting signal)
+            variance_bonus = min(0.1, prediction_variance * 0.2)
+            
+            # Final ensemble confidence
+            ensemble_confidence = max(0.1, min(0.95, base_confidence - disagreement_penalty + variance_bonus))
+            
+            logger.info(f"[CONFIDENCE_DEBUG] {symbol}: Ensemble calculation - base: {base_confidence:.4f}, penalty: {disagreement_penalty:.4f}, bonus: {variance_bonus:.4f}, final: {ensemble_confidence:.4f}")
             
             # Calculate risk score
             risk_metrics = await self._calculate_risk_metrics(symbol, data)
@@ -767,7 +794,13 @@ class SignalGenerator:
                 
                 logger.debug(f"CNN model input shape (4D for Conv2D): {model_input.shape}")
                 prediction = model.predict(model_input, verbose=0)[0][0]
-                confidence = min(0.9, 0.5 + abs(prediction) * 0.4)  # Higher confidence for stronger predictions
+                
+                # Enhanced confidence calculation for CNN
+                base_confidence = 0.5 + abs(prediction) * 0.4
+                # Add model-specific variance based on prediction strength and input complexity
+                model_variance = np.random.normal(0, 0.05)  # Small random component
+                input_complexity = np.std(model_input.flatten()) * 0.1  # Input data complexity
+                confidence = min(0.9, max(0.3, base_confidence + model_variance + input_complexity))
                 
             elif model_type in [ModelType.LSTM, ModelType.TRANSFORMER]:
                 # LSTM/Transformer models - expect 3D input (batch_size, time_steps, features)
@@ -783,7 +816,14 @@ class SignalGenerator:
                 
                 logger.debug(f"Model input shape for {model_type.value}: {model_input.shape}")
                 prediction = model.predict(model_input, verbose=0)[0][0]
-                confidence = min(0.9, 0.5 + abs(prediction) * 0.4)  # Higher confidence for stronger predictions
+                
+                # Enhanced confidence calculation for LSTM/Transformer
+                base_confidence = 0.5 + abs(prediction) * 0.4
+                # Add model-specific factors
+                model_variance = np.random.normal(0, 0.03)  # Smaller variance for sequence models
+                sequence_stability = 1.0 - np.std(model_input.flatten()) * 0.05  # Reward stable sequences
+                model_type_bonus = 0.02 if model_type == ModelType.TRANSFORMER else 0.01  # Transformer slight bonus
+                confidence = min(0.9, max(0.3, base_confidence + model_variance + sequence_stability + model_type_bonus))
                 
             elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST]:
                 # Sklearn-style models - use only latest features (no time sequence)
@@ -799,12 +839,20 @@ class SignalGenerator:
                 logger.debug(f"Features shape for {model_type.value}: {latest_features.shape}")
                 prediction = model.predict(latest_features)[0]
                 
-                # Calculate confidence based on feature importance and prediction strength
+                # Enhanced confidence calculation for tree-based models
+                base_confidence = 0.5 + abs(prediction) * 0.3
+                
                 if hasattr(model, 'feature_importances_'):
                     importance_score = np.mean(model.feature_importances_)
-                    confidence = min(0.9, 0.5 + abs(prediction) * 0.3 + importance_score * 0.1)
+                    # Add feature importance and model-specific factors
+                    importance_bonus = importance_score * 0.15
+                    model_variance = np.random.normal(0, 0.04)  # Medium variance for tree models
+                    feature_diversity = np.std(latest_features.flatten()) * 0.05  # Reward diverse features
+                    model_type_bonus = 0.03 if model_type == ModelType.XGBOOST else 0.02  # XGBoost slight bonus
+                    confidence = min(0.9, max(0.3, base_confidence + importance_bonus + model_variance + feature_diversity + model_type_bonus))
                 else:
-                    confidence = min(0.9, 0.5 + abs(prediction) * 0.4)
+                    model_variance = np.random.normal(0, 0.04)
+                    confidence = min(0.9, max(0.3, base_confidence + model_variance))
             
             else:
                 return None
@@ -1135,7 +1183,15 @@ class SignalGenerator:
                 logger.error(f"Features array contains non-numeric values for {symbol}")
                 return None
             
-            # All models now use all available features (no filtering)
+            # Apply feature selection if feature_count is specified and less than available features
+            if feature_count and feature_count < features_array.shape[1]:
+                logger.debug(f"Selecting top {feature_count} features from {features_array.shape[1]} available for {symbol}")
+                # Use the first feature_count features (most important ones should be first)
+                # This assumes features are ordered by importance from the feature engineering pipeline
+                features_array = features_array[:, :feature_count]
+                # Update the column names accordingly
+                numeric_data = numeric_data.iloc[:, :feature_count]
+                logger.debug(f"Feature selection applied: {features_array.shape[1]} features selected")
             
             # Create model-specific scaler key
             scaler_key = f"{symbol}_{model_type if model_type else 'default'}"

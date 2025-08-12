@@ -202,15 +202,33 @@ class TradingOrchestrator:
             logger.debug(f"Downloaded {len(historical_data)} historical bars for {symbol}")
             
             # Step 3: Generate features for all historical data points
-            features = await self.feature_engineer.engineer_features(historical_data, symbol)
+            # Calculate start_date and end_date from historical_data
+            start_date = historical_data.index.min()
+            end_date = historical_data.index.max()
             
-            if features is None or len(features) == 0:
+            features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+            
+            # Check if FeatureSet is valid by verifying it has non-empty DataFrames
+            if (features is None or 
+                features.technical_features.empty or 
+                len(features.technical_features) == 0):
                 logger.warning(f"No features generated for {symbol} during bootstrap")
                 return
             
             # Step 4: Cache all generated features for immediate availability
+            # Combine all feature DataFrames and iterate over the combined result
+            import pandas as pd
+            combined_features = pd.concat([
+                features.technical_features,
+                features.market_microstructure,
+                features.sentiment_features,
+                features.macro_features,
+                features.cross_asset_features,
+                features.engineered_features
+            ], axis=1)
+            
             cached_count = 0
-            for timestamp, feature_row in features.iterrows():
+            for timestamp, feature_row in combined_features.iterrows():
                 feature_dict = feature_row.to_dict()
                 await self.data_pipeline.store_features(symbol, timestamp, feature_dict)
                 cached_count += 1
@@ -380,7 +398,11 @@ class TradingOrchestrator:
                 logger.debug(f"[{symbol}] Calculating comprehensive features using engineer_features with {len(rolling_df)} data points")
                 
                 # Use the existing engineer_features function for comprehensive feature calculation
-                engineered_features = await self.feature_engineer.engineer_features(rolling_df, symbol)
+                # Calculate start_date and end_date from rolling_df
+                start_date = rolling_df.index.min()
+                end_date = rolling_df.index.max()
+                
+                engineered_features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
                 
                 if engineered_features is not None and len(engineered_features) > 0:
                     # Extract features for the current timestamp only
@@ -436,7 +458,11 @@ class TradingOrchestrator:
                     combined_data.sort_index(inplace=True)
                     
                     # Use engineer_features for comprehensive feature calculation
-                    features = await self.feature_engineer.engineer_features(combined_data, symbol)
+                    # Calculate start_date and end_date from combined_data
+                    start_date = combined_data.index.min()
+                    end_date = combined_data.index.max()
+                    
+                    features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
                     
                     if features is not None and len(features) > 0:
                         # Store only features for the current timestamp
