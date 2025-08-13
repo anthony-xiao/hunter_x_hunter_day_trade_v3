@@ -48,8 +48,8 @@ def clear_features_table():
         
         # Note: Sequence reset is handled automatically by Supabase
         logger.info("Features table sequence will be managed by Supabase automatically.")
-            
-            logger.success("Features table cleared successfully! Ready for feature regeneration.")
+        
+        logger.success("Features table cleared successfully! Ready for feature regeneration.")
             
     except Exception as e:
         logger.error(f"Failed to clear features table: {e}")

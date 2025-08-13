@@ -394,32 +394,113 @@ class DataPipeline:
     
     async def load_market_data(self, symbol: str, 
                              start_date: datetime, 
-                             end_date: datetime) -> pd.DataFrame:
-        """Load market data from database using Supabase client"""
+                             end_date: datetime,
+                             chunk_days: int = 30) -> pd.DataFrame:
+        """Load market data from database using Supabase client with chunked loading for large date ranges"""
         try:
-            # Query market data using Supabase client
-            response = self.supabase.table('market_data').select(
-                'timestamp, open, high, low, close, volume, vwap, transactions'
-            ).eq('symbol', symbol).gte(
-                'timestamp', start_date.isoformat()
-            ).lte(
-                'timestamp', end_date.isoformat()
-            ).order('timestamp').execute()
+            # Calculate the total days in the range
+            total_days = (end_date - start_date).days
             
-            if not response.data:
+            # If the range is small enough, load directly
+            if total_days <= chunk_days:
+                return await self._load_market_data_chunk(symbol, start_date, end_date)
+            
+            # For large ranges, load in chunks to prevent timeouts
+            logger.info(f"Loading {total_days} days of data for {symbol} in chunks of {chunk_days} days")
+            
+            all_data = []
+            current_start = start_date
+            
+            while current_start < end_date:
+                current_end = min(current_start + timedelta(days=chunk_days), end_date)
+                
+                logger.debug(f"Loading chunk for {symbol}: {current_start.date()} to {current_end.date()}")
+                
+                chunk_data = await self._load_market_data_chunk(symbol, current_start, current_end)
+                
+                if not chunk_data.empty:
+                    all_data.append(chunk_data)
+                
+                current_start = current_end
+                
+                # Small delay between chunks to prevent overwhelming the database
+                await asyncio.sleep(0.1)
+            
+            # Combine all chunks
+            if all_data:
+                combined_df = pd.concat(all_data, ignore_index=False)
+                combined_df = combined_df.sort_index()  # Ensure chronological order
+                logger.info(f"Loaded {len(combined_df)} market data records for {symbol} from {start_date.date()} to {end_date.date()}")
+                return combined_df
+            else:
+                logger.warning(f"No market data found for {symbol} between {start_date} and {end_date}")
+                return pd.DataFrame()
+            
+        except Exception as e:
+            logger.error(f"Failed to load market data for {symbol}: {e}")
+            return pd.DataFrame()
+    
+    async def _load_market_data_chunk(self, symbol: str, 
+                                    start_date: datetime, 
+                                    end_date: datetime) -> pd.DataFrame:
+        """Load a single chunk of market data from database using timestamp-based pagination to handle Supabase's 1000 record limit"""
+        try:
+            all_data = []
+            page_size = 1000  # Supabase hard limit
+            current_start = start_date
+            page_count = 0
+            
+            while current_start < end_date:
+                page_count += 1
+                
+                # Query market data using timestamp-based pagination
+                response = self.supabase.table('market_data').select(
+                    'timestamp, open, high, low, close, volume, vwap, transactions'
+                ).eq('symbol', symbol).gte(
+                    'timestamp', current_start.isoformat()
+                ).lte(
+                    'timestamp', end_date.isoformat()
+                ).order('timestamp').limit(page_size).execute()
+                
+                if not response.data:
+                    break  # No more data
+                
+                all_data.extend(response.data)
+                
+                # If we got less than page_size records, we've reached the end
+                if len(response.data) < page_size:
+                    break
+                
+                # Update current_start to be just after the last timestamp to avoid duplicates
+                last_timestamp = response.data[-1]['timestamp']
+                # Parse the timestamp and add 1 second
+                last_dt = datetime.fromisoformat(last_timestamp.replace('Z', '+00:00'))
+                current_start = last_dt + timedelta(seconds=1)
+                
+                # Safety limit to prevent infinite loops
+                if page_count > 100:
+                    logger.warning(f"Reached safety limit of 100 pages for {symbol} chunk")
+                    break
+                
+                # Small delay to prevent overwhelming the database
+                await asyncio.sleep(0.05)
+            
+            if not all_data:
                 return pd.DataFrame()
             
             # Convert to DataFrame
-            df = pd.DataFrame(response.data)
+            df = pd.DataFrame(all_data)
             
             # Convert timestamp column to datetime and set as index
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df = df.set_index('timestamp')
             
+            logger.debug(f"Loaded {len(df)} records for {symbol} from {start_date.date()} to {end_date.date()} using timestamp-based pagination ({page_count} pages)")
+            
             return df
                 
         except Exception as e:
-            logger.error(f"Failed to load market data for {symbol}: {e}")
+            logger.error(f"Failed to load market data chunk for {symbol} ({start_date.date()} to {end_date.date()}): {e}")
             return pd.DataFrame()
     
     def _make_json_serializable(self, obj: Any) -> Any:
