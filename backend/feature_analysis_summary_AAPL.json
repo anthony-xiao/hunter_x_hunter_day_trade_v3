@@ -1,0 +1,7 @@
+{
+  "total_ml_features": 148,
+  "total_with_ohlcv": 153,
+  "missing_features_count": 2,
+  "spy_data_available": true,
+  "feature_generation_success": true
+}

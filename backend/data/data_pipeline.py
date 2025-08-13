@@ -395,7 +395,7 @@ class DataPipeline:
     async def load_market_data(self, symbol: str, 
                              start_date: datetime, 
                              end_date: datetime,
-                             chunk_days: int = 30) -> pd.DataFrame:
+                             chunk_days: int = 150) -> pd.DataFrame:
         """Load market data from database using Supabase client with chunked loading for large date ranges"""
         try:
             # Calculate the total days in the range
@@ -859,9 +859,7 @@ class DataPipeline:
             List of timestamps that already have features stored
         """
         try:
-            supabase = self.db_manager.get_supabase_client()
-            
-            response = supabase.table('features').select('timestamp').eq('symbol', symbol).gte('timestamp', start_time.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').execute()
+            response = self.supabase.table('features').select('timestamp').eq('symbol', symbol).gte('timestamp', start_time.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').execute()
             
             existing_timestamps = []
             for row in response.data:
@@ -883,13 +881,11 @@ class DataPipeline:
     async def load_features_from_db(self, symbol: str, start_time: datetime, end_time: datetime) -> pd.DataFrame:
         """Load features from Supabase for historical analysis, including basic OHLCV data"""
         try:
-            supabase = self.db_manager.get_supabase_client()
-            
             # Get features data
-            features_response = supabase.table('features').select('timestamp, features').eq('symbol', symbol).gte('timestamp', start_time.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').execute()
+            features_response = self.supabase.table('features').select('timestamp, features').eq('symbol', symbol).gte('timestamp', start_time.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').execute()
             
             # Get market data for the same time range
-            market_response = supabase.table('market_data').select('timestamp, open, high, low, close, volume, vwap, transactions').eq('symbol', symbol).gte('timestamp', start_time.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').execute()
+            market_response = self.supabase.table('market_data').select('timestamp, open, high, low, close, volume, vwap, transactions').eq('symbol', symbol).gte('timestamp', start_time.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').execute()
             
             # Create a lookup dict for market data
             market_data_lookup = {row['timestamp']: row for row in market_response.data}
@@ -944,8 +940,6 @@ class DataPipeline:
                              model_name: str, prediction: float, confidence: float):
         """Store model prediction in database"""
         try:
-            supabase = self.db_manager.get_supabase_client()
-            
             prediction_data = {
                 'symbol': symbol,
                 'timestamp': timestamp.isoformat(),
@@ -954,7 +948,7 @@ class DataPipeline:
                 'confidence': confidence
             }
             
-            supabase.table('predictions').insert(prediction_data).execute()
+            self.supabase.table('predictions').insert(prediction_data).execute()
                 
         except Exception as e:
             logger.error(f"Failed to store prediction for {symbol}: {e}")
@@ -962,11 +956,10 @@ class DataPipeline:
     async def check_data_quality(self, symbol: str) -> DataQuality:
         """Check data quality for a symbol"""
         try:
-            supabase = self.db_manager.get_supabase_client()
             start_date = datetime.now(timezone.utc) - timedelta(days=30)
             
             # Get basic statistics using Supabase
-            response = supabase.table('market_data').select('volume, timestamp').eq('symbol', symbol).gte('timestamp', start_date.isoformat()).execute()
+            response = self.supabase.table('market_data').select('volume, timestamp').eq('symbol', symbol).gte('timestamp', start_date.isoformat()).execute()
             
             if not response.data:
                 stats = None
@@ -999,7 +992,7 @@ class DataPipeline:
                 data_completeness = stats['total_bars'] / expected_bars if expected_bars > 0 else 0
                 
                 # Check for price gaps using Supabase
-                ohlc_response = supabase.table('market_data').select('open, close, timestamp').eq('symbol', symbol).gte('timestamp', start_date.isoformat()).order('timestamp').execute()
+                ohlc_response = self.supabase.table('market_data').select('open, close, timestamp').eq('symbol', symbol).gte('timestamp', start_date.isoformat()).order('timestamp').execute()
                 
                 price_gaps = 0
                 if len(ohlc_response.data) > 1:
