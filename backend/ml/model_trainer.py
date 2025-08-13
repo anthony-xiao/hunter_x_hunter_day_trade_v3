@@ -982,8 +982,18 @@ class ModelTrainer:
             data_pipeline = DataPipeline()
             
             # Get historical market data for the test period
-            start_time = test_timestamps[0] - timedelta(minutes=5)  # Buffer for entry price
-            end_time = test_timestamps[-1] + timedelta(minutes=30)  # Buffer for exit price
+            # Ensure timestamps are timezone-aware (UTC) to avoid comparison errors
+            first_timestamp = test_timestamps[0]
+            last_timestamp = test_timestamps[-1]
+            
+            # Convert to timezone-aware if they are timezone-naive
+            if first_timestamp.tzinfo is None:
+                first_timestamp = first_timestamp.replace(tzinfo=timezone.utc)
+            if last_timestamp.tzinfo is None:
+                last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+            
+            start_time = first_timestamp - timedelta(minutes=5)  # Buffer for entry price
+            end_time = last_timestamp + timedelta(minutes=30)  # Buffer for exit price
             
             market_data = await data_pipeline.load_market_data(symbol, start_time, end_time)
             

@@ -1,0 +1,48 @@
+{
+  "timestamp": "2025-08-13T23:47:56.509621",
+  "summary": {
+    "total_ml_features": 148,
+    "model_features_excluding_basic": 148,
+    "cached_features_after_nan_filter": 148,
+    "expected_features": 150,
+    "missing_from_expected": 2
+  },
+  "category_breakdown": {
+    "actual": {
+      "technical": 72,
+      "microstructure": 43,
+      "sentiment": 8,
+      "macro": 11,
+      "cross_asset": 5,
+      "engineered": 9
+    },
+    "expected": {
+      "technical": 45,
+      "microstructure": 35,
+      "sentiment": 15,
+      "macro": 20,
+      "cross_asset": 10,
+      "engineered": 25
+    },
+    "differences": {
+      "technical": 27,
+      "microstructure": 8,
+      "sentiment": -7,
+      "macro": -9,
+      "cross_asset": -5,
+      "engineered": -16
+    }
+  },
+  "basic_columns_found": [],
+  "nan_features": [],
+  "cross_asset_features": [
+    "spy_correlation_100",
+    "spy_correlation_20",
+    "spy_correlation_50"
+  ],
+  "explanation": {
+    "discrepancy_133_vs_148": "133 includes basic OHLCV columns but filters out NaN features during caching",
+    "discrepancy_148_vs_150": "2 features missing from expected count, likely in cross-asset or engineered categories",
+    "root_cause": "Feature generation is working correctly, but some expected features are not being generated due to data availability or configuration"
+  }
+}
