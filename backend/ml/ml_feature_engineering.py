@@ -43,7 +43,7 @@ class FeatureEngineering:
         self.lookback_periods = [5, 10, 20, 50, 100, 200]
         self.volatility_windows = [5, 10, 20, 30]
         self.momentum_periods = [3, 5, 10, 15, 20]
-        self.mean_reversion_periods = [5, 10, 20]
+        self.mean_reversion_periods = [5, 10, 20, 50, 100]
         
         # Scalers for different feature types
         self.price_scaler = RobustScaler()

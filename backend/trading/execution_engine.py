@@ -158,8 +158,8 @@ class ExecutionEngine:
         # Initialize ML validation components
         from database import db_manager
         supabase_client = db_manager.get_supabase_client()
-        self.performance_validator = PerformanceValidator(db_url=None, supabase_client=supabase_client)
-        self.drift_detector = ConceptDriftDetector(db_url=None, supabase_client=supabase_client)
+        self.performance_validator = PerformanceValidator(supabase_client=supabase_client)
+        self.drift_detector = ConceptDriftDetector(supabase_client=supabase_client)
         
         self.is_trading = False
         self.positions: Dict[str, Position] = {}

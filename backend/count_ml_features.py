@@ -20,7 +20,7 @@ async def count_features():
         # Initialize feature engineering
         from database import db_manager
         supabase_client = db_manager.get_supabase_client()
-        feature_engineer = FeatureEngineering(db_url=None, supabase_client=supabase_client)
+        feature_engineer = FeatureEngineering(supabase_client=supabase_client)
         
         # Use recent date range
         end_date = datetime.now()
