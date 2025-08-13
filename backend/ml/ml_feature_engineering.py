@@ -5,7 +5,6 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-# SQLAlchemy imports removed - using Supabase only
 import talib
 from scipy import stats
 from sklearn.preprocessing import StandardScaler, RobustScaler
@@ -30,16 +29,15 @@ class FeatureSet:
 class FeatureEngineering:
     """Advanced feature engineering for algorithmic trading"""
     
-    def __init__(self, db_url: str = None, supabase_client=None):
-        # Only support Supabase client approach
+    def __init__(self, supabase_client=None):
+        # Use Supabase client instead of SQLAlchemy
         if supabase_client:
-            self.supabase_client = supabase_client
+            self.supabase = supabase_client
         else:
-            raise ValueError("supabase_client must be provided")
-        
-        # No SQLAlchemy support
-        self.engine = None
-        self.Session = None
+            from database import db_manager
+            self.supabase = db_manager.get_supabase_client()
+            if not self.supabase:
+                raise Exception("Supabase client not available")
         
         # Feature engineering parameters
         self.lookback_periods = [5, 10, 20, 50, 100, 200]
@@ -55,7 +53,7 @@ class FeatureEngineering:
         # PCA for dimensionality reduction
         self.pca = PCA(n_components=0.95)  # Keep 95% variance
         
-        logger.info("Feature Engineering initialized")
+        logger.info("Feature Engineering initialized with Supabase client")
     
     def calculate_required_lookback(self) -> int:
         """
@@ -174,30 +172,52 @@ class FeatureEngineering:
             return self._get_empty_feature_set()
     
     async def _get_market_data(self, symbol: str, start_date: datetime, end_date: datetime) -> Optional[pd.DataFrame]:
-        """Get market data for feature engineering"""
+        """Get market data for feature engineering using Supabase client with pagination"""
         try:
-            # Use Supabase client for data retrieval
-            if self.supabase_client:
-                result = self.supabase_client.table('market_data').select(
-                    'timestamp,open,high,low,close,volume,vwap'
-                ).eq('symbol', symbol).gte('timestamp', start_date.isoformat()).lte('timestamp', end_date.isoformat()).order('timestamp').execute()
+            all_data = []
+            page_size = 1000  # Supabase hard limit
+            current_start = start_date
+            
+            while current_start < end_date:
+                # Query market data using timestamp-based pagination
+                response = self.supabase.table('market_data').select(
+                    'timestamp, open, high, low, close, volume, vwap, transactions'
+                ).eq('symbol', symbol).gte(
+                    'timestamp', current_start.isoformat()
+                ).lte(
+                    'timestamp', end_date.isoformat()
+                ).order('timestamp').limit(page_size).execute()
                 
-                if not result.data:
-                    return None
+                if not response.data:
+                    break
                 
-                df = pd.DataFrame(result.data)
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df.set_index('timestamp', inplace=True)
+                all_data.extend(response.data)
                 
-                # Convert to numeric
-                numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'vwap']
-                for col in numeric_columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                # If we got less than page_size records, we're done
+                if len(response.data) < page_size:
+                    break
                 
-                return df
-            else:
-                logger.error(f"No Supabase client available for getting market data for {symbol}")
+                # Update current_start to the timestamp after the last record
+                last_timestamp = pd.to_datetime(response.data[-1]['timestamp'])
+                current_start = last_timestamp + timedelta(microseconds=1)
+            
+            if not all_data:
+                logger.warning(f"No market data found for {symbol} between {start_date} and {end_date}")
                 return None
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(all_data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df.set_index('timestamp', inplace=True)
+            
+            # Convert to numeric
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            logger.info(f"Loaded {len(df)} records for {symbol} from {start_date} to {end_date}")
+            return df
                 
         except Exception as e:
             logger.error(f"Failed to get market data for {symbol}: {e}")
