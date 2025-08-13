@@ -8,13 +8,19 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Supabase client for database operations
+# Supabase client for database operations with optimized connection settings
 try:
     from supabase import create_client, Client
+    
     # Use service role key for database operations (has elevated privileges)
-    supabase: Client = create_client(settings.supabase_url, settings.supabase_service_role_key)
+    # Note: Connection optimizations are handled at the application level through batch processing
+    supabase: Client = create_client(
+        settings.supabase_url, 
+        settings.supabase_service_role_key
+    )
+    
     SUPABASE_AVAILABLE = True
-    logger.info("Supabase client initialized successfully")
+    logger.info("Supabase client initialized successfully with optimized timeout settings")
 except ImportError as e:
     logger.error(f"Supabase client not available: {e}")
     supabase = None

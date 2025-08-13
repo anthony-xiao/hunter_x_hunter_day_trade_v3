@@ -274,7 +274,10 @@ class DataPipeline:
         return None
     
     async def _store_market_data(self, df: pd.DataFrame, symbol: str):
-        """Store market data in database using Supabase client"""
+        """Store market data in database using chunked batch processing to prevent timeouts"""
+        import time
+        import asyncio
+        
         try:
             # Prepare data for batch insert
             data_to_insert = []
@@ -302,17 +305,92 @@ class DataPipeline:
                     'transactions': int(row['transactions']) if pd.notna(row['transactions']) else None
                 })
             
-            # Use Supabase upsert for batch insert with conflict resolution
-            if data_to_insert:
-                response = self.supabase.table('market_data').upsert(
-                    data_to_insert,
-                    on_conflict='symbol,timestamp'
-                ).execute()
+            if not data_to_insert:
+                logger.warning(f"No data to store for {symbol}")
+                return
+            
+            # Chunked batch processing configuration
+            batch_size = 2000  # Optimal batch size for Supabase (1000-5000 range)
+            max_retries = 5
+            base_delay = 0.5  # Base delay between batches
+            total_records = len(data_to_insert)
+            successful_records = 0
+            failed_batches = []
+            
+            logger.info(f"Starting chunked batch processing for {symbol}: {total_records} records in batches of {batch_size}")
+            
+            # Process data in chunks
+            for batch_num, i in enumerate(range(0, total_records, batch_size), 1):
+                batch_data = data_to_insert[i:i + batch_size]
+                batch_success = False
                 
-                logger.info(f"Stored {len(data_to_insert)} market data records for {symbol}")
+                # Retry logic with exponential backoff
+                for attempt in range(max_retries):
+                    try:
+                        start_time = time.time()
+                        
+                        # Execute batch upsert
+                        response = self.supabase.table('market_data').upsert(
+                            batch_data,
+                            on_conflict='symbol,timestamp'
+                        ).execute()
+                        
+                        execution_time = time.time() - start_time
+                        successful_records += len(batch_data)
+                        batch_success = True
+                        
+                        logger.info(
+                            f"Batch {batch_num} for {symbol}: {len(batch_data)} records stored "
+                            f"(attempt {attempt + 1}/{max_retries}, {execution_time:.2f}s, "
+                            f"progress: {successful_records}/{total_records})"
+                        )
+                        break
+                        
+                    except Exception as batch_error:
+                        wait_time = min(base_delay * (2 ** attempt), 15)  # Cap at 15 seconds
+                        
+                        if attempt < max_retries - 1:
+                            logger.warning(
+                                f"Batch {batch_num} for {symbol} failed (attempt {attempt + 1}/{max_retries}): "
+                                f"{batch_error}. Retrying in {wait_time:.1f}s..."
+                            )
+                            await asyncio.sleep(wait_time)
+                        else:
+                            logger.error(
+                                f"Batch {batch_num} for {symbol} failed after {max_retries} attempts: {batch_error}"
+                            )
+                            failed_batches.append({
+                                'batch_num': batch_num,
+                                'start_index': i,
+                                'size': len(batch_data),
+                                'error': str(batch_error)
+                            })
+                
+                # Add delay between successful batches to prevent connection pool exhaustion
+                if batch_success and batch_num * batch_size < total_records:
+                    await asyncio.sleep(base_delay)
+            
+            # Final status report
+            if failed_batches:
+                logger.error(
+                    f"Market data storage for {symbol} completed with errors: "
+                    f"{successful_records}/{total_records} records stored successfully. "
+                    f"Failed batches: {len(failed_batches)}"
+                )
+                for failed_batch in failed_batches:
+                    logger.error(
+                        f"Failed batch {failed_batch['batch_num']}: "
+                        f"records {failed_batch['start_index']}-{failed_batch['start_index'] + failed_batch['size'] - 1}, "
+                        f"error: {failed_batch['error']}"
+                    )
+            else:
+                logger.info(
+                    f"Market data storage for {symbol} completed successfully: "
+                    f"{successful_records}/{total_records} records stored in {batch_num} batches"
+                )
                 
         except Exception as e:
-            logger.error(f"Failed to store market data for {symbol}: {e}")
+            logger.error(f"Critical error in _store_market_data for {symbol}: {e}")
     
     async def load_market_data(self, symbol: str, 
                              start_date: datetime, 
