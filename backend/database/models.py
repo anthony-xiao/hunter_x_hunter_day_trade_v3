@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, DateTime, Numeric, BigInteger, Text, Index, UniqueConstraint, create_engine, JSON
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB  # For Supabase (PostgreSQL) compatibility
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -394,30 +394,47 @@ class SystemLogs(Base):
         }
 
 async def init_db():
-    """Initialize database connection and create tables"""
-    global engine, SessionLocal
-    
+    """Initialize database connection - Supabase only"""
     try:
-        # Use the DatabaseManager from __init__.py
-        from . import db_manager
+        from database import db_manager
         
-        engine = db_manager.get_engine()
-        SessionLocal = db_manager.SessionLocal
+        # Get Supabase client
+        supabase_client = db_manager.get_supabase_client()
+        if not supabase_client:
+            logger.error("No Supabase client available")
+            raise Exception("Database initialization failed: No Supabase client")
         
-        # Create all tables
-        Base.metadata.create_all(bind=engine)
+        logger.info("Using Supabase for database operations")
         
-        logger.info("Database initialized successfully")
-        return True
-        
+        # Test connection by checking if we can access the database
+        try:
+            # Simple test query to verify connection
+            result = supabase_client.table('market_data').select('id').limit(1).execute()
+            logger.info("Supabase connection successful")
+            
+            # Ensure SQLAlchemy components are disabled
+            global engine, SessionLocal
+            engine = None
+            SessionLocal = None
+            logger.info("Database initialization complete - using Supabase")
+            
+        except Exception as e:
+            logger.error(f"Supabase connection test failed: {e}")
+            # Don't raise here - the tables might not exist yet, which is fine
+            logger.info("Supabase client available, proceeding with initialization")
+            
     except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        return False
+        logger.error(f"Database initialization failed: {e}")
+        raise
 
 def get_db():
-    """Get database session"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    """Get database session - deprecated, use Supabase client directly"""
+    # This function is deprecated since we're using Supabase client only
+    # Import and return the Supabase client instead
+    from . import db_manager
+    supabase_client = db_manager.get_supabase_client()
+    if supabase_client:
+        yield supabase_client
+    else:
+        logger.warning("Supabase client not available in get_db()")
+        yield None

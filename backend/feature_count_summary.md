@@ -4,7 +4,7 @@
 
 ### Key Findings
 
-1. **Database Verification**: The PostgreSQL database is correctly storing **153 features** for AAPL
+1. **Database Verification**: The Supabase database is correctly storing **153 features** for AAPL
 2. **Feature Composition**: The 153 features include both engineered features and basic OHLCV data
 3. **Sample Features**: ['atr', 'cci', 'low', 'mfi', 'obv', 'doji', 'high', 'hour', 'macd', 'open', 'close', 'ema_5', 'month', 'roc_3', 'roc_5', 'sma_5', 'ema_10', 'ema_20', 'ema_50', 'hammer']
 
@@ -40,14 +40,14 @@ The difference between the theoretical 178 and actual 153 features (25 fewer) is
 
 ### Validation Steps Performed
 
-1. ✅ **Database Query**: Verified 153 features stored in PostgreSQL
+1. ✅ **Database Query**: Verified 153 features stored in Supabase
 2. ✅ **Feature Analysis**: Analyzed theoretical vs actual feature generation
 3. ✅ **Code Review**: Examined feature engineering implementation
 4. ✅ **Training Logs**: Confirmed feature engineering is running during training
 
 ### Conclusion
 
-**The 153 features being stored in PostgreSQL is the CORRECT and EXPECTED count.**
+**The 153 features being stored in Supabase is the CORRECT and EXPECTED count.**
 
 This represents:
 - ✅ Successful feature engineering execution

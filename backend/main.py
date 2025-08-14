@@ -123,8 +123,8 @@ async def initialize_trading_system():
         
         # Initialize feature engineer
         logger.info("Initializing feature engineer...")
-        db_url = f"postgresql://{settings.database_user}:{settings.database_password}@{settings.database_host}:{settings.database_port}/{settings.database_name}"
-        feature_engineer = FeatureEngineer(db_url=db_url)
+        from database import db_manager
+        feature_engineer = FeatureEngineer(supabase_client=db_manager.get_supabase_client())
         
         # Initialize model trainer
         logger.info("Initializing model trainer...")
