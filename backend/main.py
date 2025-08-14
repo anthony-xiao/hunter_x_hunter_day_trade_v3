@@ -1078,80 +1078,35 @@ async def train_symbol_models(symbol: str):
                             logger.info(f"Feature engineering completed for {symbol} with {len(combined_features.columns)} total features")
                             logger.info(f"FEATURE DEBUG - Final feature count breakdown: Technical({len(feature_set.technical_features.columns)}) + Micro({len(feature_set.market_microstructure.columns)}) + Sentiment({len(feature_set.sentiment_features.columns)}) + Macro({len(feature_set.macro_features.columns)}) + CrossAsset({len(feature_set.cross_asset_features.columns)}) + Advanced({len(feature_set.engineered_features.columns)}) = {len(feature_set.technical_features.columns) + len(feature_set.market_microstructure.columns) + len(feature_set.sentiment_features.columns) + len(feature_set.macro_features.columns) + len(feature_set.cross_asset_features.columns) + len(feature_set.engineered_features.columns)} engineered features")
                             
-                            # Save engineered features to database and cache
-                            logger.info(f"Saving engineered features for {symbol} to database and cache...")
+                            # Save engineered features to database and cache using batch processing
+                            logger.info(f"Saving engineered features for {symbol} to database and cache using batch processing...")
                             try:
-                                stored_count = 0
-                                # Get feature columns (exclude basic OHLCV columns that are already stored)
-                                basic_cols = ['open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions', 'accumulated_volume']
-                                feature_cols = [col for col in combined_features.columns if col not in basic_cols]
-                                
-                                # DEBUG: Log feature saving details
-                                logger.info(f"FEATURE SAVE DEBUG - Total columns to process: {len(combined_features.columns)}")
-                                logger.info(f"FEATURE SAVE DEBUG - Basic columns to include: {len([col for col in basic_cols if col in combined_features.columns])}")
-                                logger.info(f"FEATURE SAVE DEBUG - Engineered feature columns to save: {len(feature_cols)}")
-                                logger.info(f"FEATURE SAVE DEBUG - Feature columns: {feature_cols[:10]}...")
-                                logger.info(f"FEATURE SAVE DEBUG - Number of timestamp rows to process: {len(combined_features)}")
-                                
-                                # Store each row of features
-                                for timestamp, row in combined_features.iterrows():
-                                    if pd.isna(timestamp):
-                                        continue
+                                # Ensure the DataFrame index is properly formatted for batch processing
+                                if not combined_features.empty:
+                                    # Convert index to UTC timezone if needed
+                                    if hasattr(combined_features.index, 'tz_localize'):
+                                        if combined_features.index.tz is None:
+                                            combined_features.index = combined_features.index.tz_localize('UTC')
+                                        elif combined_features.index.tz != timezone.utc:
+                                            combined_features.index = combined_features.index.tz_convert('UTC')
                                     
-                                    # Convert timestamp to datetime if needed, preserving UTC timezone
-                                    if hasattr(timestamp, 'to_pydatetime'):
-                                        timestamp = timestamp.to_pydatetime()
-                                        # Ensure timestamp is in UTC to match market data storage
-                                        if timestamp.tzinfo is None:
-                                            timestamp = timestamp.replace(tzinfo=timezone.utc)
-                                        elif timestamp.tzinfo != timezone.utc:
-                                            timestamp = timestamp.astimezone(timezone.utc)
-                                    elif not isinstance(timestamp, datetime):
-                                        continue
-                                    else:
-                                        # Ensure existing datetime objects are also in UTC
-                                        if timestamp.tzinfo is None:
-                                            timestamp = timestamp.replace(tzinfo=timezone.utc)
-                                        elif timestamp.tzinfo != timezone.utc:
-                                            timestamp = timestamp.astimezone(timezone.utc)
+                                    # DEBUG: Log feature saving details
+                                    logger.info(f"BATCH SAVE DEBUG - Total columns to process: {len(combined_features.columns)}")
+                                    logger.info(f"BATCH SAVE DEBUG - Number of timestamp rows to process: {len(combined_features)}")
+                                    logger.info(f"BATCH SAVE DEBUG - Sample feature columns: {list(combined_features.columns)[:10]}...")
                                     
-                                    # Prepare features dictionary
-                                    features = {}
-                                    feature_count_for_row = 0
+                                    # Use batch processing for significantly improved performance
+                                    await data_pipeline.store_features_batch(symbol, combined_features)
                                     
-                                    # Include basic OHLCV columns if available
-                                    for col in basic_cols:
-                                        if col in row and not pd.isna(row[col]):
-                                            value = row[col]
-                                            # Use data_pipeline's JSON serialization method to handle all types
-                                            features[col] = data_pipeline._make_json_serializable(value)
-                                            feature_count_for_row += 1
-                                    
-                                    # Add engineered features
-                                    for col in feature_cols:
-                                        if col in row and not pd.isna(row[col]):
-                                            value = row[col]
-                                            # Use data_pipeline's JSON serialization method to handle all types
-                                            features[col] = data_pipeline._make_json_serializable(value)
-                                            feature_count_for_row += 1
-                                    
-                                    # Store features if we have data
-                                    if features:
-                                        await data_pipeline.store_features(symbol, timestamp, features)
-                                        stored_count += 1
-                                        
-                                        # DEBUG: Log first few feature saves
-                                        if stored_count <= 3:
-                                            logger.info(f"FEATURE SAVE DEBUG - Row {stored_count}: Saved {feature_count_for_row} features for timestamp {timestamp}")
-                                            logger.info(f"FEATURE SAVE DEBUG - Row {stored_count}: Feature keys: {list(features.keys())[:10]}...")
-                                
-                                logger.info(f"Successfully stored {stored_count} feature records for {symbol} to database and cache")
-                                logger.info(f"FEATURE SAVE DEBUG - Average features per record: {sum(len([col for col in combined_features.columns if col in row and not pd.isna(row[col])]) for _, row in combined_features.iterrows()) / len(combined_features) if len(combined_features) > 0 else 0:.1f}")
+                                    logger.info(f"Successfully batch stored {len(combined_features)} feature records for {symbol} to database and cache")
+                                    logger.info(f"BATCH SAVE DEBUG - Average features per record: {combined_features.notna().sum(axis=1).mean():.1f}")
+                                else:
+                                    logger.warning(f"No features to save for {symbol} - combined_features DataFrame is empty")
                                 
                             except Exception as save_error:
-                                logger.error(f"Failed to save engineered features for {symbol}: {save_error}")
+                                logger.error(f"Failed to batch save engineered features for {symbol}: {save_error}")
                                 import traceback
-                                logger.error(f"FEATURE SAVE DEBUG - Full traceback: {traceback.format_exc()}")
+                                logger.error(f"BATCH SAVE DEBUG - Full traceback: {traceback.format_exc()}")
                                 # Continue with training even if saving fails
                     else:
                         logger.info(f"Skipping feature engineering for {symbol} - sufficient coverage ({coverage_percentage:.1f}%)")

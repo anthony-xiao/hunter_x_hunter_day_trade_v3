@@ -552,6 +552,173 @@ class DataPipeline:
         except Exception as e:
             logger.error(f"Failed to store features for {symbol}: {e}")
     
+    async def store_features_batch(self, symbol: str, features_df: pd.DataFrame):
+        """Store multiple features in batch for improved performance
+        
+        Args:
+            symbol: Stock symbol
+            features_df: DataFrame with datetime index and feature columns
+        """
+        try:
+            if features_df.empty:
+                logger.warning(f"Empty features DataFrame for {symbol}")
+                return
+            
+            logger.debug(f"Batch storing {len(features_df)} features for {symbol}")
+            
+            # Convert DataFrame to batch JSON-serializable format
+            batch_data = await self._make_json_serializable_batch(features_df)
+            
+            if not batch_data:
+                logger.warning(f"No valid data to store for {symbol}")
+                return
+            
+            # Batch upsert to Supabase
+            try:
+                result = await self.supabase_client.table('features').upsert(batch_data).execute()
+                logger.debug(f"Batch stored {len(batch_data)} features for {symbol} in Supabase")
+            except Exception as db_error:
+                logger.error(f"Failed to batch store features in Supabase for {symbol}: {db_error}")
+                # Continue with caching even if DB fails
+            
+            # Batch cache the features
+            features_dict = {}
+            for timestamp, row in features_df.iterrows():
+                feature_dict = {k: v for k, v in row.to_dict().items() if pd.notna(v)}
+                features_dict[timestamp] = feature_dict
+            
+            await self._cache_features_batch(symbol, features_dict)
+            
+            logger.debug(f"Batch stored and cached {len(features_df)} features for {symbol}")
+                
+        except Exception as e:
+            logger.error(f"Failed to batch store features for {symbol}: {e}")
+    
+    async def _cache_features_batch(self, symbol: str, features_dict: Dict[datetime, Dict]):
+        """Cache multiple features in batch for improved performance
+        
+        Args:
+            symbol: Stock symbol
+            features_dict: Dictionary mapping timestamps to feature dictionaries
+        """
+        try:
+            if not features_dict:
+                return
+            
+            # Initialize symbol cache if not exists
+            if symbol not in self.feature_cache:
+                self.feature_cache[symbol] = {}
+            
+            # Debug: Log what's being cached (only for first batch to avoid spam)
+            if len(self.feature_cache[symbol]) < 3:
+                sample_features = next(iter(features_dict.values()))
+                logger.info(f"[CACHE_DEBUG] {symbol}: Batch caching {len(features_dict)} timestamps with {len(sample_features)} features each: {list(sample_features.keys())[:10]}...")
+            
+            # Add all features to cache in batch
+            for timestamp, features in features_dict.items():
+                self.feature_cache[symbol][timestamp] = features.copy()
+            
+            # Clean old cache entries using the most recent cached feature timestamp as reference
+            if self.feature_cache[symbol]:
+                # Find the most recent timestamp in the cache
+                most_recent_timestamp = max(self.feature_cache[symbol].keys())
+                cutoff_time = most_recent_timestamp - timedelta(hours=self.cache_duration_hours)
+                
+                # Debug logging for cache cleaning
+                logger.debug(f"Batch cache cleaning for {symbol}: most_recent={most_recent_timestamp}, cutoff={cutoff_time}, cache_size_before={len(self.feature_cache[symbol])}")
+                
+                timestamps_to_remove = [
+                    ts for ts in self.feature_cache[symbol].keys() 
+                    if ts < cutoff_time
+                ]
+                
+                for ts in timestamps_to_remove:
+                    del self.feature_cache[symbol][ts]
+                
+                if timestamps_to_remove:
+                    logger.debug(f"Removed {len(timestamps_to_remove)} old features for {symbol}, cache_size_after={len(self.feature_cache[symbol])}")
+            
+            # Limit cache size per symbol
+            if len(self.feature_cache[symbol]) > self.cache_max_size:
+                # Remove oldest entries
+                sorted_timestamps = sorted(self.feature_cache[symbol].keys())
+                excess_count = len(self.feature_cache[symbol]) - self.cache_max_size
+                
+                for ts in sorted_timestamps[:excess_count]:
+                    del self.feature_cache[symbol][ts]
+            
+            logger.debug(f"Batch cached {len(features_dict)} features for {symbol}, total cache size: {len(self.feature_cache[symbol])}")
+            
+        except Exception as e:
+            logger.error(f"Failed to batch cache features for {symbol}: {e}")
+    
+    async def _make_json_serializable_batch(self, features_df: pd.DataFrame) -> List[Dict]:
+        """Convert DataFrame to batch JSON-serializable format for Supabase
+        
+        Args:
+            features_df: DataFrame with datetime index and feature columns
+            
+        Returns:
+            List of dictionaries ready for batch upsert
+        """
+        try:
+            batch_data = []
+            
+            for timestamp, row in features_df.iterrows():
+                # Convert timestamp to ISO format
+                if isinstance(timestamp, pd.Timestamp):
+                    timestamp_str = timestamp.isoformat()
+                elif isinstance(timestamp, datetime):
+                    timestamp_str = timestamp.isoformat()
+                else:
+                    timestamp_str = str(timestamp)
+                
+                # Convert row to dictionary and make JSON serializable
+                feature_dict = {}
+                for key, value in row.to_dict().items():
+                    if pd.notna(value):  # Skip NaN values
+                        feature_dict[key] = await self._make_json_serializable_value(value)
+                
+                if feature_dict:  # Only add if we have valid features
+                    record = {
+                        'symbol': features_df.index.name if hasattr(features_df.index, 'name') and features_df.index.name else 'unknown',
+                        'timestamp': timestamp_str,
+                        'features': feature_dict
+                    }
+                    batch_data.append(record)
+            
+            return batch_data
+            
+        except Exception as e:
+            logger.error(f"Failed to make batch JSON serializable: {e}")
+            return []
+    
+    async def _make_json_serializable_value(self, value):
+        """Convert a single value to JSON-serializable format
+        
+        Args:
+            value: Value to convert
+            
+        Returns:
+            JSON-serializable value
+        """
+        if isinstance(value, datetime):
+            return value.isoformat()
+        elif isinstance(value, Decimal):
+            return float(value)
+        elif isinstance(value, (np.integer, np.int64, np.int32)):
+            return int(value)
+        elif isinstance(value, (np.floating, np.float64, np.float32)):
+            return float(value)
+        elif isinstance(value, np.ndarray):
+            return value.tolist()
+        elif isinstance(value, dict):
+            return {k: await self._make_json_serializable_value(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [await self._make_json_serializable_value(item) for item in value]
+        else:
+            return value
+    
     async def _cache_features(self, symbol: str, timestamp: datetime, features: Dict):
         """Cache features in memory for ultra-low latency access"""
         try:
