@@ -4,7 +4,7 @@
 
 **ISSUE IDENTIFIED**: Your observation about timestamps starting at 16:00 daily is correct and indicates a critical timezone configuration problem.
 
-**ROOT CAUSE**: PostgreSQL database timezone is set to `Asia/Shanghai` (+8 UTC), but the application stores UTC timestamps without timezone information. This causes an 8-hour shift in all timestamp data.
+**ROOT CAUSE**: Database timezone was set to `Asia/Shanghai` (+8 UTC), but the application stores UTC timestamps without timezone information. This caused an 8-hour shift in all timestamp data. Now using Supabase which defaults to UTC.
 
 **IMPACT**: 
 - 883,859 market data records affected
@@ -44,7 +44,7 @@ Polygon: 21:00 UTC (4 PM ET market close)
 ↓
 Our App: Stores as 21:00 (thinking it's UTC)
 ↓  
-PostgreSQL: Interprets as 21:00 Shanghai time
+Database: Interprets as 21:00 Shanghai time (legacy issue, now resolved with Supabase)
 ↓
 Display: Shows as 21:00 but it's actually 05:00 UTC next day
 ```
@@ -102,7 +102,7 @@ python fix_timezone_issue.py
 python fix_timezone_issue.py --apply
 ```
 
-### Manual PostgreSQL Fix (if needed)
+### Manual Database Fix (if needed) - Legacy PostgreSQL
 ```sql
 -- Set database default timezone (requires superuser)
 ALTER DATABASE your_database_name SET timezone = 'UTC';

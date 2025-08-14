@@ -154,7 +154,7 @@ class PolygonTimestampTester:
         print("The 16:00 pattern suggests:")
         print("1. Polygon sends correct UTC timestamps")
         print("2. Our database timezone is Asia/Shanghai (+8)")
-        print("3. When we store UTC timestamps, PostgreSQL interprets them as Shanghai time")
+        print("3. When we store UTC timestamps, Supabase interprets them as Shanghai time")
         print("4. This shifts everything by +8 hours")
         print("5. Market close (4 PM ET = 21:00 UTC) becomes 05:00 Shanghai next day")
         print("6. But when displayed, it shows as the local part: 21:00 -> 21:00 Shanghai")
@@ -171,7 +171,7 @@ def main():
     tester.test_timezone_conversion()
     
     print("\n=== RECOMMENDATIONS ===")
-    print("1. Set PostgreSQL timezone to UTC: SET timezone = 'UTC';")
+    print("1. Set Supabase timezone to UTC: SET timezone = 'UTC';")
     print("2. Or ensure all timestamps are explicitly stored with timezone info")
     print("3. Re-import all market data with correct timezone handling")
     print("4. Update data pipeline to handle timezone conversions properly")

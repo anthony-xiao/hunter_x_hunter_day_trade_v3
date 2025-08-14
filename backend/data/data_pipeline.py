@@ -8,8 +8,7 @@ from dataclasses import dataclass
 import json
 from polygon import RESTClient
 from loguru import logger
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+# SQLAlchemy imports removed - now using Supabase client only
 from config import settings
 
 @dataclass
@@ -37,8 +36,13 @@ class DataQuality:
 class DataPipeline:
     def __init__(self):
         self.polygon_client = RESTClient(settings.polygon_api_key)
-        self.engine = self._create_db_engine()
-        self.Session = sessionmaker(bind=self.engine)
+        
+        # Use Supabase client instead of SQLAlchemy
+        from database import db_manager
+        self.supabase = db_manager.get_supabase_client()
+        if not self.supabase:
+            raise Exception("Supabase client not available")
+        
         self.data_cache: Dict[str, pd.DataFrame] = {}
         self.quality_metrics: Dict[str, DataQuality] = {}
         
@@ -66,102 +70,33 @@ class DataPipeline:
         """Get the list of trading symbols"""
         return self.trading_universe
         
-    def _create_db_engine(self):
-        """Create database engine"""
-        from database import db_manager
-        return db_manager.get_engine()
-    
     async def initialize_database(self):
-        """Initialize database tables"""
+        """Initialize database connection - tables are created via Supabase migrations"""
         try:
-            with self.engine.connect() as conn:
-                # Create market data table
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS market_data (
-                        id SERIAL PRIMARY KEY,
-                        symbol VARCHAR(10) NOT NULL,
-                        timestamp TIMESTAMP NOT NULL,
-                        open DECIMAL(10,4) NOT NULL,
-                        high DECIMAL(10,4) NOT NULL,
-                        low DECIMAL(10,4) NOT NULL,
-                        close DECIMAL(10,4) NOT NULL,
-                        volume BIGINT NOT NULL,
-                        vwap DECIMAL(10,4),
-                        transactions INTEGER,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(symbol, timestamp)
-                    )
-                """))
-                
-                # Create index for faster queries
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_market_data_symbol_timestamp 
-                    ON market_data(symbol, timestamp DESC)
-                """))
-                
-                # Create features table with time-series optimizations
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS features (
-                        id SERIAL PRIMARY KEY,
-                        symbol VARCHAR(10) NOT NULL,
-                        timestamp TIMESTAMP NOT NULL,
-                        features JSONB NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(symbol, timestamp)
-                    )
-                """))
-                
-                # Create optimized indexes for hybrid storage strategy
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_features_symbol_timestamp 
-                    ON features(symbol, timestamp DESC)
-                """))
-                
-                # Create JSONB GIN index for fast feature queries
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_features_jsonb 
-                    ON features USING GIN (features)
-                """))
-                
-                # Create index for features (removed time-based WHERE clause to avoid IMMUTABLE function requirement)
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_features_recent 
-                    ON features(symbol, timestamp DESC)
-                """))
-                
-                # Create predictions table
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS predictions (
-                        id SERIAL PRIMARY KEY,
-                        symbol VARCHAR(10) NOT NULL,
-                        timestamp TIMESTAMP NOT NULL,
-                        model_name VARCHAR(50) NOT NULL,
-                        prediction DECIMAL(6,4) NOT NULL,
-                        confidence DECIMAL(6,4) NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-                
-                # Create trades table
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS trades (
-                        id SERIAL PRIMARY KEY,
-                        symbol VARCHAR(10) NOT NULL,
-                        timestamp TIMESTAMP NOT NULL,
-                        side VARCHAR(10) NOT NULL,
-                        quantity INTEGER NOT NULL,
-                        price DECIMAL(10,4) NOT NULL,
-                        order_id VARCHAR(100),
-                        status VARCHAR(20) NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-                
-                conn.commit()
-                logger.info("Database initialized successfully")
+            # Test Supabase connection by checking if tables exist
+            response = self.supabase.table('market_data').select('id').limit(1).execute()
+            logger.info("Supabase database connection successful")
+            
+            # Check for required tables by attempting to query each one
+            required_tables = ['market_data', 'features', 'predictions', 'trades', 'positions', 'model_performance']
+            existing_tables = []
+            
+            for table in required_tables:
+                try:
+                    self.supabase.table(table).select('*').limit(1).execute()
+                    existing_tables.append(table)
+                except Exception:
+                    logger.warning(f"Table '{table}' may not exist or is not accessible")
+            
+            logger.info(f"Found accessible tables: {existing_tables}")
+            
+            if len(existing_tables) < 6:
+                logger.warning(f"Expected 6 tables, found {len(existing_tables)}. Some tables may be missing.")
+            else:
+                logger.info("All required tables are accessible in Supabase database")
                 
         except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
+            logger.error(f"Failed to initialize database connection: {e}")
             raise
     
     async def download_historical_data(self, symbol: str, 
@@ -339,83 +274,233 @@ class DataPipeline:
         return None
     
     async def _store_market_data(self, df: pd.DataFrame, symbol: str):
-        """Store market data in database"""
+        """Store market data in database using chunked batch processing to prevent timeouts"""
+        import time
+        import asyncio
+        
         try:
-            with self.Session() as session:
-                for timestamp, row in df.iterrows():
-                    # Ensure timestamp is in UTC timezone for consistency
-                    if hasattr(timestamp, 'to_pydatetime'):
-                        timestamp = timestamp.to_pydatetime()
-                    
-                    if isinstance(timestamp, datetime):
-                        if timestamp.tzinfo is None:
-                            timestamp = timestamp.replace(tzinfo=timezone.utc)
-                        elif timestamp.tzinfo != timezone.utc:
-                            timestamp = timestamp.astimezone(timezone.utc)
-                    
-                    session.execute(text("""
-                        INSERT INTO market_data 
-                        (symbol, timestamp, open, high, low, close, volume, vwap, transactions)
-                        VALUES (:symbol, :timestamp, :open, :high, :low, :close, :volume, :vwap, :transactions)
-                        ON CONFLICT (symbol, timestamp) DO UPDATE SET
-                        open = EXCLUDED.open,
-                        high = EXCLUDED.high,
-                        low = EXCLUDED.low,
-                        close = EXCLUDED.close,
-                        volume = EXCLUDED.volume,
-                        vwap = EXCLUDED.vwap,
-                        transactions = EXCLUDED.transactions
-                    """), {
-                        'symbol': symbol,
-                        'timestamp': timestamp,
-                        'open': float(row['open']),
-                        'high': float(row['high']),
-                        'low': float(row['low']),
-                        'close': float(row['close']),
-                        'volume': int(row['volume']),
-                        'vwap': float(row['vwap']) if pd.notna(row['vwap']) else None,
-                        'transactions': int(row['transactions']) if pd.notna(row['transactions']) else None
-                    })
+            # Prepare data for batch insert
+            data_to_insert = []
+            
+            for timestamp, row in df.iterrows():
+                # Ensure timestamp is in UTC timezone for consistency
+                if hasattr(timestamp, 'to_pydatetime'):
+                    timestamp = timestamp.to_pydatetime()
                 
-                session.commit()
+                if isinstance(timestamp, datetime):
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    elif timestamp.tzinfo != timezone.utc:
+                        timestamp = timestamp.astimezone(timezone.utc)
+                
+                data_to_insert.append({
+                    'symbol': symbol,
+                    'timestamp': timestamp.isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume']),
+                    'vwap': float(row['vwap']) if pd.notna(row['vwap']) else None,
+                    'transactions': int(row['transactions']) if pd.notna(row['transactions']) else None
+                })
+            
+            if not data_to_insert:
+                logger.warning(f"No data to store for {symbol}")
+                return
+            
+            # Chunked batch processing configuration
+            batch_size = 2000  # Optimal batch size for Supabase (1000-5000 range)
+            max_retries = 5
+            base_delay = 0.5  # Base delay between batches
+            total_records = len(data_to_insert)
+            successful_records = 0
+            failed_batches = []
+            
+            logger.info(f"Starting chunked batch processing for {symbol}: {total_records} records in batches of {batch_size}")
+            
+            # Process data in chunks
+            for batch_num, i in enumerate(range(0, total_records, batch_size), 1):
+                batch_data = data_to_insert[i:i + batch_size]
+                batch_success = False
+                
+                # Retry logic with exponential backoff
+                for attempt in range(max_retries):
+                    try:
+                        start_time = time.time()
+                        
+                        # Execute batch upsert
+                        response = self.supabase.table('market_data').upsert(
+                            batch_data,
+                            on_conflict='symbol,timestamp'
+                        ).execute()
+                        
+                        execution_time = time.time() - start_time
+                        successful_records += len(batch_data)
+                        batch_success = True
+                        
+                        logger.info(
+                            f"Batch {batch_num} for {symbol}: {len(batch_data)} records stored "
+                            f"(attempt {attempt + 1}/{max_retries}, {execution_time:.2f}s, "
+                            f"progress: {successful_records}/{total_records})"
+                        )
+                        break
+                        
+                    except Exception as batch_error:
+                        wait_time = min(base_delay * (2 ** attempt), 15)  # Cap at 15 seconds
+                        
+                        if attempt < max_retries - 1:
+                            logger.warning(
+                                f"Batch {batch_num} for {symbol} failed (attempt {attempt + 1}/{max_retries}): "
+                                f"{batch_error}. Retrying in {wait_time:.1f}s..."
+                            )
+                            await asyncio.sleep(wait_time)
+                        else:
+                            logger.error(
+                                f"Batch {batch_num} for {symbol} failed after {max_retries} attempts: {batch_error}"
+                            )
+                            failed_batches.append({
+                                'batch_num': batch_num,
+                                'start_index': i,
+                                'size': len(batch_data),
+                                'error': str(batch_error)
+                            })
+                
+                # Add delay between successful batches to prevent connection pool exhaustion
+                if batch_success and batch_num * batch_size < total_records:
+                    await asyncio.sleep(base_delay)
+            
+            # Final status report
+            if failed_batches:
+                logger.error(
+                    f"Market data storage for {symbol} completed with errors: "
+                    f"{successful_records}/{total_records} records stored successfully. "
+                    f"Failed batches: {len(failed_batches)}"
+                )
+                for failed_batch in failed_batches:
+                    logger.error(
+                        f"Failed batch {failed_batch['batch_num']}: "
+                        f"records {failed_batch['start_index']}-{failed_batch['start_index'] + failed_batch['size'] - 1}, "
+                        f"error: {failed_batch['error']}"
+                    )
+            else:
+                logger.info(
+                    f"Market data storage for {symbol} completed successfully: "
+                    f"{successful_records}/{total_records} records stored in {batch_num} batches"
+                )
                 
         except Exception as e:
-            logger.error(f"Failed to store market data for {symbol}: {e}")
+            logger.error(f"Critical error in _store_market_data for {symbol}: {e}")
     
     async def load_market_data(self, symbol: str, 
                              start_date: datetime, 
-                             end_date: datetime) -> pd.DataFrame:
-        """Load market data from database"""
+                             end_date: datetime,
+                             chunk_days: int = 150) -> pd.DataFrame:
+        """Load market data from database using Supabase client with chunked loading for large date ranges"""
         try:
-            with self.Session() as session:
-                result = session.execute(text("""
-                    SELECT timestamp, open, high, low, close, volume, vwap, transactions
-                    FROM market_data
-                    WHERE symbol = :symbol
-                    AND timestamp BETWEEN :start_date AND :end_date
-                    ORDER BY timestamp
-                """), {
-                    'symbol': symbol,
-                    'start_date': start_date,
-                    'end_date': end_date
-                })
+            # Calculate the total days in the range
+            total_days = (end_date - start_date).days
+            
+            # If the range is small enough, load directly
+            if total_days <= chunk_days:
+                return await self._load_market_data_chunk(symbol, start_date, end_date)
+            
+            # For large ranges, load in chunks to prevent timeouts
+            logger.info(f"Loading {total_days} days of data for {symbol} in chunks of {chunk_days} days")
+            
+            all_data = []
+            current_start = start_date
+            
+            while current_start < end_date:
+                current_end = min(current_start + timedelta(days=chunk_days), end_date)
                 
-                data = result.fetchall()
+                logger.debug(f"Loading chunk for {symbol}: {current_start.date()} to {current_end.date()}")
                 
-                if not data:
-                    return pd.DataFrame()
+                chunk_data = await self._load_market_data_chunk(symbol, current_start, current_end)
                 
-                df = pd.DataFrame(data, columns=[
-                    'timestamp', 'open', 'high', 'low', 'close', 'volume', 'vwap', 'transactions'
-                ])
+                if not chunk_data.empty:
+                    all_data.append(chunk_data)
                 
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df = df.set_index('timestamp')
+                current_start = current_end
                 
-                return df
-                
+                # Small delay between chunks to prevent overwhelming the database
+                await asyncio.sleep(0.1)
+            
+            # Combine all chunks
+            if all_data:
+                combined_df = pd.concat(all_data, ignore_index=False)
+                combined_df = combined_df.sort_index()  # Ensure chronological order
+                logger.info(f"Loaded {len(combined_df)} market data records for {symbol} from {start_date.date()} to {end_date.date()}")
+                return combined_df
+            else:
+                logger.warning(f"No market data found for {symbol} between {start_date} and {end_date}")
+                return pd.DataFrame()
+            
         except Exception as e:
             logger.error(f"Failed to load market data for {symbol}: {e}")
+            return pd.DataFrame()
+    
+    async def _load_market_data_chunk(self, symbol: str, 
+                                    start_date: datetime, 
+                                    end_date: datetime) -> pd.DataFrame:
+        """Load a single chunk of market data from database using timestamp-based pagination to handle Supabase's 1000 record limit"""
+        try:
+            all_data = []
+            page_size = 1000  # Supabase hard limit
+            current_start = start_date
+            page_count = 0
+            
+            while current_start < end_date:
+                page_count += 1
+                
+                # Query market data using timestamp-based pagination
+                response = self.supabase.table('market_data').select(
+                    'timestamp, open, high, low, close, volume, vwap, transactions'
+                ).eq('symbol', symbol).gte(
+                    'timestamp', current_start.isoformat()
+                ).lte(
+                    'timestamp', end_date.isoformat()
+                ).order('timestamp').limit(page_size).execute()
+                
+                if not response.data:
+                    break  # No more data
+                
+                all_data.extend(response.data)
+                
+                # If we got less than page_size records, we've reached the end
+                if len(response.data) < page_size:
+                    break
+                
+                # Update current_start to be just after the last timestamp to avoid duplicates
+                last_timestamp = response.data[-1]['timestamp']
+                # Parse the timestamp and add 1 second
+                last_dt = datetime.fromisoformat(last_timestamp.replace('Z', '+00:00'))
+                current_start = last_dt + timedelta(seconds=1)
+                
+                # Safety limit to prevent infinite loops
+                if page_count > 100:
+                    logger.warning(f"Reached safety limit of 100 pages for {symbol} chunk")
+                    break
+                
+                # Small delay to prevent overwhelming the database
+                await asyncio.sleep(0.05)
+            
+            if not all_data:
+                return pd.DataFrame()
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(all_data)
+            
+            # Convert timestamp column to datetime and set as index
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.set_index('timestamp')
+            
+            logger.debug(f"Loaded {len(df)} records for {symbol} from {start_date.date()} to {end_date.date()} using timestamp-based pagination ({page_count} pages)")
+            
+            return df
+                
+        except Exception as e:
+            logger.error(f"Failed to load market data chunk for {symbol} ({start_date.date()} to {end_date.date()}): {e}")
             return pd.DataFrame()
     
     def _make_json_serializable(self, obj: Any) -> Any:
@@ -442,25 +527,22 @@ class DataPipeline:
             return obj
 
     async def store_features(self, symbol: str, timestamp: datetime, features: Dict):
-        """Store engineered features using hybrid strategy: PostgreSQL + in-memory cache"""
+        """Store engineered features using hybrid strategy: Supabase + in-memory cache"""
         try:
             # Convert features to JSON-serializable format
             serializable_features = self._make_json_serializable(features)
             
-            # 1. Store in PostgreSQL for persistence
-            with self.Session() as session:
-                session.execute(text("""
-                    INSERT INTO features (symbol, timestamp, features)
-                    VALUES (:symbol, :timestamp, :features)
-                    ON CONFLICT (symbol, timestamp) DO UPDATE SET
-                    features = EXCLUDED.features
-                """), {
-                    'symbol': symbol,
-                    'timestamp': timestamp,
-                    'features': json.dumps(serializable_features)
-                })
-                
-                session.commit()
+            # 1. Store in Supabase for persistence
+            data_to_upsert = {
+                'symbol': symbol,
+                'timestamp': timestamp.isoformat(),
+                'features': json.dumps(serializable_features)
+            }
+            
+            response = self.supabase.table('features').upsert(
+                data_to_upsert,
+                on_conflict='symbol,timestamp'
+            ).execute()
             
             # 2. Store in in-memory cache for ultra-low latency access
             await self._cache_features(symbol, timestamp, features)
@@ -585,7 +667,8 @@ class DataPipeline:
                 
                 # Generate features from the downloaded market data
                 from ml.ml_feature_engineering import FeatureEngineering
-                feature_engineer = FeatureEngineering(db_url=str(self.engine.url))
+                from database import db_manager
+                feature_engineer = FeatureEngineering(supabase_client=db_manager.get_supabase_client())
                 
                 # Engineer features from market data
                 start_date = market_data.index.min()
@@ -776,97 +859,143 @@ class DataPipeline:
             List of timestamps that already have features stored
         """
         try:
-            with self.Session() as session:
-                result = session.execute(text("""
-                    SELECT timestamp
-                    FROM features
-                    WHERE symbol = :symbol
-                    AND timestamp BETWEEN :start_time AND :end_time
-                    ORDER BY timestamp
-                """), {
-                    'symbol': symbol,
-                    'start_time': start_time,
-                    'end_time': end_time
-                })
+            existing_timestamps = []
+            page_size = 1000
+            current_start = start_time
+            max_pages = 1000  # Safety limit to prevent infinite loops
+            page_count = 0
+            
+            while current_start <= end_time and page_count < max_pages:
+                response = self.supabase.table('features').select('timestamp').eq('symbol', symbol).gte('timestamp', current_start.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').limit(page_size).execute()
                 
-                existing_timestamps = []
-                for row in result.fetchall():
-                    timestamp = row.timestamp
+                if not response.data:
+                    break
+                
+                page_timestamps = []
+                for row in response.data:
+                    timestamp_str = row['timestamp']
+                    # Parse timestamp string to datetime
+                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                     # Ensure timestamp is timezone-aware (UTC)
                     if timestamp.tzinfo is None:
                         timestamp = timestamp.replace(tzinfo=timezone.utc)
-                    existing_timestamps.append(timestamp)
+                    page_timestamps.append(timestamp)
                 
-                logger.info(f"Found {len(existing_timestamps)} existing feature timestamps for {symbol} in range {start_time} to {end_time}")
-                return existing_timestamps
+                existing_timestamps.extend(page_timestamps)
+                
+                # If we got less than page_size records, we've reached the end
+                if len(response.data) < page_size:
+                    break
+                
+                # Update current_start to the timestamp after the last record
+                last_timestamp = page_timestamps[-1]
+                current_start = last_timestamp + timedelta(microseconds=1)
+                page_count += 1
+            
+            logger.info(f"Found {len(existing_timestamps)} existing feature timestamps for {symbol} in range {start_time} to {end_time} (loaded in {page_count} pages)")
+            return existing_timestamps
                 
         except Exception as e:
             logger.error(f"Failed to check existing features for {symbol}: {e}")
             return []
     
     async def load_features_from_db(self, symbol: str, start_time: datetime, end_time: datetime) -> pd.DataFrame:
-        """Load features from PostgreSQL for historical analysis, including basic OHLCV data"""
+        """Load features from Supabase for historical analysis, including basic OHLCV data"""
         try:
-            with self.Session() as session:
-                # Join features with market_data to get both engineered features and basic OHLCV columns
-                result = session.execute(text("""
-                    SELECT 
-                        f.timestamp, 
-                        f.features,
-                        m.open,
-                        m.high,
-                        m.low,
-                        m.close,
-                        m.volume,
-                        m.vwap,
-                        m.transactions
-                    FROM features f
-                    LEFT JOIN market_data m ON f.symbol = m.symbol AND f.timestamp = m.timestamp
-                    WHERE f.symbol = :symbol
-                    AND f.timestamp BETWEEN :start_time AND :end_time
-                    ORDER BY f.timestamp
-                """), {
-                    'symbol': symbol,
-                    'start_time': start_time,
-                    'end_time': end_time
+            # Load features data with pagination
+            all_features_data = []
+            page_size = 1000
+            current_start = start_time
+            max_pages = 1000  # Safety limit to prevent infinite loops
+            page_count = 0
+            
+            while current_start <= end_time and page_count < max_pages:
+                features_response = self.supabase.table('features').select('timestamp, features').eq('symbol', symbol).gte('timestamp', current_start.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').limit(page_size).execute()
+                
+                if not features_response.data:
+                    break
+                
+                all_features_data.extend(features_response.data)
+                
+                # If we got less than page_size records, we've reached the end
+                if len(features_response.data) < page_size:
+                    break
+                
+                # Update current_start to the timestamp after the last record
+                last_timestamp_str = features_response.data[-1]['timestamp']
+                last_timestamp = datetime.fromisoformat(last_timestamp_str.replace('Z', '+00:00'))
+                if last_timestamp.tzinfo is None:
+                    last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+                current_start = last_timestamp + timedelta(microseconds=1)
+                page_count += 1
+            
+            # Load market data with pagination for the same time range
+            all_market_data = []
+            current_start = start_time
+            page_count = 0
+            
+            while current_start <= end_time and page_count < max_pages:
+                market_response = self.supabase.table('market_data').select('timestamp, open, high, low, close, volume, vwap, transactions').eq('symbol', symbol).gte('timestamp', current_start.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').limit(page_size).execute()
+                
+                if not market_response.data:
+                    break
+                
+                all_market_data.extend(market_response.data)
+                
+                # If we got less than page_size records, we've reached the end
+                if len(market_response.data) < page_size:
+                    break
+                
+                # Update current_start to the timestamp after the last record
+                last_timestamp_str = market_response.data[-1]['timestamp']
+                last_timestamp = datetime.fromisoformat(last_timestamp_str.replace('Z', '+00:00'))
+                if last_timestamp.tzinfo is None:
+                    last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+                current_start = last_timestamp + timedelta(microseconds=1)
+                page_count += 1
+            
+            # Create a lookup dict for market data
+            market_data_lookup = {row['timestamp']: row for row in all_market_data}
+            
+            if not all_features_data:
+                return pd.DataFrame()
+            
+            # Convert to DataFrame
+            data = []
+            for row in all_features_data:
+                # JSONB column returns dict directly, no need for json.loads()
+                feature_dict = row['features'] if isinstance(row['features'], dict) else json.loads(row['features'])
+                
+                # Parse timestamp string to datetime
+                timestamp_str = row['timestamp']
+                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                # Ensure timestamp is timezone-aware (UTC)
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                
+                # Get corresponding market data
+                market_row = market_data_lookup.get(timestamp_str, {})
+                
+                # Prioritize OHLCV data from features JSONB column, fallback to market_data table
+                # This fixes the issue where market_data table is empty but features contain OHLCV data
+                feature_dict.update({
+                    'timestamp': timestamp,
+                    'open': feature_dict.get('open') if feature_dict.get('open') is not None else (float(market_row.get('open')) if market_row.get('open') is not None else None),
+                    'high': feature_dict.get('high') if feature_dict.get('high') is not None else (float(market_row.get('high')) if market_row.get('high') is not None else None),
+                    'low': feature_dict.get('low') if feature_dict.get('low') is not None else (float(market_row.get('low')) if market_row.get('low') is not None else None),
+                    'close': feature_dict.get('close') if feature_dict.get('close') is not None else (float(market_row.get('close')) if market_row.get('close') is not None else None),
+                    'volume': feature_dict.get('volume') if feature_dict.get('volume') is not None else (int(market_row.get('volume')) if market_row.get('volume') is not None else None),
+                    'vwap': feature_dict.get('vwap') if feature_dict.get('vwap') is not None else (float(market_row.get('vwap')) if market_row.get('vwap') is not None else None),
+                    'transactions': feature_dict.get('transactions') if feature_dict.get('transactions') is not None else (int(market_row.get('transactions')) if market_row.get('transactions') is not None else None)
                 })
                 
-                rows = result.fetchall()
-                
-                if not rows:
-                    return pd.DataFrame()
-                
-                # Convert to DataFrame
-                data = []
-                for row in rows:
-                    # JSONB column returns dict directly, no need for json.loads()
-                    feature_dict = row.features if isinstance(row.features, dict) else json.loads(row.features)
-                    
-                    # Ensure timestamp is timezone-aware (UTC)
-                    timestamp = row.timestamp
-                    if timestamp.tzinfo is None:
-                        timestamp = timestamp.replace(tzinfo=timezone.utc)
-                    
-                    # Prioritize OHLCV data from features JSONB column, fallback to market_data table
-                    # This fixes the issue where market_data table is empty but features contain OHLCV data
-                    feature_dict.update({
-                        'timestamp': timestamp,
-                        'open': feature_dict.get('open') if feature_dict.get('open') is not None else (float(row.open) if row.open is not None else None),
-                        'high': feature_dict.get('high') if feature_dict.get('high') is not None else (float(row.high) if row.high is not None else None),
-                        'low': feature_dict.get('low') if feature_dict.get('low') is not None else (float(row.low) if row.low is not None else None),
-                        'close': feature_dict.get('close') if feature_dict.get('close') is not None else (float(row.close) if row.close is not None else None),
-                        'volume': feature_dict.get('volume') if feature_dict.get('volume') is not None else (int(row.volume) if row.volume is not None else None),
-                        'vwap': feature_dict.get('vwap') if feature_dict.get('vwap') is not None else (float(row.vwap) if row.vwap is not None else None),
-                        'transactions': feature_dict.get('transactions') if feature_dict.get('transactions') is not None else (int(row.transactions) if row.transactions is not None else None)
-                    })
-                    
-                    data.append(feature_dict)
-                
-                df = pd.DataFrame(data)
-                df.set_index('timestamp', inplace=True)
-                
-                logger.info(f"Loaded {len(df)} feature records with OHLCV data for {symbol} from database")
-                return df
+                data.append(feature_dict)
+            
+            df = pd.DataFrame(data)
+            df.set_index('timestamp', inplace=True)
+            
+            logger.info(f"Loaded {len(df)} feature records with OHLCV data for {symbol} from database (loaded in multiple pages)")
+            return df
                 
         except Exception as e:
             logger.error(f"Failed to load features from database for {symbol}: {e}")
@@ -876,19 +1005,15 @@ class DataPipeline:
                              model_name: str, prediction: float, confidence: float):
         """Store model prediction in database"""
         try:
-            with self.Session() as session:
-                session.execute(text("""
-                    INSERT INTO predictions (symbol, timestamp, model_name, prediction, confidence)
-                    VALUES (:symbol, :timestamp, :model_name, :prediction, :confidence)
-                """), {
-                    'symbol': symbol,
-                    'timestamp': timestamp,
-                    'model_name': model_name,
-                    'prediction': prediction,
-                    'confidence': confidence
-                })
-                
-                session.commit()
+            prediction_data = {
+                'symbol': symbol,
+                'timestamp': timestamp.isoformat(),
+                'model_name': model_name,
+                'prediction': prediction,
+                'confidence': confidence
+            }
+            
+            self.supabase.table('predictions').insert(prediction_data).execute()
                 
         except Exception as e:
             logger.error(f"Failed to store prediction for {symbol}: {e}")
@@ -896,24 +1021,25 @@ class DataPipeline:
     async def check_data_quality(self, symbol: str) -> DataQuality:
         """Check data quality for a symbol"""
         try:
-            with self.Session() as session:
-                # Get basic statistics
-                result = session.execute(text("""
-                    SELECT 
-                        COUNT(*) as total_bars,
-                        AVG(volume) as avg_volume,
-                        MAX(timestamp) as last_update
-                    FROM market_data
-                    WHERE symbol = :symbol
-                    AND timestamp >= :start_date
-                """), {
-                    'symbol': symbol,
-                    'start_date': datetime.now(timezone.utc) - timedelta(days=30)
-                })
+            start_date = datetime.now(timezone.utc) - timedelta(days=30)
+            
+            # Get basic statistics using Supabase
+            response = self.supabase.table('market_data').select('volume, timestamp').eq('symbol', symbol).gte('timestamp', start_date.isoformat()).execute()
+            
+            if not response.data:
+                stats = None
+            else:
+                # Calculate statistics from the data
+                volumes = [row['volume'] for row in response.data if row['volume'] is not None]
+                timestamps = [datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')) for row in response.data]
                 
-                stats = result.fetchone()
+                stats = {
+                    'total_bars': len(response.data),
+                    'avg_volume': sum(volumes) / len(volumes) if volumes else 0,
+                    'last_update': max(timestamps) if timestamps else datetime.min
+                }
                 
-                if not stats or stats.total_bars == 0:
+                if not stats or stats['total_bars'] == 0:
                     return DataQuality(
                         symbol=symbol,
                         total_bars=0,
@@ -927,34 +1053,30 @@ class DataPipeline:
                 # Calculate expected bars (market hours: 9:30-16:00, 390 minutes per day)
                 days_in_period = 30
                 expected_bars = days_in_period * 390  # Simplified
-                missing_bars = max(0, expected_bars - stats.total_bars)
-                data_completeness = stats.total_bars / expected_bars if expected_bars > 0 else 0
+                missing_bars = max(0, expected_bars - stats['total_bars'])
+                data_completeness = stats['total_bars'] / expected_bars if expected_bars > 0 else 0
                 
-                # Check for price gaps
-                gap_result = session.execute(text("""
-                    SELECT COUNT(*) as price_gaps
-                    FROM (
-                        SELECT 
-                            ABS(open - LAG(close) OVER (ORDER BY timestamp)) / LAG(close) OVER (ORDER BY timestamp) as gap_pct
-                        FROM market_data
-                        WHERE symbol = :symbol
-                        AND timestamp >= :start_date
-                    ) gaps
-                    WHERE gap_pct > 0.02  -- 2% gap threshold
-                """), {
-                    'symbol': symbol,
-                    'start_date': datetime.now(timezone.utc) - timedelta(days=30)
-                })
+                # Check for price gaps using Supabase
+                ohlc_response = self.supabase.table('market_data').select('open, close, timestamp').eq('symbol', symbol).gte('timestamp', start_date.isoformat()).order('timestamp').execute()
                 
-                price_gaps = gap_result.fetchone().price_gaps or 0
+                price_gaps = 0
+                if len(ohlc_response.data) > 1:
+                    for i in range(1, len(ohlc_response.data)):
+                        current = ohlc_response.data[i]
+                        previous = ohlc_response.data[i-1]
+                        
+                        if current['open'] and previous['close']:
+                            gap_pct = abs(current['open'] - previous['close']) / previous['close']
+                            if gap_pct > 0.02:  # 2% gap threshold
+                                price_gaps += 1
                 
                 quality = DataQuality(
                     symbol=symbol,
-                    total_bars=stats.total_bars,
+                    total_bars=stats['total_bars'],
                     missing_bars=missing_bars,
                     data_completeness=data_completeness,
-                    last_update=stats.last_update,
-                    avg_volume=float(stats.avg_volume or 0),
+                    last_update=stats['last_update'],
+                    avg_volume=float(stats['avg_volume'] or 0),
                     price_gaps=price_gaps
                 )
                 
@@ -1037,23 +1159,21 @@ class DataPipeline:
     async def _calculate_atr_percentage(self, symbol: str, period: int = 14) -> float:
         """Calculate Average True Range as percentage of price"""
         try:
-            with self.Session() as session:
-                # Get recent OHLC data
-                result = session.execute(text("""
-                    SELECT high, low, close, 
-                           LAG(close) OVER (ORDER BY timestamp) as prev_close
-                    FROM market_data
-                    WHERE symbol = :symbol
-                    AND timestamp >= :start_date
-                    ORDER BY timestamp DESC
-                    LIMIT :limit
-                """), {
-                    'symbol': symbol,
-                    'start_date': datetime.now(timezone.utc) - timedelta(days=30),
-                    'limit': period + 5
-                })
-                
-                data = result.fetchall()
+            supabase = self.supabase
+            start_date = datetime.now(timezone.utc) - timedelta(days=30)
+            
+            # Get recent OHLC data
+            response = supabase.table('market_data').select('high, low, close, timestamp').eq('symbol', symbol).gte('timestamp', start_date.isoformat()).order('timestamp', desc=True).limit(period + 5).execute()
+            
+            if not response.data:
+                return 0.0
+            
+            # Sort by timestamp ascending for proper calculation
+            data = sorted(response.data, key=lambda x: x['timestamp'])
+            
+            # Add previous close to each row
+            for i in range(1, len(data)):
+                data[i]['prev_close'] = data[i-1]['close']
                 
                 if len(data) < period:
                     return 0.0
@@ -1061,7 +1181,10 @@ class DataPipeline:
                 # Calculate True Range for each period
                 true_ranges = []
                 for row in data[1:]:  # Skip first row (no prev_close)
-                    high, low, close, prev_close = row
+                    high = row['high']
+                    low = row['low']
+                    close = row['close']
+                    prev_close = row.get('prev_close')
                     
                     tr1 = high - low
                     tr2 = abs(high - prev_close) if prev_close else 0
@@ -1077,7 +1200,7 @@ class DataPipeline:
                 atr = sum(true_ranges[:period]) / period
                 
                 # Get current price for percentage calculation
-                current_price = data[0].close
+                current_price = data[-1]['close']  # Last item in sorted data
                 atr_percentage = (atr / current_price) * 100 if current_price > 0 else 0
                 
                 return atr_percentage
@@ -1089,62 +1212,79 @@ class DataPipeline:
     async def _calculate_beta(self, symbol: str, benchmark: str = 'SPY', period_days: int = 252) -> float:
         """Calculate beta vs benchmark (default SPY)"""
         try:
-            with self.Session() as session:
-                # Get returns for both symbol and benchmark
-                result = session.execute(text("""
-                    WITH symbol_returns AS (
-                        SELECT 
-                            timestamp,
-                            (close - LAG(close) OVER (ORDER BY timestamp)) / LAG(close) OVER (ORDER BY timestamp) as return
-                        FROM market_data
-                        WHERE symbol = :symbol
-                        AND timestamp >= :start_date
-                        ORDER BY timestamp
-                    ),
-                    benchmark_returns AS (
-                        SELECT 
-                            timestamp,
-                            (close - LAG(close) OVER (ORDER BY timestamp)) / LAG(close) OVER (ORDER BY timestamp) as return
-                        FROM market_data
-                        WHERE symbol = :benchmark
-                        AND timestamp >= :start_date
-                        ORDER BY timestamp
-                    )
-                    SELECT s.return as symbol_return, b.return as benchmark_return
-                    FROM symbol_returns s
-                    JOIN benchmark_returns b ON s.timestamp = b.timestamp
-                    WHERE s.return IS NOT NULL AND b.return IS NOT NULL
-                    ORDER BY s.timestamp DESC
-                    LIMIT :limit
-                """), {
-                    'symbol': symbol,
-                    'benchmark': benchmark,
-                    'start_date': datetime.now(timezone.utc) - timedelta(days=period_days + 30),
-                    'limit': period_days
-                })
-                
-                data = result.fetchall()
-                
-                if len(data) < 50:  # Need minimum data points
-                    return 1.0  # Default beta
-                
-                # Extract returns
-                symbol_returns = [float(row.symbol_return) for row in data]
-                benchmark_returns = [float(row.benchmark_return) for row in data]
-                
-                # Calculate beta using covariance and variance
-                symbol_returns = np.array(symbol_returns)
-                benchmark_returns = np.array(benchmark_returns)
-                
-                covariance = np.cov(symbol_returns, benchmark_returns)[0, 1]
-                benchmark_variance = np.var(benchmark_returns)
-                
-                if benchmark_variance > 0:
-                    beta = covariance / benchmark_variance
-                else:
-                    beta = 1.0
-                
-                return beta
+            supabase = self.supabase
+            start_date = datetime.now(timezone.utc) - timedelta(days=period_days + 30)
+            
+            # Get symbol data
+            symbol_response = supabase.table('market_data').select('close, timestamp').eq('symbol', symbol).gte('timestamp', start_date.isoformat()).order('timestamp').execute()
+            
+            # Get benchmark data
+            benchmark_response = supabase.table('market_data').select('close, timestamp').eq('symbol', benchmark).gte('timestamp', start_date.isoformat()).order('timestamp').execute()
+            
+            if not symbol_response.data or not benchmark_response.data:
+                return 1.0  # Default beta
+            
+            # Calculate returns for symbol
+            symbol_returns = []
+            symbol_data = symbol_response.data
+            for i in range(1, len(symbol_data)):
+                current_close = symbol_data[i]['close']
+                prev_close = symbol_data[i-1]['close']
+                if prev_close and current_close:
+                    return_val = (current_close - prev_close) / prev_close
+                    symbol_returns.append({
+                        'timestamp': symbol_data[i]['timestamp'],
+                        'return': return_val
+                    })
+            
+            # Calculate returns for benchmark
+            benchmark_returns = []
+            benchmark_data = benchmark_response.data
+            for i in range(1, len(benchmark_data)):
+                current_close = benchmark_data[i]['close']
+                prev_close = benchmark_data[i-1]['close']
+                if prev_close and current_close:
+                    return_val = (current_close - prev_close) / prev_close
+                    benchmark_returns.append({
+                        'timestamp': benchmark_data[i]['timestamp'],
+                        'return': return_val
+                    })
+            
+            # Match timestamps and create paired returns
+            symbol_dict = {r['timestamp']: r['return'] for r in symbol_returns}
+            benchmark_dict = {r['timestamp']: r['return'] for r in benchmark_returns}
+            
+            paired_returns = []
+            for timestamp in symbol_dict:
+                if timestamp in benchmark_dict:
+                    paired_returns.append({
+                        'symbol_return': symbol_dict[timestamp],
+                        'benchmark_return': benchmark_dict[timestamp]
+                    })
+            
+            # Limit to period_days and reverse for recent data first
+            data = paired_returns[-period_days:] if len(paired_returns) > period_days else paired_returns
+            
+            if len(data) < 50:  # Need minimum data points
+                return 1.0  # Default beta
+            
+            # Extract returns
+            symbol_returns = [float(row['symbol_return']) for row in data]
+            benchmark_returns = [float(row['benchmark_return']) for row in data]
+            
+            # Calculate beta using covariance and variance
+            symbol_returns = np.array(symbol_returns)
+            benchmark_returns = np.array(benchmark_returns)
+            
+            covariance = np.cov(symbol_returns, benchmark_returns)[0, 1]
+            benchmark_variance = np.var(benchmark_returns)
+            
+            if benchmark_variance > 0:
+                beta = covariance / benchmark_variance
+            else:
+                beta = 1.0
+            
+            return beta
                 
         except Exception as e:
             logger.error(f"Failed to calculate beta for {symbol}: {e}")
@@ -1220,7 +1360,7 @@ class DataPipeline:
                     }
                     for symbol, quality in self.quality_metrics.items()
                 },
-                "database_connection": "connected" if self.engine else "disconnected"
+                "database_connection": "connected" if self.supabase else "disconnected"
             }
             
             return status
