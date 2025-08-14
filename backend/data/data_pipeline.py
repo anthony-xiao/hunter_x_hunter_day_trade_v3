@@ -859,19 +859,40 @@ class DataPipeline:
             List of timestamps that already have features stored
         """
         try:
-            response = self.supabase.table('features').select('timestamp').eq('symbol', symbol).gte('timestamp', start_time.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').execute()
-            
             existing_timestamps = []
-            for row in response.data:
-                timestamp_str = row['timestamp']
-                # Parse timestamp string to datetime
-                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                # Ensure timestamp is timezone-aware (UTC)
-                if timestamp.tzinfo is None:
-                    timestamp = timestamp.replace(tzinfo=timezone.utc)
-                existing_timestamps.append(timestamp)
+            page_size = 1000
+            current_start = start_time
+            max_pages = 1000  # Safety limit to prevent infinite loops
+            page_count = 0
             
-            logger.info(f"Found {len(existing_timestamps)} existing feature timestamps for {symbol} in range {start_time} to {end_time}")
+            while current_start <= end_time and page_count < max_pages:
+                response = self.supabase.table('features').select('timestamp').eq('symbol', symbol).gte('timestamp', current_start.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').limit(page_size).execute()
+                
+                if not response.data:
+                    break
+                
+                page_timestamps = []
+                for row in response.data:
+                    timestamp_str = row['timestamp']
+                    # Parse timestamp string to datetime
+                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                    # Ensure timestamp is timezone-aware (UTC)
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    page_timestamps.append(timestamp)
+                
+                existing_timestamps.extend(page_timestamps)
+                
+                # If we got less than page_size records, we've reached the end
+                if len(response.data) < page_size:
+                    break
+                
+                # Update current_start to the timestamp after the last record
+                last_timestamp = page_timestamps[-1]
+                current_start = last_timestamp + timedelta(microseconds=1)
+                page_count += 1
+            
+            logger.info(f"Found {len(existing_timestamps)} existing feature timestamps for {symbol} in range {start_time} to {end_time} (loaded in {page_count} pages)")
             return existing_timestamps
                 
         except Exception as e:
@@ -881,23 +902,67 @@ class DataPipeline:
     async def load_features_from_db(self, symbol: str, start_time: datetime, end_time: datetime) -> pd.DataFrame:
         """Load features from Supabase for historical analysis, including basic OHLCV data"""
         try:
-            # Get features data
-            features_response = self.supabase.table('features').select('timestamp, features').eq('symbol', symbol).gte('timestamp', start_time.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').execute()
+            # Load features data with pagination
+            all_features_data = []
+            page_size = 1000
+            current_start = start_time
+            max_pages = 1000  # Safety limit to prevent infinite loops
+            page_count = 0
             
-            # Get market data for the same time range
-            market_response = self.supabase.table('market_data').select('timestamp, open, high, low, close, volume, vwap, transactions').eq('symbol', symbol).gte('timestamp', start_time.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').execute()
+            while current_start <= end_time and page_count < max_pages:
+                features_response = self.supabase.table('features').select('timestamp, features').eq('symbol', symbol).gte('timestamp', current_start.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').limit(page_size).execute()
+                
+                if not features_response.data:
+                    break
+                
+                all_features_data.extend(features_response.data)
+                
+                # If we got less than page_size records, we've reached the end
+                if len(features_response.data) < page_size:
+                    break
+                
+                # Update current_start to the timestamp after the last record
+                last_timestamp_str = features_response.data[-1]['timestamp']
+                last_timestamp = datetime.fromisoformat(last_timestamp_str.replace('Z', '+00:00'))
+                if last_timestamp.tzinfo is None:
+                    last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+                current_start = last_timestamp + timedelta(microseconds=1)
+                page_count += 1
+            
+            # Load market data with pagination for the same time range
+            all_market_data = []
+            current_start = start_time
+            page_count = 0
+            
+            while current_start <= end_time and page_count < max_pages:
+                market_response = self.supabase.table('market_data').select('timestamp, open, high, low, close, volume, vwap, transactions').eq('symbol', symbol).gte('timestamp', current_start.isoformat()).lte('timestamp', end_time.isoformat()).order('timestamp').limit(page_size).execute()
+                
+                if not market_response.data:
+                    break
+                
+                all_market_data.extend(market_response.data)
+                
+                # If we got less than page_size records, we've reached the end
+                if len(market_response.data) < page_size:
+                    break
+                
+                # Update current_start to the timestamp after the last record
+                last_timestamp_str = market_response.data[-1]['timestamp']
+                last_timestamp = datetime.fromisoformat(last_timestamp_str.replace('Z', '+00:00'))
+                if last_timestamp.tzinfo is None:
+                    last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+                current_start = last_timestamp + timedelta(microseconds=1)
+                page_count += 1
             
             # Create a lookup dict for market data
-            market_data_lookup = {row['timestamp']: row for row in market_response.data}
+            market_data_lookup = {row['timestamp']: row for row in all_market_data}
             
-            rows = features_response.data
-            
-            if not rows:
+            if not all_features_data:
                 return pd.DataFrame()
             
             # Convert to DataFrame
             data = []
-            for row in rows:
+            for row in all_features_data:
                 # JSONB column returns dict directly, no need for json.loads()
                 feature_dict = row['features'] if isinstance(row['features'], dict) else json.loads(row['features'])
                 
@@ -929,7 +994,7 @@ class DataPipeline:
             df = pd.DataFrame(data)
             df.set_index('timestamp', inplace=True)
             
-            logger.info(f"Loaded {len(df)} feature records with OHLCV data for {symbol} from database")
+            logger.info(f"Loaded {len(df)} feature records with OHLCV data for {symbol} from database (loaded in multiple pages)")
             return df
                 
         except Exception as e:
@@ -1094,7 +1159,7 @@ class DataPipeline:
     async def _calculate_atr_percentage(self, symbol: str, period: int = 14) -> float:
         """Calculate Average True Range as percentage of price"""
         try:
-            supabase = self.db_manager.get_supabase_client()
+            supabase = self.supabase
             start_date = datetime.now(timezone.utc) - timedelta(days=30)
             
             # Get recent OHLC data
@@ -1147,7 +1212,7 @@ class DataPipeline:
     async def _calculate_beta(self, symbol: str, benchmark: str = 'SPY', period_days: int = 252) -> float:
         """Calculate beta vs benchmark (default SPY)"""
         try:
-            supabase = self.db_manager.get_supabase_client()
+            supabase = self.supabase
             start_date = datetime.now(timezone.utc) - timedelta(days=period_days + 30)
             
             # Get symbol data
@@ -1295,7 +1360,7 @@ class DataPipeline:
                     }
                     for symbol, quality in self.quality_metrics.items()
                 },
-                "database_connection": "connected" if self.db_manager.get_supabase_client() else "disconnected"
+                "database_connection": "connected" if self.supabase else "disconnected"
             }
             
             return status
