@@ -1,0 +1,37 @@
+{
+  "timestamp": "2025-08-13T22:17:08.542951",
+  "symbol": "AAPL",
+  "expected_total_features": 139,
+  "expected_features_by_category": {
+    "basic": 5,
+    "technical": 72,
+    "microstructure": 28,
+    "sentiment": 8,
+    "macro": 11,
+    "cross_asset": 6,
+    "advanced": 9
+  },
+  "sample_analysis": {},
+  "pipeline_test": {},
+  "conditional_analysis": {
+    "microstructure_conditions": {
+      "vwap_required": "Features like vwap_momentum, vwap_trend require 'vwap' column",
+      "transactions_required": "Transaction-based features require 'transactions' column",
+      "accumulated_volume_required": "Some features require 'accumulated_volume' column"
+    },
+    "cross_asset_conditions": {
+      "spy_data_required": "Cross-asset features require SPY data availability"
+    },
+    "technical_conditions": {
+      "sufficient_history": "Moving averages require sufficient historical data",
+      "volume_data": "Volume-based indicators require non-zero volume"
+    }
+  },
+  "recommendations": [
+    "Verify that all required data columns (OHLCV, VWAP) are present in market data",
+    "Check if SPY data is available for cross-asset feature calculation",
+    "Ensure sufficient historical data for moving averages and technical indicators",
+    "Validate that feature storage process is not truncating or filtering features",
+    "Review conditional logic in feature engineering methods for data availability checks"
+  ]
+}

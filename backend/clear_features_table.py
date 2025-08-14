@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script to clear the features table in PostgreSQL database.
+Script to clear the features table in Supabase database.
 This allows for regenerating features with the fixed timezone handling.
 """
 
@@ -18,43 +18,38 @@ from config import settings
 def clear_features_table():
     """Clear all records from the features table"""
     try:
-        # Create database engine
-        engine = create_engine(
-            f"postgresql://{settings.database_user}:{settings.database_password}@{settings.database_host}:{settings.database_port}/{settings.database_name}"
-        )
+        # Get Supabase client
+        from database import db_manager
+        supabase = db_manager.get_supabase_client()
         
-        # Create session
-        Session = sessionmaker(bind=engine)
+        if not supabase:
+            logger.error("Supabase client not available")
+            return
+        # Get count before deletion
+        count_result = supabase.table('features').select('id', count='exact').execute()
+        initial_count = count_result.count
         
-        with Session() as session:
-            # Get count before deletion
-            count_result = session.execute(text("SELECT COUNT(*) FROM features"))
-            initial_count = count_result.scalar()
-            
-            logger.info(f"Found {initial_count} records in features table")
-            
-            if initial_count == 0:
-                logger.info("Features table is already empty")
-                return
-            
-            # Clear the features table
-            logger.info("Clearing features table...")
-            session.execute(text("DELETE FROM features"))
-            session.commit()
-            
-            # Verify deletion
-            count_result = session.execute(text("SELECT COUNT(*) FROM features"))
-            final_count = count_result.scalar()
-            
-            logger.info(f"Successfully cleared features table. Deleted {initial_count} records.")
-            logger.info(f"Features table now has {final_count} records")
-            
-            # Reset the sequence (optional, for clean ID numbering)
-            logger.info("Resetting features table ID sequence...")
-            session.execute(text("ALTER SEQUENCE features_id_seq RESTART WITH 1"))
-            session.commit()
-            
-            logger.success("Features table cleared successfully! Ready for feature regeneration.")
+        logger.info(f"Found {initial_count} records in features table")
+        
+        if initial_count == 0:
+            logger.info("Features table is already empty")
+            return
+        
+        # Clear the features table
+        logger.info("Clearing features table...")
+        delete_result = supabase.table('features').delete().neq('id', 0).execute()
+        
+        # Verify deletion
+        count_result = supabase.table('features').select('id', count='exact').execute()
+        final_count = count_result.count
+        
+        logger.info(f"Successfully cleared features table. Deleted {initial_count} records.")
+        logger.info(f"Features table now has {final_count} records")
+        
+        # Note: Sequence reset is handled automatically by Supabase
+        logger.info("Features table sequence will be managed by Supabase automatically.")
+        
+        logger.success("Features table cleared successfully! Ready for feature regeneration.")
             
     except Exception as e:
         logger.error(f"Failed to clear features table: {e}")

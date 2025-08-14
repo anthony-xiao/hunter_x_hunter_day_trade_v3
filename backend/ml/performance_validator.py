@@ -5,8 +5,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+# SQLAlchemy imports removed - using Supabase only
 
 # Import required modules for walk-forward testing
 from data.data_pipeline import DataPipeline
@@ -57,9 +56,16 @@ class WalkForwardValidationResult:
 class PerformanceValidator:
     """Advanced performance validation system"""
     
-    def __init__(self, db_url: str):
-        self.engine = create_engine(db_url)
-        self.Session = sessionmaker(bind=self.engine)
+    def __init__(self, db_url: str = None, supabase_client=None):
+        # Only support Supabase client approach
+        if supabase_client:
+            self.supabase_client = supabase_client
+        else:
+            raise ValueError("supabase_client must be provided")
+        
+        # No SQLAlchemy support
+        self.engine = None
+        self.Session = None
         
         # Initialize data pipeline and model trainer for walk-forward testing
         self.data_pipeline = DataPipeline()
@@ -143,7 +149,7 @@ class PerformanceValidator:
         """Walk-forward testing for system readiness validation
         
         This method bridges execution_engine and model_trainer by:
-        1. Loading data from PostgreSQL using data_pipeline.load_features_from_db()
+        1. Loading data from Supabase using data_pipeline.load_features_from_db()
         2. Calling model_trainer.walk_forward_test() with the loaded dataframes
         3. Validating results against trading system requirements (30-60% returns, 2.0-3.5 Sharpe)
         4. Returning system readiness assessment for live trading
@@ -159,8 +165,8 @@ class PerformanceValidator:
         try:
             logger.info(f"Starting walk-forward testing validation from {start_date} to {end_date} for {symbol}")
             
-            # Step 1: Load data from PostgreSQL using data_pipeline
-            logger.info("Loading features and market data from PostgreSQL...")
+            # Step 1: Load data from Supabase using data_pipeline
+            logger.info("Loading features and market data from Supabase...")
             features_df = await self.data_pipeline.load_features_from_db(symbol, start_date, end_date)
             
             if features_df.empty:
@@ -442,45 +448,36 @@ class PerformanceValidator:
     async def _get_trades_data(self, start_date: datetime, end_date: datetime) -> List[Dict]:
         """Get trading data for performance analysis"""
         try:
-            with self.Session() as session:
-                result = session.execute(text("""
-                    SELECT 
-                        symbol,
-                        entry_time,
-                        exit_time,
-                        entry_price,
-                        exit_price,
-                        quantity,
-                        side,
-                        pnl,
-                        commission,
-                        strategy
-                    FROM trades
-                    WHERE entry_time >= :start_date
-                    AND exit_time <= :end_date
-                    AND exit_time IS NOT NULL
-                    ORDER BY entry_time
-                """), {
-                    'start_date': start_date,
-                    'end_date': end_date
+            if not self.supabase_client:
+                logger.error("Supabase client not available for trades data")
+                return []
+            
+            # Get trades data from Supabase
+            response = self.supabase_client.table('trades').select(
+                'symbol, entry_time, exit_time, entry_price, exit_price, quantity, side, pnl, commission, strategy'
+            ).gte('entry_time', start_date.isoformat()).lte(
+                'exit_time', end_date.isoformat()
+            ).not_.is_('exit_time', 'null').order('entry_time').execute()
+            
+            if not response.data:
+                return []
+            
+            trades = []
+            for row in response.data:
+                trades.append({
+                    'symbol': row['symbol'],
+                    'entry_time': row['entry_time'],
+                    'exit_time': row['exit_time'],
+                    'entry_price': float(row['entry_price']),
+                    'exit_price': float(row['exit_price']),
+                    'quantity': float(row['quantity']),
+                    'side': row['side'],
+                    'pnl': float(row['pnl']),
+                    'commission': float(row['commission']),
+                    'strategy': row['strategy']
                 })
-                
-                trades = []
-                for row in result.fetchall():
-                    trades.append({
-                        'symbol': row.symbol,
-                        'entry_time': row.entry_time,
-                        'exit_time': row.exit_time,
-                        'entry_price': float(row.entry_price),
-                        'exit_price': float(row.exit_price),
-                        'quantity': float(row.quantity),
-                        'side': row.side,
-                        'pnl': float(row.pnl),
-                        'commission': float(row.commission),
-                        'strategy': row.strategy
-                    })
-                
-                return trades
+            
+            return trades
                 
         except Exception as e:
             logger.error(f"Failed to get trades data: {e}")
@@ -489,34 +486,31 @@ class PerformanceValidator:
     async def _get_returns_data(self, start_date: datetime, end_date: datetime) -> List[Dict]:
         """Get daily returns data for performance analysis"""
         try:
-            with self.Session() as session:
-                result = session.execute(text("""
-                    SELECT 
-                        date,
-                        daily_pnl,
-                        total_trades,
-                        winning_trades,
-                        portfolio_value
-                    FROM daily_performance
-                    WHERE date >= :start_date
-                    AND date <= :end_date
-                    ORDER BY date
-                """), {
-                    'start_date': start_date.date(),
-                    'end_date': end_date.date()
+            if not self.supabase_client:
+                logger.error("Supabase client not available for returns data")
+                return []
+            
+            # Get daily performance data from Supabase
+            response = self.supabase_client.table('daily_performance').select(
+                'date, daily_pnl, total_trades, winning_trades, portfolio_value'
+            ).gte('date', start_date.date().isoformat()).lte(
+                'date', end_date.date().isoformat()
+            ).order('date').execute()
+            
+            if not response.data:
+                return []
+            
+            returns = []
+            for row in response.data:
+                returns.append({
+                    'date': row['date'],
+                    'daily_pnl': float(row['daily_pnl']),
+                    'total_trades': int(row['total_trades']),
+                    'winning_trades': int(row['winning_trades']),
+                    'portfolio_value': float(row['portfolio_value'])
                 })
-                
-                returns = []
-                for row in result.fetchall():
-                    returns.append({
-                        'date': row.date,
-                        'daily_pnl': float(row.daily_pnl),
-                        'total_trades': int(row.total_trades),
-                        'winning_trades': int(row.winning_trades),
-                        'portfolio_value': float(row.portfolio_value)
-                    })
-                
-                return returns
+            
+            return returns
                 
         except Exception as e:
             logger.error(f"Failed to get returns data: {e}")
@@ -904,36 +898,31 @@ class PerformanceValidator:
     async def _get_predictions_data(self, start_date: datetime, end_date: datetime) -> List[Dict]:
         """Get model predictions data for validation"""
         try:
-            with self.Session() as session:
-                result = session.execute(text("""
-                    SELECT 
-                        symbol,
-                        timestamp as prediction_time,
-                        prediction as predicted_return,
-                        confidence,
-                        model_name as model_type,
-                        0.0 as actual_return
-                    FROM predictions
-                    WHERE timestamp >= :start_date
-                    AND timestamp <= :end_date
-                    ORDER BY timestamp
-                """), {
-                    'start_date': start_date,
-                    'end_date': end_date
+            if not self.supabase_client:
+                logger.error("Supabase client not available for getting predictions data")
+                return []
+                
+            response = self.supabase_client.table('model_predictions').select(
+                'symbol, timestamp, prediction, confidence, model_name'
+            ).gte('timestamp', start_date.isoformat()).lte(
+                'timestamp', end_date.isoformat()
+            ).order('timestamp').execute()
+            
+            if not response.data:
+                return []
+                
+            predictions = []
+            for row in response.data:
+                predictions.append({
+                    'symbol': row['symbol'],
+                    'prediction_time': row['timestamp'],
+                    'predicted_return': float(row['prediction']),
+                    'confidence': float(row['confidence']),
+                    'model_type': row['model_name'],
+                    'actual_return': 0.0  # Will be calculated separately
                 })
-                
-                predictions = []
-                for row in result.fetchall():
-                    predictions.append({
-                        'symbol': row.symbol,
-                        'prediction_time': row.prediction_time,
-                        'predicted_return': float(row.predicted_return),
-                        'confidence': float(row.confidence),
-                        'model_type': row.model_type,
-                        'actual_return': float(row.actual_return)
-                    })
-                
-                return predictions
+            
+            return predictions
                 
         except Exception as e:
             logger.error(f"Failed to get predictions data: {e}")

@@ -1,0 +1,167 @@
+{
+  "analysis_timestamp": "2025-08-13T22:15:20.089433",
+  "summary": {
+    "actual_features": 129,
+    "expected_features": 150,
+    "missing_features": 21,
+    "feature_gap_percentage": 14.0
+  },
+  "feature_breakdown": {
+    "actual": {
+      "basic": 5,
+      "technical": 81,
+      "microstructure": 26,
+      "sentiment": 4,
+      "macro": 11,
+      "cross_asset": 0,
+      "advanced": 2,
+      "unknown": 4
+    },
+    "expected": {
+      "basic": 5,
+      "technical": 85,
+      "microstructure": 26,
+      "sentiment": 8,
+      "macro": 11,
+      "cross_asset": 6,
+      "advanced": 9
+    }
+  },
+  "missing_features_analysis": {
+    "cross_asset_features": {
+      "missing_count": 6,
+      "root_cause": "No SPY data in database",
+      "expected_features": [
+        "spy_correlation_20",
+        "spy_correlation_50",
+        "spy_correlation_100",
+        "beta_50",
+        "beta_100",
+        "sector_correlation"
+      ],
+      "actual_features": [],
+      "fix_required": "Add SPY market data to database"
+    },
+    "technical_features": {
+      "missing_count": 4,
+      "root_cause": "realized_vol_* features miscategorized as unknown",
+      "expected_features": [
+        "realized_vol_5",
+        "realized_vol_10",
+        "realized_vol_20",
+        "realized_vol_30"
+      ],
+      "actual_features": 81,
+      "fix_required": "Reclassify realized_vol_* as technical features"
+    },
+    "sentiment_features": {
+      "missing_count": 4,
+      "root_cause": "Limited sentiment feature implementation",
+      "expected_features": [
+        "momentum_sentiment_5",
+        "momentum_sentiment_10",
+        "momentum_sentiment_20",
+        "volume_sentiment",
+        "volatility_sentiment",
+        "trend_sentiment_10",
+        "trend_sentiment_20",
+        "trend_sentiment_50"
+      ],
+      "actual_features": [
+        "momentum_sentiment_5",
+        "momentum_sentiment_10",
+        "momentum_sentiment_20",
+        "volume_sentiment",
+        "volatility_sentiment",
+        "trend_sentiment_10",
+        "trend_sentiment_20",
+        "trend_sentiment_50"
+      ],
+      "fix_required": "Verify sentiment feature generation logic"
+    },
+    "advanced_features": {
+      "missing_count": 7,
+      "root_cause": "Incomplete advanced feature implementation",
+      "expected_features": [
+        "composite_momentum",
+        "composite_volatility",
+        "composite_trend",
+        "risk_adjusted_returns",
+        "volume_price_divergence",
+        "volatility_regime",
+        "mean_reversion_5",
+        "mean_reversion_10",
+        "mean_reversion_20"
+      ],
+      "actual_features": [
+        "composite_momentum",
+        "composite_volatility",
+        "composite_trend",
+        "risk_adjusted_returns",
+        "volume_price_divergence",
+        "volatility_regime",
+        "mean_reversion_5",
+        "mean_reversion_10",
+        "mean_reversion_20"
+      ],
+      "fix_required": "Check advanced feature generation conditions"
+    }
+  },
+  "root_cause_analysis": {
+    "primary_issue": {
+      "cause": "Missing SPY data in database",
+      "impact": "6 cross-asset features missing",
+      "severity": "High",
+      "solution": "Add SPY market data to enable cross-asset feature calculation"
+    },
+    "secondary_issues": [
+      {
+        "cause": "Feature categorization inconsistency",
+        "impact": "realized_vol_* features marked as unknown instead of technical",
+        "severity": "Low",
+        "solution": "Update feature categorization logic"
+      },
+      {
+        "cause": "Potential conditional logic in advanced features",
+        "impact": "Some advanced features may not be generated under certain conditions",
+        "severity": "Medium",
+        "solution": "Review conditional logic in _engineer_advanced_features method"
+      }
+    ]
+  },
+  "recommendations": {
+    "immediate_actions": [
+      {
+        "priority": "High",
+        "action": "Add SPY market data to database",
+        "description": "Download and store SPY historical data to enable cross-asset feature calculation",
+        "expected_impact": "+6 features (cross-asset)"
+      },
+      {
+        "priority": "Medium",
+        "action": "Verify advanced feature generation",
+        "description": "Check if all 9 expected advanced features are being generated correctly",
+        "expected_impact": "+7 features (advanced)"
+      }
+    ],
+    "long_term_improvements": [
+      {
+        "action": "Implement feature validation",
+        "description": "Add validation to ensure expected feature count is met",
+        "benefit": "Early detection of missing features"
+      },
+      {
+        "action": "Add feature dependency checking",
+        "description": "Verify required data (like SPY) exists before feature engineering",
+        "benefit": "Better error handling and logging"
+      }
+    ]
+  },
+  "next_steps": [
+    "1. Add SPY market data to database",
+    "2. Re-run feature engineering for AAPL",
+    "3. Verify cross-asset features are generated",
+    "4. Check advanced feature count reaches 9",
+    "5. Validate total feature count reaches ~150"
+  ]
+}

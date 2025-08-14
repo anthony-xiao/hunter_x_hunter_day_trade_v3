@@ -98,8 +98,6 @@ def check_database_connection():
             logger.info("Database connection successful")
         else:
             logger.error("Database connection failed")
-            logger.info("Please ensure PostgreSQL is running on the configured port")
-            logger.info("You can start PostgreSQL with: brew services start postgresql")
             sys.exit(1)
     except Exception as e:
         logger.error(f"Database connection error: {e}")
