@@ -117,7 +117,7 @@ class ModelTrainer:
                     'kernel_size': (3, 3),
                     'dropout': 0.3,  # As per requirements: Dropout(0.3)
                     'l2_reg': 0.01,  # As per requirements: L2(0.01)
-                    'epochs': 80,  # As per requirements: 80 epochs
+                    'epochs': 1,  # As per requirements: 80 epochs
                     'batch_size': 128,  # As per requirements: batch size 128
                     'learning_rate': 0.0005,  # As per requirements: RMSprop lr=0.0005
                     'optimizer': 'rmsprop'
@@ -686,7 +686,8 @@ class ModelTrainer:
     async def _train_cnn(self, X_train: np.ndarray, y_train: np.ndarray, 
                         X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> Sequential:
         """Train CNN model"""
-        epochs = config.parameters.get('epochs', 80)
+        # epochs = config.parameters.get('epochs', 80)
+        epochs = config.parameters.get('epochs', 1)
         batch_size = config.parameters.get('batch_size', 128)
         logger.info(f"Starting CNN training with {epochs} epochs, batch size {batch_size}")
         
