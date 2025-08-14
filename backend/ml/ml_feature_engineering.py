@@ -298,7 +298,9 @@ class FeatureEngineering:
             features['hammer'] = talib.CDLHAMMER(data['open'].values.astype(np.float64), data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64))
             features['engulfing'] = talib.CDLENGULFING(data['open'].values.astype(np.float64), data['high'].values.astype(np.float64), data['low'].values.astype(np.float64), data['close'].values.astype(np.float64))
             
-            return features.fillna(method='ffill').fillna(0)
+            # Validate and clean features before returning
+            features = self._validate_and_clean_features(features)
+            return features
             
         except Exception as e:
             logger.error(f"Technical feature engineering failed: {e}")
@@ -382,8 +384,11 @@ class FeatureEngineering:
                 price_impact_per_trade = abs(data['close'] - data['close'].shift(1)) / (data['transactions'] + 1e-8)
                 features['order_flow_toxicity'] = price_impact_per_trade.rolling(10).mean()
                 
-                # Market depth proxy
-                features['market_depth_proxy'] = data['volume'] / (features['spread_proxy'] + 1e-8)
+                # Market depth proxy with improved bounds checking
+                spread_proxy_safe = np.maximum(features['spread_proxy'], 1e-6)  # Use larger epsilon
+                market_depth_raw = data['volume'] / spread_proxy_safe
+                # Clip extremely large values to prevent numerical issues
+                features['market_depth_proxy'] = np.clip(market_depth_raw, 0, 1e6)
             
             # Legacy features for backward compatibility
             features['high_low_ratio'] = data['high'] / data['low']
@@ -409,7 +414,9 @@ class FeatureEngineering:
             # Volume clustering
             features['volume_clusters'] = self._identify_volume_clusters(data['volume'])
             
-            return features.fillna(method='ffill').fillna(0)
+            # Validate and clean features before returning
+            features = self._validate_and_clean_features(features)
+            return features
             
         except Exception as e:
             logger.error(f"Microstructure feature engineering failed: {e}")
@@ -456,6 +463,36 @@ class FeatureEngineering:
         except Exception as e:
             logger.error(f"Volume clustering failed: {e}")
             return pd.Series(1, index=volume.index)
+    
+    def _validate_and_clean_features(self, features: pd.DataFrame) -> pd.DataFrame:
+        """Validate and clean feature values to prevent infinite and extremely large values"""
+        try:
+            # Replace infinite values with NaN
+            features = features.replace([np.inf, -np.inf], np.nan)
+            
+            # Clip extremely large values to reasonable bounds
+            numeric_columns = features.select_dtypes(include=[np.number]).columns
+            for col in numeric_columns:
+                # Clip values to prevent numerical instability
+                features[col] = np.clip(features[col], -1e6, 1e6)
+            
+            # Fill remaining NaN values
+            features = features.ffill().fillna(0)
+            
+            # Log any remaining issues
+            inf_count = np.isinf(features.select_dtypes(include=[np.number])).sum().sum()
+            if inf_count > 0:
+                logger.warning(f"Still found {inf_count} infinite values after cleaning")
+            
+            large_count = (np.abs(features.select_dtypes(include=[np.number])) > 1e6).sum().sum()
+            if large_count > 0:
+                logger.warning(f"Found {large_count} extremely large values after clipping")
+            
+            return features
+            
+        except Exception as e:
+            logger.error(f"Feature validation failed: {e}")
+            return features
     
     async def _engineer_sentiment_features(self, symbol: str, data: pd.DataFrame) -> pd.DataFrame:
         """Engineer sentiment-based features"""
@@ -527,7 +564,7 @@ class FeatureEngineering:
             if spy_data is not None and len(spy_data) > 0:
                 # Align data
                 aligned_data = pd.concat([data['close'], spy_data['close']], axis=1, keys=[symbol, 'SPY'])
-                aligned_data = aligned_data.fillna(method='ffill').dropna()
+                aligned_data = aligned_data.ffill().dropna()
                 
                 if len(aligned_data) > 20:
                     # Rolling correlations
@@ -536,7 +573,7 @@ class FeatureEngineering:
                             corr = aligned_data[symbol].rolling(window).corr(aligned_data['SPY'])
                             features[f'spy_correlation_{window}'] = corr
                     
-                    # Beta calculation
+                    # Beta calculation with zero variance handling
                     returns_symbol = aligned_data[symbol].pct_change()
                     returns_spy = aligned_data['SPY'].pct_change()
                     
@@ -544,10 +581,15 @@ class FeatureEngineering:
                         if len(aligned_data) >= window:
                             covariance = returns_symbol.rolling(window).cov(returns_spy)
                             variance_spy = returns_spy.rolling(window).var()
-                            beta = covariance / variance_spy
-                            features[f'beta_{window}'] = beta
+                            # Handle zero variance case to prevent infinite values
+                            variance_spy_safe = np.where(variance_spy < 1e-10, np.nan, variance_spy)
+                            beta = covariance / variance_spy_safe
+                            # Clip beta values to reasonable range
+                            features[f'beta_{window}'] = np.clip(beta, -10, 10)
             
-            return features.fillna(method='ffill').fillna(0)
+            # Validate and clean features before returning
+            features = self._validate_and_clean_features(features)
+            return features
             
         except Exception as e:
             logger.error(f"Cross-asset feature engineering failed: {e}")
@@ -597,7 +639,9 @@ class FeatureEngineering:
                         (price_ratio > 1.02) | (price_ratio < 0.98), 1, 0
                     )
             
-            return features.fillna(0)
+            # Validate and clean features before returning
+            features = self._validate_and_clean_features(features)
+            return features
             
         except Exception as e:
             logger.error(f"Advanced feature engineering failed: {e}")
