@@ -1,0 +1,27 @@
+{
+  "market_data_loading": {
+    "success": true,
+    "total_records": 478362,
+    "date_range_days": 759,
+    "complete_dataset": true
+  },
+  "chunking_isolation": {
+    "success": true,
+    "pipeline_records": 18604,
+    "feature_records": 18604,
+    "data_equivalent": true
+  },
+  "storage_chunking": {
+    "success": true,
+    "total_features": 1,
+    "num_batches": 1,
+    "all_features_preserved": true
+  },
+  "end_to_end": {
+    "success": true,
+    "market_data_records": 18604,
+    "feature_records": 1,
+    "timestamp_overlap_pct": 100.0,
+    "feature_coverage_pct": 0.0053751881315846056
+  }
+}

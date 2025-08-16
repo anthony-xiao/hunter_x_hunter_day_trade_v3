@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 import json
+from decimal import Decimal
 from polygon import RESTClient
 from loguru import logger
 # SQLAlchemy imports removed - now using Supabase client only
@@ -34,6 +35,15 @@ class DataQuality:
     price_gaps: int
 
 class DataPipeline:
+    # Batch size for Supabase operations to prevent timeouts
+    BATCH_SIZE = 2000
+    
+    # Timeout and retry configuration for Supabase operations
+    SUPABASE_TIMEOUT = 30  # seconds
+    MAX_RETRIES = 3
+    INITIAL_RETRY_DELAY = 1  # seconds
+    MAX_RETRY_DELAY = 8  # seconds
+    
     def __init__(self):
         self.polygon_client = RESTClient(settings.polygon_api_key)
         
@@ -505,8 +515,6 @@ class DataPipeline:
     
     def _make_json_serializable(self, obj: Any) -> Any:
         """Convert objects to JSON-serializable format"""
-        from decimal import Decimal
-        
         if isinstance(obj, datetime):
             return obj.isoformat()
         elif isinstance(obj, Decimal):
@@ -567,16 +575,32 @@ class DataPipeline:
             logger.debug(f"Batch storing {len(features_df)} features for {symbol}")
             
             # Convert DataFrame to batch JSON-serializable format
-            batch_data = await self._make_json_serializable_batch(features_df)
+            batch_data = await self._make_json_serializable_batch(features_df, symbol)
             
             if not batch_data:
                 logger.warning(f"No valid data to store for {symbol}")
                 return
             
-            # Batch upsert to Supabase
+            # Batch upsert to Supabase with chunking to prevent timeouts
             try:
-                result = await self.supabase_client.table('features').upsert(batch_data).execute()
-                logger.debug(f"Batch stored {len(batch_data)} features for {symbol} in Supabase")
+                total_records = len(batch_data)
+                if total_records <= self.BATCH_SIZE:
+                    # Small batch, process directly with retry
+                    await self._store_chunk_with_retry(batch_data, symbol, 1, 1)
+                    logger.debug(f"Batch stored {len(batch_data)} features for {symbol} in Supabase")
+                else:
+                    # Large batch, process in chunks
+                    logger.info(f"Processing {total_records} records in chunks of {self.BATCH_SIZE} for {symbol}")
+                    
+                    for i in range(0, total_records, self.BATCH_SIZE):
+                        chunk = batch_data[i:i + self.BATCH_SIZE]
+                        chunk_num = (i // self.BATCH_SIZE) + 1
+                        total_chunks = (total_records + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+                        
+                        # Use retry logic for each chunk
+                        await self._store_chunk_with_retry(chunk, symbol, chunk_num, total_chunks)
+                    
+                    logger.info(f"Completed chunked batch storage for {symbol}: {total_records} total records")
             except Exception as db_error:
                 logger.error(f"Failed to batch store features in Supabase for {symbol}: {db_error}")
                 # Continue with caching even if DB fails
@@ -593,6 +617,54 @@ class DataPipeline:
                 
         except Exception as e:
             logger.error(f"Failed to batch store features for {symbol}: {e}")
+    
+    async def _store_chunk_with_retry(self, chunk: List[Dict], symbol: str, chunk_num: int, total_chunks: int, max_retries: int = 3) -> bool:
+        """Store a chunk with retry logic and exponential backoff
+        
+        Args:
+            chunk: Data chunk to store
+            symbol: Stock symbol
+            chunk_num: Current chunk number
+            total_chunks: Total number of chunks
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            bool: True if successful, False if all retries failed
+        """
+        import asyncio
+        import random
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Add connection warmup for first chunk/attempt
+                if chunk_num == 1 and attempt == 0:
+                    # Warmup connection with a simple query
+                    try:
+                        await asyncio.sleep(0.1)  # Brief pause for connection setup
+                        self.supabase.table('features').select('symbol').limit(1).execute()
+                        logger.debug(f"Connection warmed up for {symbol}")
+                    except Exception as warmup_error:
+                        logger.debug(f"Connection warmup failed (non-critical): {warmup_error}")
+                
+                # Attempt to store the chunk
+                result = self.supabase.table('features').upsert(chunk, on_conflict='symbol,timestamp').execute()
+                logger.debug(f"Stored chunk {chunk_num}/{total_chunks} ({len(chunk)} records) for {symbol}")
+                return True
+                
+            except Exception as chunk_error:
+                if attempt < max_retries:
+                    # Calculate exponential backoff with jitter
+                    base_delay = 2 ** attempt  # 1s, 2s, 4s
+                    jitter = random.uniform(0.1, 0.5)  # Add randomness to prevent thundering herd
+                    delay = base_delay + jitter
+                    
+                    logger.warning(f"Failed to store chunk {chunk_num}/{total_chunks} for {symbol} (attempt {attempt + 1}/{max_retries + 1}): {chunk_error}. Retrying in {delay:.2f}s...")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Failed to store chunk {chunk_num}/{total_chunks} for {symbol} after {max_retries + 1} attempts: {chunk_error}")
+                    return False
+        
+        return False
     
     async def _cache_features_batch(self, symbol: str, features_dict: Dict[datetime, Dict]):
         """Cache multiple features in batch for improved performance
@@ -652,11 +724,12 @@ class DataPipeline:
         except Exception as e:
             logger.error(f"Failed to batch cache features for {symbol}: {e}")
     
-    async def _make_json_serializable_batch(self, features_df: pd.DataFrame) -> List[Dict]:
+    async def _make_json_serializable_batch(self, features_df: pd.DataFrame, symbol: str) -> List[Dict]:
         """Convert DataFrame to batch JSON-serializable format for Supabase
         
         Args:
             features_df: DataFrame with datetime index and feature columns
+            symbol: Stock symbol to use in the records
             
         Returns:
             List of dictionaries ready for batch upsert
@@ -681,7 +754,7 @@ class DataPipeline:
                 
                 if feature_dict:  # Only add if we have valid features
                     record = {
-                        'symbol': features_df.index.name if hasattr(features_df.index, 'name') and features_df.index.name else 'unknown',
+                        'symbol': symbol,
                         'timestamp': timestamp_str,
                         'features': feature_dict
                     }
@@ -778,7 +851,7 @@ class DataPipeline:
             logger.error(f"Failed to get cached features for {symbol}: {e}")
             return None
     
-    async def bootstrap_feature_cache(self, symbol: str, minutes: int = 120) -> int:
+    async def bootstrap_feature_cache(self, symbol: str, minutes: int = 120, training_mode: bool = False, training_start_date: datetime = None, training_end_date: datetime = None) -> int:
         """Bootstrap feature cache with cascading fallback strategy:
         1. Try to load features from database
         2. If insufficient data (< 10 features), download from Polygon and generate features
@@ -786,17 +859,24 @@ class DataPipeline:
         
         Args:
             symbol: Stock symbol to bootstrap
-            minutes: Number of minutes to load from database
+            minutes: Number of minutes to load from database (ignored in training mode)
+            training_mode: If True, use training date range instead of minutes
+            training_start_date: Start date for training mode
+            training_end_date: End date for training mode
             
         Returns:
             int: Number of features loaded into cache
         """
         try:
-            # Calculate time range for bootstrap
-            end_time = datetime.now(timezone.utc)
-            start_time = end_time - timedelta(minutes=minutes)
-            
-            logger.info(f"Bootstrapping feature cache for {symbol} from {start_time} to {end_time}")
+            # Calculate time range for bootstrap based on mode
+            if training_mode and training_start_date and training_end_date:
+                start_time = training_start_date
+                end_time = training_end_date
+                logger.info(f"Training mode: Bootstrapping feature cache for {symbol} from {start_time} to {end_time}")
+            else:
+                end_time = datetime.now(timezone.utc)
+                start_time = end_time - timedelta(minutes=minutes)
+                logger.info(f"Regular mode: Bootstrapping feature cache for {symbol} from {start_time} to {end_time}")
             
             # Step 1: Try to load features from database
             features_df = await self.load_features_from_db(symbol, start_time, end_time)
@@ -817,7 +897,11 @@ class DataPipeline:
                 logger.info(f"Bootstrapped {loaded_count} features for {symbol} from database")
                 return loaded_count
             
-            # Step 2: Insufficient data in database, try Polygon API fallback
+            # Step 2: Insufficient data in database, try Polygon API fallback (only in regular mode)
+            if training_mode:
+                logger.warning(f"Training mode: Insufficient features in database for {symbol} ({len(features_df) if features_df is not None else 0} found, {min_required_features} required). Cannot fallback to Polygon in training mode.")
+                return 0
+            
             logger.warning(f"Insufficient features in database for {symbol} ({len(features_df) if features_df is not None else 0} found, {min_required_features} required)")
             logger.info(f"Attempting to download recent data from Polygon API for {symbol}")
             
@@ -929,7 +1013,7 @@ class DataPipeline:
             logger.error(f"Failed to clear feature cache: {e}")
             return 0
     
-    async def get_recent_cached_features(self, symbol: str, minutes: int = 60) -> Dict[datetime, Dict]:
+    async def get_recent_cached_features(self, symbol: str, minutes: int = 60, training_mode: bool = False, training_start_date: datetime = None, training_end_date: datetime = None) -> Dict[datetime, Dict]:
         """Get recent cached features for a symbol (last N minutes)
         
         Smart timestamp handling:
@@ -937,14 +1021,32 @@ class DataPipeline:
         2. Handle market gaps (overnight, weekends) intelligently
         3. Ensure sufficient features for signal generation (60 minimum)
         4. Auto-bootstrap from database if cache is empty
+        5. In training mode, respect the full training date range instead of 2-hour window
+        
+        Args:
+            symbol: Stock symbol to get features for
+            minutes: Number of minutes to look back (ignored in training mode)
+            training_mode: If True, use training date range instead of minutes
+            training_start_date: Start date for training mode
+            training_end_date: End date for training mode
         """
         try:
             # Check if cache is empty and try to bootstrap from database
             if symbol not in self.feature_cache or not self.feature_cache[symbol]:
                 logger.debug(f"No cached features found for {symbol}, attempting bootstrap from database")
                 
-                # Try to bootstrap from database
-                bootstrap_count = await self.bootstrap_feature_cache(symbol, minutes * 2)  # Load more for better coverage
+                # In training mode, use the full training date range for bootstrap
+                if training_mode and training_start_date and training_end_date:
+                    logger.info(f"Training mode: Bootstrapping {symbol} with full training range {training_start_date} to {training_end_date}")
+                    bootstrap_count = await self.bootstrap_feature_cache(
+                        symbol, 
+                        training_mode=True, 
+                        training_start_date=training_start_date, 
+                        training_end_date=training_end_date
+                    )
+                else:
+                    # Regular mode: use minutes-based bootstrap
+                    bootstrap_count = await self.bootstrap_feature_cache(symbol, minutes * 2)  # Load more for better coverage
                 
                 if bootstrap_count == 0:
                     logger.debug(f"No features available in database for {symbol}")
@@ -966,7 +1068,16 @@ class DataPipeline:
             # Debug logging for cache state
             logger.debug(f"Cache state for {symbol}: total_features={len(cached_timestamps)}, oldest={oldest_timestamp}, newest={most_recent_timestamp}")
             
-            # Strategy 1: Try to get last N minutes from most recent timestamp
+            # In training mode, return all cached features within the training date range
+            if training_mode and training_start_date and training_end_date:
+                recent_features = {
+                    ts: features for ts, features in self.feature_cache[symbol].items()
+                    if training_start_date <= ts <= training_end_date
+                }
+                logger.info(f"Training mode: Found {len(recent_features)} features for {symbol} in training range {training_start_date} to {training_end_date}")
+                return recent_features
+            
+            # Strategy 1: Try to get last N minutes from most recent timestamp (regular mode)
             cutoff_time = most_recent_timestamp - timedelta(minutes=minutes)
             recent_features = {
                 ts: features for ts, features in self.feature_cache[symbol].items()

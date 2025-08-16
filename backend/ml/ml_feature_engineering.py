@@ -118,17 +118,41 @@ class FeatureEngineering:
                               symbol: str, 
                               start_date: datetime, 
                               end_date: datetime,
-                              include_cross_asset: bool = True) -> FeatureSet:
-        """Engineer comprehensive feature set for a symbol"""
+                              include_cross_asset: bool = True,
+                              training_mode: bool = False) -> FeatureSet:
+        """Engineer comprehensive feature set for a symbol
+        
+        Args:
+            symbol: Stock symbol to engineer features for
+            start_date: Start date for feature engineering
+            end_date: End date for feature engineering
+            include_cross_asset: Whether to include cross-asset features
+            training_mode: If True, only generate features for timestamps with market data
+        """
         try:
-            logger.info(f"Engineering features for {symbol} from {start_date} to {end_date}")
+            logger.info(f"Engineering features for {symbol} from {start_date} to {end_date} (training_mode={training_mode})")
             
-            # Get base market data
+            # Get base market data first to determine available timestamps
             market_data = await self._get_market_data(symbol, start_date, end_date)
             
-            if market_data is None or len(market_data) < 200:
-                logger.warning(f"Insufficient data for {symbol}")
+            if market_data is None or len(market_data) == 0:
+                logger.warning(f"No market data available for {symbol} in the specified range")
                 return self._get_empty_feature_set()
+            
+            # In training mode, ensure we have sufficient data for feature engineering
+            min_required_data = 200
+            if training_mode and len(market_data) < min_required_data:
+                logger.warning(f"Insufficient market data for training mode: {len(market_data)} < {min_required_data} for {symbol}")
+                return self._get_empty_feature_set()
+            
+            # Log the actual data range we're working with
+            actual_start = market_data.index.min()
+            actual_end = market_data.index.max()
+            logger.info(f"Market data available for {symbol}: {len(market_data)} records from {actual_start} to {actual_end}")
+            
+            # In training mode, only process timestamps where market data exists
+            if training_mode:
+                logger.info(f"Training mode: Feature engineering will be constrained to {len(market_data)} timestamps with available market data")
             
             # Engineer different feature categories
             technical_features = await self._engineer_technical_features(market_data)

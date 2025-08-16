@@ -1,0 +1,176 @@
+{
+  "market_data_availability": {
+    "2_hours": {
+      "start_date": "2025-08-15T22:12:28.745905",
+      "end_date": "2025-08-16T00:12:28.745905",
+      "direct_db_count": 0,
+      "pipeline_count": 0,
+      "data_match": true,
+      "first_timestamp": null,
+      "last_timestamp": null
+    },
+    "1_day": {
+      "start_date": "2025-08-15T00:12:28.745905",
+      "end_date": "2025-08-16T00:12:28.745905",
+      "direct_db_count": 0,
+      "pipeline_count": 0,
+      "data_match": true,
+      "first_timestamp": null,
+      "last_timestamp": null
+    },
+    "1_week": {
+      "start_date": "2025-08-09T00:12:28.745905",
+      "end_date": "2025-08-16T00:12:28.745905",
+      "direct_db_count": 1000,
+      "pipeline_count": 0,
+      "data_match": false,
+      "first_timestamp": "2025-08-11T08:00:00+00:00",
+      "last_timestamp": "2025-08-12T09:14:00+00:00"
+    },
+    "1_month": {
+      "start_date": "2025-07-17T00:12:28.745905",
+      "end_date": "2025-08-16T00:12:28.745905",
+      "direct_db_count": 1000,
+      "pipeline_count": 0,
+      "data_match": false,
+      "first_timestamp": "2025-07-17T08:00:00+00:00",
+      "last_timestamp": "2025-07-18T09:17:00+00:00"
+    },
+    "760_days": {
+      "start_date": "2023-07-18T00:12:28.745905",
+      "end_date": "2025-08-16T00:12:28.745905",
+      "direct_db_count": 1000,
+      "pipeline_count": 0,
+      "data_match": false,
+      "first_timestamp": "2023-07-18T08:00:00+00:00",
+      "last_timestamp": "2023-07-19T08:58:00+00:00"
+    }
+  },
+  "feature_generation_flow": {
+    "2_hours": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "1_day": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "7_days": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "30_days": {
+      "error": "object of type 'coroutine' has no len()"
+    }
+  },
+  "cache_and_chunking": {
+    "cache_analysis": {
+      "cache_duration_hours": 2,
+      "cache_max_size": 10000,
+      "cache_enabled": true,
+      "batch_size": 2000
+    },
+    "chunking_analysis": {
+      "error": "Chunking test failed: object of type 'coroutine' has no len()"
+    }
+  },
+  "database_queries": {
+    "2_hours": {
+      "start_date": "2025-08-15T22:12:29.166757",
+      "market_data_count": 0,
+      "existing_features_count": 0,
+      "market_data_available": false,
+      "features_exist": false
+    },
+    "1_day": {
+      "start_date": "2025-08-15T00:12:29.166757",
+      "market_data_count": 0,
+      "existing_features_count": 0,
+      "market_data_available": false,
+      "features_exist": false
+    },
+    "1_week": {
+      "start_date": "2025-08-09T00:12:29.166757",
+      "market_data_count": 1000,
+      "existing_features_count": 206,
+      "market_data_available": true,
+      "features_exist": true,
+      "first_market_timestamp": "2025-08-11T08:00:00+00:00",
+      "last_market_timestamp": "2025-08-12T09:14:00+00:00",
+      "first_feature_timestamp": "2025-08-14T09:30:00+00:00",
+      "last_feature_timestamp": "2025-08-14T13:29:00+00:00"
+    },
+    "1_month": {
+      "start_date": "2025-07-17T00:12:29.166757",
+      "market_data_count": 1000,
+      "existing_features_count": 206,
+      "market_data_available": true,
+      "features_exist": true,
+      "first_market_timestamp": "2025-07-17T08:00:00+00:00",
+      "last_market_timestamp": "2025-07-18T09:17:00+00:00",
+      "first_feature_timestamp": "2025-08-14T09:30:00+00:00",
+      "last_feature_timestamp": "2025-08-14T13:29:00+00:00"
+    },
+    "760_days": {
+      "start_date": "2023-07-18T00:12:29.166757",
+      "market_data_count": 1000,
+      "existing_features_count": 206,
+      "market_data_available": true,
+      "features_exist": true,
+      "first_market_timestamp": "2023-07-18T08:00:00+00:00",
+      "last_market_timestamp": "2023-07-19T08:58:00+00:00",
+      "first_feature_timestamp": "2025-08-14T09:30:00+00:00",
+      "last_feature_timestamp": "2025-08-14T13:29:00+00:00"
+    }
+  },
+  "root_cause_analysis": {
+    "potential_causes": [
+      "Cache duration set to 2 hours - this is the PRIMARY SUSPECT"
+    ],
+    "evidence": {
+      "cache_limitation": {
+        "cache_duration_hours": 2,
+        "cache_max_size": 10000,
+        "cache_enabled": true,
+        "batch_size": 2000
+      },
+      "data_availability_pattern": {
+        "2_hours": {
+          "db_count": 0,
+          "pipeline_count": 0
+        },
+        "1_day": {
+          "db_count": 0,
+          "pipeline_count": 0
+        },
+        "1_week": {
+          "db_count": 1000,
+          "pipeline_count": 0
+        },
+        "1_month": {
+          "db_count": 1000,
+          "pipeline_count": 0
+        },
+        "760_days": {
+          "db_count": 1000,
+          "pipeline_count": 0
+        }
+      }
+    },
+    "critical_findings": [
+      "CRITICAL: Cache duration is exactly 2 hours, matching the limitation period"
+    ],
+    "recommendations": [
+      "IMMEDIATE ACTION: Increase cache_duration_hours from 2 to 24 or higher for historical processing",
+      "ALTERNATIVE: Implement cache bypass for historical data requests (> 2 hours old)",
+      "CONFIGURATION: Add separate cache settings for real-time vs historical data",
+      "Implement data pipeline monitoring to detect similar issues early",
+      "Add comprehensive logging for cache hits/misses and data source selection",
+      "Create separate processing modes for different time horizons",
+      "Implement automated testing for historical data processing capabilities"
+    ]
+  },
+  "summary": {
+    "analysis_timestamp": "2025-08-16T00:12:29.743491",
+    "symbol_analyzed": "TSLA",
+    "total_analysis_components": 5,
+    "analysis_completed": true
+  }
+}

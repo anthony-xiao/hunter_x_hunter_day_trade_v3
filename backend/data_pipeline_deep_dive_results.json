@@ -1,0 +1,103 @@
+{
+  "market_data_availability": {
+    "2_hours": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "1_day": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "1_week": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "1_month": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "760_days": {
+      "error": "object of type 'coroutine' has no len()"
+    }
+  },
+  "feature_generation_flow": {
+    "2_hours": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "1_day": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "7_days": {
+      "error": "object of type 'coroutine' has no len()"
+    },
+    "30_days": {
+      "error": "object of type 'coroutine' has no len()"
+    }
+  },
+  "chunking_mechanism": {
+    "error": "object of type 'coroutine' has no len()"
+  },
+  "cache_mechanism": {
+    "cache_config": {
+      "cache_duration_hours": 2,
+      "cache_max_size": 10000,
+      "cache_enabled": true
+    },
+    "cache_tests": {
+      "within_cache": {
+        "error": "'coroutine' object has no attribute 'columns'"
+      },
+      "beyond_cache": {
+        "error": "'coroutine' object has no attribute 'columns'"
+      },
+      "far_beyond_cache": {
+        "error": "'coroutine' object has no attribute 'columns'"
+      }
+    }
+  },
+  "database_queries": {
+    "2_hours": {
+      "error": "{'code': 'PGRST205', 'details': None, 'hint': \"Perhaps you meant the table 'public.features'\", 'message': \"Could not find the table 'public.ml_features' in the schema cache\"}"
+    },
+    "1_day": {
+      "error": "{'code': 'PGRST205', 'details': None, 'hint': \"Perhaps you meant the table 'public.features'\", 'message': \"Could not find the table 'public.ml_features' in the schema cache\"}"
+    },
+    "1_week": {
+      "error": "{'code': 'PGRST205', 'details': None, 'hint': \"Perhaps you meant the table 'public.features'\", 'message': \"Could not find the table 'public.ml_features' in the schema cache\"}"
+    },
+    "1_month": {
+      "error": "{'code': 'PGRST205', 'details': None, 'hint': \"Perhaps you meant the table 'public.features'\", 'message': \"Could not find the table 'public.ml_features' in the schema cache\"}"
+    },
+    "760_days": {
+      "error": "{'code': 'PGRST205', 'details': None, 'hint': \"Perhaps you meant the table 'public.features'\", 'message': \"Could not find the table 'public.ml_features' in the schema cache\"}"
+    }
+  },
+  "root_cause_analysis": {
+    "potential_causes": [
+      "Cache duration set to 2 hours may be limiting data processing",
+      "No data available through pipeline for 1_day",
+      "No data available through pipeline for 1_week",
+      "No data available through pipeline for 1_month",
+      "No data available through pipeline for 760_days",
+      "Feature generation failing for 1_day",
+      "Feature generation failing for 7_days",
+      "Feature generation failing for 30_days"
+    ],
+    "evidence": {
+      "cache_limitation": {
+        "cache_duration_hours": 2,
+        "cache_max_size": 10000,
+        "cache_enabled": true
+      }
+    },
+    "recommendations": [
+      "Increase cache duration or disable caching for historical data processing",
+      "Implement separate processing paths for real-time vs historical data",
+      "Add configuration options for different processing modes",
+      "Implement proper error handling and logging for data pipeline failures",
+      "Add monitoring and alerting for data processing issues"
+    ]
+  },
+  "summary": {
+    "analysis_timestamp": "2025-08-16T00:09:44.741290",
+    "symbol_analyzed": "TSLA",
+    "total_analysis_components": 6,
+    "analysis_completed": true
+  }
+}

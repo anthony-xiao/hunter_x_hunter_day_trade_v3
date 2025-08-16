@@ -1043,8 +1043,10 @@ async def train_symbol_models(symbol: str):
                     # Only engineer features if coverage is less than 95%
                     if coverage_percentage < 95.0:
                         logger.info(f"Engineering features for {symbol} (coverage: {coverage_percentage:.1f}%)")
-                        # Add technical indicators and features
-                        feature_set = await feature_engineer.engineer_features(symbol, start_date, end_date)
+                        # Add technical indicators and features with training mode
+                        feature_set = await feature_engineer.engineer_features(
+                            symbol, start_date, end_date, training_mode=True
+                        )
                         if feature_set is not None and not feature_set.technical_features.empty:
                             # DEBUG: Log individual feature set counts
                             logger.info(f"FEATURE DEBUG - Technical features: {len(feature_set.technical_features.columns)} columns")

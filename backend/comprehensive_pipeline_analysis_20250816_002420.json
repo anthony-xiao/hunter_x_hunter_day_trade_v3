@@ -1,0 +1,210 @@
+{
+  "symbol": "TSLA",
+  "analysis_timestamp": "2025-08-15T12:24:20.413728+00:00",
+  "feature_generation": {
+    "date_range": {
+      "start_date": "2023-07-17T12:20:45.778093+00:00",
+      "end_date": "2025-08-15T12:20:45.778093+00:00",
+      "total_days": 760
+    },
+    "market_data_analysis": {
+      "total_records": 478338,
+      "date_range_covered": {
+        "start": "2023-07-17T12:21:00+00:00",
+        "end": "2025-08-14T13:29:00+00:00"
+      },
+      "data_completeness": 1.6138259109311741,
+      "columns": [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "vwap",
+        "transactions"
+      ]
+    },
+    "feature_categories": {
+      "required_lookback_days": 240,
+      "technical_features": {
+        "feature_count": 72,
+        "sample_features": [
+          "returns",
+          "log_returns",
+          "sma_5",
+          "ema_5",
+          "price_to_sma_5"
+        ],
+        "data_points": 18581
+      },
+      "market_microstructure": {
+        "feature_count": 43,
+        "sample_features": [
+          "spread_proxy",
+          "price_impact",
+          "tick_direction",
+          "consecutive_up",
+          "consecutive_down"
+        ],
+        "data_points": 18581
+      },
+      "sentiment_features": {
+        "feature_count": 8,
+        "sample_features": [
+          "momentum_sentiment_5",
+          "momentum_sentiment_10",
+          "momentum_sentiment_20",
+          "volume_sentiment",
+          "volatility_sentiment"
+        ],
+        "data_points": 18581
+      },
+      "macro_features": {
+        "feature_count": 11,
+        "sample_features": [
+          "hour",
+          "day_of_week",
+          "month",
+          "quarter",
+          "is_market_open"
+        ],
+        "data_points": 18581
+      },
+      "cross_asset_features": {
+        "feature_count": 5,
+        "sample_features": [
+          "spy_correlation_20",
+          "spy_correlation_50",
+          "spy_correlation_100",
+          "beta_50",
+          "beta_100"
+        ],
+        "data_points": 18581
+      },
+      "engineered_features": {
+        "feature_count": 11,
+        "sample_features": [
+          "composite_momentum",
+          "composite_volatility",
+          "composite_trend",
+          "risk_adjusted_returns",
+          "volume_price_divergence"
+        ],
+        "data_points": 18581
+      }
+    },
+    "feature_count_verification": {
+      "total_features_generated": 150,
+      "target_feature_count": 155,
+      "meets_target": false,
+      "feature_coverage": 96.7741935483871
+    },
+    "data_availability": {
+      "features_only_for_market_data": true,
+      "feature_timestamps_count": 18581,
+      "market_timestamps_count": 478338,
+      "orphaned_features": 0
+    }
+  },
+  "data_chunking": {
+    "market_data_chunking": {
+      "chunk_size_days": 150,
+      "total_days_requested": 760,
+      "expected_chunks": 6,
+      "data_loaded_successfully": true,
+      "total_records_loaded": 478337,
+      "loading_time_seconds": 68.08795595169067
+    },
+    "feature_storage_chunking": {
+      "batch_size": 2000,
+      "total_features_to_store": 2804,
+      "expected_storage_chunks": 2,
+      "chunking_required": true
+    },
+    "supabase_independence": {
+      "cache_cleared_symbols": 0,
+      "storage_without_cache_successful": false,
+      "storage_time_seconds": 0.07469320297241211,
+      "verification_successful": true
+    },
+    "chunking_performance": {}
+  },
+  "caching_mechanism": {
+    "cache_configuration": {
+      "cache_duration_hours": 2,
+      "cache_max_size_per_symbol": 10000,
+      "current_cached_symbols": [
+        "TSLA_TEST"
+      ],
+      "total_cached_symbols": 1
+    },
+    "cache_performance": {
+      "cache_write_time_ms": 0.2319812774658203,
+      "cache_read_time_ms": 0.00476837158203125,
+      "cache_hit_successful": true,
+      "cached_feature_count": 3
+    },
+    "cache_efficiency": {
+      "initial_cache_size": 1,
+      "after_bulk_insert_size": 100,
+      "final_cache_size_after_cleanup": 100,
+      "cache_cleanup_working": true,
+      "cache_growth_controlled": true
+    },
+    "cache_independence": {
+      "supabase_works_without_cache": false,
+      "independence_verified": true
+    }
+  },
+  "pipeline_flow": {
+    "pipeline_stages": [
+      {
+        "stage": "1_date_calculation",
+        "description": "Calculate 760-day historical range",
+        "duration_ms": 0.008821487426757812,
+        "output": "Range: 2023-07-17 to 2025-08-15"
+      },
+      {
+        "stage": "2_market_data_loading",
+        "description": "Load market data with 150-day chunking",
+        "duration_ms": 68503.33786010742,
+        "output": "Loaded 478335 records"
+      }
+    ],
+    "data_transformations": [],
+    "timing_analysis": {},
+    "memory_usage": {},
+    "error": "DataPipeline.load_features_from_db() got an unexpected keyword argument 'start_date'"
+  },
+  "performance_metrics": {
+    "throughput": {
+      "1_days": {
+        "records_loaded": 65,
+        "load_time_seconds": 0.05474996566772461,
+        "records_per_second": 1187.2153563434624
+      },
+      "7_days": {
+        "records_loaded": 2801,
+        "load_time_seconds": 0.39325690269470215,
+        "records_per_second": 7122.570464260879
+      },
+      "30_days": {
+        "records_loaded": 18577,
+        "load_time_seconds": 2.598829984664917,
+        "records_per_second": 7148.216739693823
+      }
+    },
+    "latency": {
+      "cache_write_ms": 0.057220458984375,
+      "cache_read_ms": 0.00095367431640625,
+      "cache_total_roundtrip_ms": 0.05817413330078125
+    },
+    "resource_usage": {
+      "cached_symbols": 2,
+      "total_cached_features": 104,
+      "estimated_memory_mb": 0.10400000000000001,
+      "cache_efficiency": 0.0052
+    },
+    "scalability": {}
+  }
+}
