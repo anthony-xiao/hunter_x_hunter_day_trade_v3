@@ -96,7 +96,7 @@ class ModelTrainer:
                 parameters={
                     'units': [128, 64, 32],  # 3-layer LSTM as per requirements
                     'dropout': 0.2,  # Standard dropout
-                    'epochs': 1,  # As per requirements: 100 epochs with early stopping
+                    'epochs': 100,  # As per requirements: 100 epochs with early stopping
                     'batch_size': 256,  # As per requirements: batch size 256
                     'learning_rate': 0.001,  # As per requirements: Adam lr=0.001
                     'optimizer': 'adam',
@@ -117,7 +117,7 @@ class ModelTrainer:
                     'kernel_size': (3, 3),
                     'dropout': 0.3,  # As per requirements: Dropout(0.3)
                     'l2_reg': 0.01,  # As per requirements: L2(0.01)
-                    'epochs': 1,  # As per requirements: 80 epochs
+                    'epochs': 80,  # As per requirements: 80 epochs
                     'batch_size': 128,  # As per requirements: batch size 128
                     'learning_rate': 0.0005,  # As per requirements: RMSprop lr=0.0005
                     'optimizer': 'rmsprop'
