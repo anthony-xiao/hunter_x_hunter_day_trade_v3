@@ -61,6 +61,10 @@ class DataPipeline:
         self.cache_duration_hours = 2  # Cache last 2 hours of features
         self.cache_max_size = 10000  # Maximum cached feature records per symbol
         
+        # Universal training cache for batch processing
+        self.universal_data_cache: Dict[str, pd.DataFrame] = {}  # Combined data across symbols
+        self.universal_feature_cache: Dict[str, Dict[datetime, Dict]] = {}  # Universal features with symbol embeddings
+        
         # Trading universe
         self.trading_universe = [
             'AAPL','TSLA'
@@ -457,19 +461,34 @@ class DataPipeline:
         try:
             all_data = []
             page_size = 1000  # Supabase hard limit
-            current_start = start_date
+            
+            # Ensure all datetime objects are timezone-aware UTC for consistent comparisons
+            if start_date.tzinfo is None:
+                current_start = start_date.replace(tzinfo=timezone.utc)
+            else:
+                current_start = start_date.astimezone(timezone.utc)
+                
+            if end_date.tzinfo is None:
+                end_date_utc = end_date.replace(tzinfo=timezone.utc)
+            else:
+                end_date_utc = end_date.astimezone(timezone.utc)
+            
             page_count = 0
             
-            while current_start < end_date:
+            while current_start < end_date_utc:
                 page_count += 1
+                
+                # Convert to ISO format for database query
+                current_start_iso = current_start.isoformat()
+                end_date_iso = end_date_utc.isoformat()
                 
                 # Query market data using timestamp-based pagination
                 response = self.supabase.table('market_data').select(
                     'timestamp, open, high, low, close, volume, vwap, transactions'
                 ).eq('symbol', symbol).gte(
-                    'timestamp', current_start.isoformat()
+                    'timestamp', current_start_iso
                 ).lte(
-                    'timestamp', end_date.isoformat()
+                    'timestamp', end_date_iso
                 ).order('timestamp').limit(page_size).execute()
                 
                 if not response.data:
@@ -483,8 +502,15 @@ class DataPipeline:
                 
                 # Update current_start to be just after the last timestamp to avoid duplicates
                 last_timestamp = response.data[-1]['timestamp']
-                # Parse the timestamp and add 1 second
+                # Parse the timestamp and ensure it's timezone-aware UTC
                 last_dt = datetime.fromisoformat(last_timestamp.replace('Z', '+00:00'))
+                
+                # Ensure last_dt is timezone-aware UTC
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                else:
+                    last_dt = last_dt.astimezone(timezone.utc)
+                        
                 current_start = last_dt + timedelta(seconds=1)
                 
                 # Safety limit to prevent infinite loops
@@ -503,6 +529,9 @@ class DataPipeline:
             
             # Convert timestamp column to datetime and set as index
             df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Ensure timezone-naive timestamps for consistency
+            if df['timestamp'].dt.tz is not None:
+                df['timestamp'] = df['timestamp'].dt.tz_localize(None)
             df = df.set_index('timestamp')
             
             logger.debug(f"Loaded {len(df)} records for {symbol} from {start_date.date()} to {end_date.date()} using timestamp-based pagination ({page_count} pages)")
@@ -917,8 +946,8 @@ class DataPipeline:
                 logger.info(f"Downloaded {len(market_data)} market data points for {symbol} from Polygon")
                 
                 # Generate features from the downloaded market data
-                from ml.ml_feature_engineering import FeatureEngineering
-                from database import db_manager
+                from ..ml.ml_feature_engineering import FeatureEngineering
+                from ..database import db_manager
                 feature_engineer = FeatureEngineering(supabase_client=db_manager.get_supabase_client())
                 
                 # Engineer features from market data
@@ -1011,6 +1040,169 @@ class DataPipeline:
             
         except Exception as e:
             logger.error(f"Failed to clear feature cache: {e}")
+            return 0
+    
+    # Universal Training Methods
+    async def load_universal_data(self, symbols: List[str], start_date: datetime, end_date: datetime) -> Dict[str, pd.DataFrame]:
+        """Load market data for multiple symbols simultaneously for universal training"""
+        try:
+            logger.info(f"Loading universal data for {len(symbols)} symbols: {symbols}")
+            universal_data = {}
+            
+            # Load data for each symbol concurrently
+            tasks = []
+            for symbol in symbols:
+                task = self.load_market_data(symbol, start_date, end_date)
+                tasks.append((symbol, task))
+            
+            # Execute all tasks concurrently
+            results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+            
+            # Process results
+            for i, (symbol, _) in enumerate(tasks):
+                result = results[i]
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to load data for {symbol}: {result}")
+                    continue
+                
+                if result is not None and len(result) > 0:
+                    universal_data[symbol] = result
+                    logger.info(f"Loaded {len(result)} data points for {symbol}")
+                else:
+                    logger.warning(f"No data available for {symbol}")
+            
+            # Cache the universal data
+            self.universal_data_cache.update(universal_data)
+            
+            logger.info(f"Successfully loaded universal data for {len(universal_data)} symbols")
+            return universal_data
+            
+        except Exception as e:
+            logger.error(f"Failed to load universal data: {e}")
+            return {}
+    
+    async def create_universal_dataset(self, symbols: List[str], start_date: datetime, end_date: datetime) -> pd.DataFrame:
+        """Create a unified dataset with symbol embeddings for universal training"""
+        try:
+            logger.info(f"Creating universal dataset for {len(symbols)} symbols")
+            
+            # Load data for all symbols
+            universal_data = await self.load_universal_data(symbols, start_date, end_date)
+            
+            if not universal_data:
+                logger.error("No data available for universal dataset creation")
+                return pd.DataFrame()
+            
+            # Combine all symbol data with symbol embeddings
+            combined_data = []
+            symbol_to_id = {symbol: idx for idx, symbol in enumerate(symbols)}
+            
+            for symbol, data in universal_data.items():
+                # Add symbol embedding columns
+                data_copy = data.copy()
+                data_copy['symbol'] = symbol
+                data_copy['symbol_id'] = symbol_to_id[symbol]
+                
+                # Add symbol one-hot encoding for neural networks
+                for i, sym in enumerate(symbols):
+                    data_copy[f'symbol_{sym}'] = 1 if sym == symbol else 0
+                
+                combined_data.append(data_copy)
+            
+            # Concatenate all data
+            universal_df = pd.concat(combined_data, ignore_index=True)
+            universal_df = universal_df.sort_values('timestamp').reset_index(drop=True)
+            
+            logger.info(f"Created universal dataset with {len(universal_df)} total data points")
+            return universal_df
+            
+        except Exception as e:
+            logger.error(f"Failed to create universal dataset: {e}")
+            return pd.DataFrame()
+    
+    async def bootstrap_universal_feature_cache(self, symbols: List[str], start_date: datetime, end_date: datetime) -> Dict[str, int]:
+        """Bootstrap feature cache for multiple symbols for universal training"""
+        try:
+            logger.info(f"Bootstrapping universal feature cache for {len(symbols)} symbols")
+            
+            # Bootstrap features for each symbol concurrently
+            tasks = []
+            for symbol in symbols:
+                task = self.bootstrap_feature_cache(
+                    symbol=symbol,
+                    training_mode=True,
+                    training_start_date=start_date,
+                    training_end_date=end_date
+                )
+                tasks.append((symbol, task))
+            
+            # Execute all tasks concurrently
+            results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+            
+            # Process results
+            bootstrap_counts = {}
+            for i, (symbol, _) in enumerate(tasks):
+                result = results[i]
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to bootstrap features for {symbol}: {result}")
+                    bootstrap_counts[symbol] = 0
+                else:
+                    bootstrap_counts[symbol] = result
+                    logger.info(f"Bootstrapped {result} features for {symbol}")
+            
+            total_features = sum(bootstrap_counts.values())
+            logger.info(f"Successfully bootstrapped {total_features} total features across {len(symbols)} symbols")
+            
+            return bootstrap_counts
+            
+        except Exception as e:
+            logger.error(f"Failed to bootstrap universal feature cache: {e}")
+            return {}
+    
+    async def get_universal_features(self, symbols: List[str], timestamp: datetime) -> Dict[str, Dict]:
+        """Get features for multiple symbols at a specific timestamp for universal training"""
+        try:
+            universal_features = {}
+            
+            # Get features for each symbol
+            for symbol in symbols:
+                features = await self.get_cached_features(symbol, timestamp)
+                if features:
+                    # Add symbol embedding to features
+                    features['symbol'] = symbol
+                    features['symbol_id'] = symbols.index(symbol)
+                    
+                    # Add symbol one-hot encoding
+                    for i, sym in enumerate(symbols):
+                        features[f'symbol_{sym}'] = 1 if sym == symbol else 0
+                    
+                    universal_features[symbol] = features
+            
+            return universal_features
+            
+        except Exception as e:
+            logger.error(f"Failed to get universal features: {e}")
+            return {}
+    
+    def get_symbol_embedding_size(self, symbols: List[str]) -> int:
+        """Get the size of symbol embedding for neural network input"""
+        # Symbol ID (1) + one-hot encoding (len(symbols)) + symbol string (for reference)
+        return 1 + len(symbols)
+    
+    def clear_universal_cache(self) -> int:
+        """Clear universal training cache"""
+        try:
+            cleared_data = len(self.universal_data_cache)
+            cleared_features = len(self.universal_feature_cache)
+            
+            self.universal_data_cache.clear()
+            self.universal_feature_cache.clear()
+            
+            logger.info(f"Cleared universal cache: {cleared_data} data entries, {cleared_features} feature entries")
+            return cleared_data + cleared_features
+            
+        except Exception as e:
+            logger.error(f"Failed to clear universal cache: {e}")
             return 0
     
     async def get_recent_cached_features(self, symbol: str, minutes: int = 60, training_mode: bool = False, training_start_date: datetime = None, training_end_date: datetime = None) -> Dict[datetime, Dict]:
@@ -1180,6 +1372,17 @@ class DataPipeline:
     async def load_features_from_db(self, symbol: str, start_time: datetime, end_time: datetime) -> pd.DataFrame:
         """Load features from Supabase for historical analysis, including basic OHLCV data"""
         try:
+            # Ensure all datetime objects are timezone-aware UTC for consistent comparisons
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+            else:
+                start_time = start_time.astimezone(timezone.utc)
+                
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=timezone.utc)
+            else:
+                end_time = end_time.astimezone(timezone.utc)
+            
             # Load features data with pagination
             all_features_data = []
             page_size = 1000

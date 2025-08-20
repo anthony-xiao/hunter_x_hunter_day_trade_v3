@@ -589,7 +589,22 @@ class FeatureEngineer:
             df['accumulated_volume_acceleration'] = df['accumulated_volume_momentum'].diff()
             
             # Volume accumulation rate
-            df['volume_accumulation_rate'] = df['accumulated_volume'] / (df.index.to_series().diff().dt.total_seconds() / 60).fillna(1)
+            try:
+                # Ensure timezone-aware datetime index for diff operation
+                index_series = df.index.to_series()
+                if index_series.dt.tz is None:
+                    # If timezone-naive, assume UTC
+                    index_series = index_series.dt.tz_localize('UTC')
+                elif index_series.dt.tz != timezone.utc:
+                    # Convert to UTC if different timezone
+                    index_series = index_series.dt.tz_convert('UTC')
+                
+                time_diff_seconds = index_series.diff().dt.total_seconds()
+                df['volume_accumulation_rate'] = df['accumulated_volume'] / (time_diff_seconds / 60).fillna(1)
+            except Exception as e:
+                logger.warning(f"Failed to calculate volume_accumulation_rate: {e}")
+                # Fallback: assume 1-minute intervals
+                df['volume_accumulation_rate'] = df['accumulated_volume']
         
         # Cross-asset momentum indicators
         if all(col in df.columns for col in ['vwap', 'transactions', 'volume']):

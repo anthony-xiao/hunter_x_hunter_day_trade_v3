@@ -1,0 +1,92 @@
+{
+  "api_endpoints": {
+    "docs_available": {
+      "status": "FAIL",
+      "details": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /docs (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x13764f170>: Failed to establish a new connection: [Errno 61] Connection refused'))",
+      "timestamp": "2025-08-17T01:07:57.171680"
+    },
+    "universal_training_start": {
+      "status": "FAIL",
+      "details": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /models/train/universal (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x14131e780>: Failed to establish a new connection: [Errno 61] Connection refused'))",
+      "timestamp": "2025-08-17T01:07:57.172404"
+    }
+  },
+  "model_initialization": {
+    "trainer_init": {
+      "status": "PASS",
+      "details": "ModelTrainer initialized",
+      "timestamp": "2025-08-17T01:07:57.174143"
+    },
+    "universal_methods": {
+      "status": "PASS",
+      "details": "Universal training methods available",
+      "timestamp": "2025-08-17T01:07:57.174156"
+    },
+    "symbol_embedding": {
+      "status": "FAIL",
+      "details": "Symbol embedding support missing",
+      "timestamp": "2025-08-17T01:07:57.174161"
+    }
+  },
+  "mode_switching": {
+    "status_check": {
+      "status": "FAIL",
+      "details": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /models/universal/status (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x133097260>: Failed to establish a new connection: [Errno 61] Connection refused'))",
+      "timestamp": "2025-08-17T01:07:57.175066"
+    }
+  },
+  "data_pipeline": {
+    "initialization": {
+      "status": "PASS",
+      "details": "DataPipeline initialized",
+      "timestamp": "2025-08-17T01:07:57.923102"
+    },
+    "universal_methods": {
+      "status": "PASS",
+      "details": "Universal data methods available",
+      "timestamp": "2025-08-17T01:07:57.923117"
+    },
+    "batch_loading": {
+      "status": "FAIL",
+      "details": "object of type 'coroutine' has no len()",
+      "timestamp": "2025-08-17T01:07:57.923136"
+    }
+  },
+  "signal_generation": {
+    "initialization": {
+      "status": "PASS",
+      "details": "SignalGenerator initialized",
+      "timestamp": "2025-08-17T01:07:57.925047"
+    },
+    "universal_support": {
+      "status": "PASS",
+      "details": "Universal mode support available",
+      "timestamp": "2025-08-17T01:07:57.925051"
+    },
+    "universal_loading": {
+      "status": "PASS",
+      "details": "Universal model loading methods available",
+      "timestamp": "2025-08-17T01:07:57.925054"
+    },
+    "universal_prediction": {
+      "status": "PASS",
+      "details": "Universal prediction methods available",
+      "timestamp": "2025-08-17T01:07:57.925056"
+    }
+  },
+  "backward_compatibility": {
+    "single_symbol_training": {
+      "status": "FAIL",
+      "details": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /models/train/AAPL (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x1453a9340>: Failed to establish a new connection: [Errno 61] Connection refused'))",
+      "timestamp": "2025-08-17T01:07:57.926077"
+    }
+  },
+  "performance_validation": {
+    "training_time": {
+      "status": "FAIL",
+      "details": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /models/train/universal (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x1453a8a70>: Failed to establish a new connection: [Errno 61] Connection refused'))",
+      "timestamp": "2025-08-17T01:07:57.926802"
+    }
+  },
+  "overall_status": "NEEDS MAJOR FIXES"
+}

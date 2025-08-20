@@ -125,7 +125,8 @@ def select_trading_universe():
 | Control Panel     | System Status       | Basic data feed status, model health indicator, trading engine status     |
 | Control Panel     | Portfolio Summary   | Current portfolio value, daily P\&L, active positions count               |
 | Model Training    | Ensemble Management | Train ML models (LSTM, CNN, RF, XGBoost, Transformer), adjust weights     |
-| Model Training    | Performance Monitor | Basic model accuracy metrics, recent performance tracking                 |
+| Model Training    | Universal Training  | Single-click universal training for entire symbol universe, progress monitoring |
+| Model Training    | Performance Monitor | Basic model accuracy metrics, recent performance tracking, universal vs single-symbol comparison |
 | Data Pipeline     | Feed Monitor        | Polygon.io connection status, real-time data quality checks               |
 | Data Pipeline     | Historical Data     | Trigger historical data downloads, storage status                         |
 | Data Pipeline     | Feature Engineering | Monitor technical indicator calculation, feature pipeline status          |
@@ -297,6 +298,207 @@ graph TD
 * **Concept Drift Detection**: Monitor prediction accuracy degradation
 
 * **Model Refresh**: Retrain models monthly with new data
+
+### 3.4 Universal Training System Upgrade
+
+**System Enhancement Overview:**
+The Universal Training System represents a transformational upgrade from the current single-symbol training approach to a unified, scalable architecture that leverages cross-symbol patterns and market dynamics for enhanced performance and efficiency.
+
+**Current State vs. Enhanced State:**
+
+| Aspect | Current Single-Symbol | Enhanced Universal |
+|--------|----------------------|--------------------|
+| Training Time | 50+ hours for 50 symbols | <5 hours for 50 symbols |
+| Data Utilization | Symbol-isolated learning | 50x cross-symbol learning |
+| Scalability | Linear scaling issues | Supports 100+ symbols |
+| Model Performance | Individual optimization | Cross-market generalization |
+| Maintenance | High overhead per symbol | Centralized management |
+
+#### 3.4.1 Universal Model Architecture
+
+**Enhanced LSTM Architecture:**
+```python
+class UniversalLSTM(nn.Module):
+    def __init__(self, num_symbols, feature_dim, hidden_dim):
+        self.symbol_embedding = nn.Embedding(num_symbols, 32)
+        self.lstm_layers = nn.LSTM(feature_dim + 32, hidden_dim, num_layers=3)
+        self.output_layer = nn.Linear(hidden_dim, 1)
+        
+    def forward(self, features, symbol_ids):
+        symbol_emb = self.symbol_embedding(symbol_ids)
+        combined_input = torch.cat([features, symbol_emb], dim=-1)
+        lstm_out, _ = self.lstm_layers(combined_input)
+        return self.output_layer(lstm_out)
+```
+
+**Enhanced CNN Architecture:**
+```python
+class UniversalCNN(nn.Module):
+    def __init__(self, num_symbols, input_shape):
+        self.symbol_embedding = nn.Embedding(num_symbols, 16)
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3),
+            nn.ReLU()
+        )
+        self.fc_layers = nn.Sequential(
+            nn.Linear(64 * 26 * 16 + 16, 128),  # +16 for symbol embedding
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+```
+
+#### 3.4.2 Universal Training Pipeline
+
+**Progressive Training Strategy:**
+
+1. **Phase 1: Universal Base Model Training (Epochs 1-30)**
+   - Train on combined dataset from all symbols
+   - Learn universal market patterns and relationships
+   - Establish shared feature representations
+   - Target: Cross-symbol pattern recognition
+
+2. **Phase 2: Symbol-Specific Fine-Tuning (Epochs 31-50)**
+   - Fine-tune universal models for each symbol
+   - Preserve universal knowledge while adapting to symbol-specific patterns
+   - Implement adaptive learning rates per symbol
+   - Target: Symbol-specific optimization
+
+3. **Phase 3: Ensemble Weight Optimization (Final 10 epochs)**
+   - Optimize ensemble weights across entire universe
+   - Cross-symbol ensemble validation
+   - Dynamic weight allocation based on symbol characteristics
+   - Target: Universal ensemble optimization
+
+**Universal Data Pipeline:**
+```python
+class UniversalDataLoader:
+    def __init__(self, symbols, data_pipeline):
+        self.symbols = symbols
+        self.data_pipeline = data_pipeline
+        self.symbol_to_id = {symbol: idx for idx, symbol in enumerate(symbols)}
+    
+    def load_training_data(self, start_date, end_date):
+        """Load and combine data for all symbols"""
+        combined_data = []
+        for symbol in self.symbols:
+            symbol_data = self.data_pipeline.load_market_data(symbol, start_date, end_date)
+            symbol_data['symbol_id'] = self.symbol_to_id[symbol]
+            combined_data.append(symbol_data)
+        return pd.concat(combined_data, ignore_index=True)
+```
+
+#### 3.4.3 Enhanced API Endpoints
+
+**Universal Training Endpoint:**
+```python
+POST /models/train/universal
+{
+    "symbols": ["AAPL", "TSLA", "NVDA", ...],  # Optional: defaults to full universe
+    "training_config": {
+        "base_model_epochs": 30,
+        "fine_tune_epochs": 20,
+        "ensemble_optimization": true,
+        "progressive_training": true
+    },
+    "data_config": {
+        "training_window_months": 18,
+        "validation_window_months": 6,
+        "feature_set": "full"  # or "reduced"
+    }
+}
+```
+
+**Training Status Monitoring:**
+```python
+GET /models/train/universal/status/{job_id}
+{
+    "job_id": "uuid",
+    "status": "training",  # queued, training, completed, failed
+    "progress": {
+        "current_phase": "base_model_training",
+        "completion_percentage": 45,
+        "estimated_completion": "2024-01-15T14:30:00Z"
+    },
+    "metrics": {
+        "symbols_processed": 25,
+        "total_symbols": 50,
+        "current_loss": 0.234,
+        "validation_accuracy": 0.678
+    }
+}
+```
+
+#### 3.4.4 Performance Requirements
+
+**Training Performance Targets:**
+- Universal training completion: <5 hours for 50 symbols (90% reduction)
+- Memory usage: <28GB during training (within M4 limits)
+- CPU utilization: >80% during training phases
+- Training success rate: >95% for scheduled jobs
+
+**Model Performance Targets:**
+- Accuracy: ≥ single-symbol model performance
+- Sharpe ratio: ≥ 1.5 on validation data
+- Win rate: ≥ 52% across all symbols
+- Maximum drawdown: ≤ 15% during backtesting
+
+**Inference Performance:**
+- Prediction latency: <50ms per symbol
+- Batch prediction throughput: >1000 predictions/second
+- Model loading time: <30 seconds for universal models
+- Memory footprint: <4GB for loaded universal models
+
+#### 3.4.5 Implementation Timeline
+
+**8-Week Implementation Plan:**
+
+**Weeks 1-2: Foundation & Data Pipeline**
+- Modify `data_pipeline.py` for batch symbol processing
+- Implement universal feature engineering pipeline
+- Create consolidated data loading mechanisms
+- Update database schema for universal storage
+
+**Weeks 3-4: Universal Model Architecture**
+- Modify `model_trainer.py` for universal training
+- Implement symbol embedding layers
+- Create universal base model architectures
+- Design symbol-specific fine-tuning mechanisms
+
+**Weeks 5-6: API & Integration**
+- Create `/models/train/universal` endpoint
+- Implement batch training job management
+- Develop training progress monitoring
+- Integrate universal models with signal generation
+
+**Weeks 7-8: Testing & Deployment**
+- Conduct comprehensive backtesting
+- Performance comparison: universal vs single-symbol
+- Production deployment preparation
+- Go-live and post-deployment monitoring
+
+#### 3.4.6 Success Metrics
+
+**Technical Performance:**
+- 90% reduction in training time (from 50+ hours to <5 hours)
+- 50x improvement in data utilization through cross-symbol learning
+- Support for 100+ symbols without architecture changes
+- Maintained or improved model performance metrics
+
+**Business Impact:**
+- Enhanced scalability for universe expansion
+- Reduced computational overhead and maintenance
+- Improved model generalization across market conditions
+- Streamlined operations with centralized model management
+
+**Risk Mitigation:**
+- A/B testing framework for performance comparison
+- Automatic fallback to single-symbol models if needed
+- Gradual rollout starting with paper trading
+- Comprehensive monitoring and alerting systems
+
+This Universal Training System upgrade positions the algorithmic trading platform for significant scale expansion while maintaining the high-performance, low-latency requirements essential for successful day trading operations.
 
 ## 4. Core Process
 

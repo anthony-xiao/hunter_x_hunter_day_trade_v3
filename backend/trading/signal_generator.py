@@ -26,6 +26,9 @@ import talib
 from config import settings
 from .execution_engine import TradeSignal
 from ml.model_trainer import ModelTrainer
+from ml.universal_trainer import UniversalTrainer
+from ml.universal_model_architectures import UniversalModelArchitectures
+from ml.universal_feature_engineering import UniversalFeatureEngineering
 
 class SignalType(Enum):
     BUY = "buy"
@@ -136,6 +139,13 @@ class SignalGenerator:
         
         # Model configurations for feature count requirements
         self.model_configs: Dict[str, Dict] = {}
+        
+        # Universal model components
+        self.universal_trainer: Optional[UniversalTrainer] = None
+        self.universal_architectures: Optional[UniversalModelArchitectures] = None
+        self.universal_feature_engineering: Optional[UniversalFeatureEngineering] = None
+        self.is_universal_mode: bool = False
+        self.universal_models: Dict[str, Any] = {}  # Store loaded universal models
         
         # Initialize additional attributes
         self._initialize_attributes()
@@ -306,6 +316,15 @@ class SignalGenerator:
     async def initialize_models(self, symbols: List[str]) -> bool:
         """Initialize ML models for given symbols"""
         try:
+            # Try to initialize universal models first
+            universal_success = await self.initialize_universal_models(symbols)
+            if universal_success:
+                logger.info("Universal models initialized successfully")
+                self.is_universal_mode = True
+            else:
+                logger.info("Falling back to symbol-specific models")
+                self.is_universal_mode = False
+            
             for symbol in symbols:
                 logger.info(f"Initializing models for {symbol}")
                 
@@ -318,7 +337,7 @@ class SignalGenerator:
                     ModelType.XGBOOST: 0.15
                 }
                 
-                # Load or create models
+                # Load or create symbol-specific models (as fallback or primary)
                 await self._load_or_create_models(symbol)
                 
                 # Initialize scaler
@@ -334,7 +353,7 @@ class SignalGenerator:
                         'last_updated': datetime.now(timezone.utc)
                     }
             
-            logger.info(f"Models initialized for {len(symbols)} symbols")
+            logger.info(f"Models initialized for {len(symbols)} symbols (Universal mode: {self.is_universal_mode})")
             return True
             
         except Exception as e:
@@ -637,8 +656,27 @@ class SignalGenerator:
             return None
     
     async def _generate_ensemble_prediction(self, symbol: str, data: pd.DataFrame, feature_count: int = None) -> Optional[EnsemblePrediction]:
-        """Generate ensemble prediction for a symbol"""
+        """Generate ensemble prediction for a symbol using universal models when available"""
         try:
+            # Try universal models first if available
+            if self.is_universal_mode and self.universal_models:
+                logger.debug(f"Using universal models for {symbol}")
+                
+                # Prepare features for universal models
+                features = await self._prepare_features(symbol, data, None, feature_count)
+                if features is not None and len(features) > 0:
+                    universal_prediction = await self._generate_universal_prediction(symbol, features)
+                    if universal_prediction is not None:
+                        logger.info(f"✓ Generated universal prediction for {symbol}: {universal_prediction.prediction:.4f} (confidence: {universal_prediction.confidence:.4f})")
+                        return universal_prediction
+                
+                logger.warning(f"Universal prediction failed for {symbol}, falling back to symbol-specific models")
+            
+            # Fallback to symbol-specific models
+            if symbol not in self.models or not self.models[symbol]:
+                logger.warning(f"No models available for {symbol}")
+                return None
+            
             # Get individual model predictions with model-specific feature filtering
             individual_predictions = []
             
@@ -1804,3 +1842,186 @@ class SignalGenerator:
         except Exception as e:
             logger.error(f"Error saving models for {symbol}: {e}")
             return False
+    
+    async def initialize_universal_models(self, symbols: List[str] = None) -> bool:
+        """Initialize universal models for cross-symbol prediction"""
+        try:
+            logger.info("Initializing universal models...")
+            
+            # Initialize universal components
+            # Get data_pipeline and feature_engineering from model_trainer if available
+            if hasattr(self, 'model_trainer') and self.model_trainer:
+                data_pipeline = self.model_trainer.data_pipeline
+                feature_engineering = UniversalFeatureEngineering()
+                self.universal_trainer = UniversalTrainer(
+                    data_pipeline=data_pipeline,
+                    feature_engineering=feature_engineering
+                )
+            else:
+                logger.warning("Model trainer not available, cannot initialize UniversalTrainer")
+                return False
+                
+            self.universal_architectures = UniversalModelArchitectures()
+            self.universal_feature_engineering = feature_engineering
+            
+            # Load universal models if they exist
+            universal_models_loaded = await self._load_universal_models()
+            
+            if universal_models_loaded:
+                self.is_universal_mode = True
+                logger.info("✓ Universal models initialized and loaded successfully")
+                return True
+            else:
+                logger.warning("Universal models not found - falling back to symbol-specific models")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error initializing universal models: {e}")
+            return False
+    
+    async def _load_universal_models(self) -> bool:
+        """Load trained universal models from disk"""
+        try:
+            model_types = [ModelType.LSTM, ModelType.CNN, ModelType.TRANSFORMER, 
+                          ModelType.RANDOM_FOREST, ModelType.XGBOOST]
+            
+            for model_type in model_types:
+                model_path = f"models/universal/{model_type.value}_universal_model"
+                
+                try:
+                    if model_type in [ModelType.LSTM, ModelType.CNN, ModelType.TRANSFORMER]:
+                        # Load TensorFlow models
+                        import tensorflow as tf
+                        model = tf.keras.models.load_model(f"{model_path}.h5")
+                        self.universal_models[model_type.value] = model
+                        logger.info(f"✓ Loaded universal {model_type.value} model")
+                    elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST]:
+                        # Load scikit-learn/XGBoost models
+                        with open(f"{model_path}.pkl", 'rb') as f:
+                            model = pickle.load(f)
+                        self.universal_models[model_type.value] = model
+                        logger.info(f"✓ Loaded universal {model_type.value} model")
+                        
+                except FileNotFoundError:
+                    logger.warning(f"Universal {model_type.value} model not found at {model_path}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error loading universal {model_type.value} model: {e}")
+                    continue
+            
+            # Check if any universal models were loaded
+            if self.universal_models:
+                logger.info(f"Loaded {len(self.universal_models)} universal models")
+                return True
+            else:
+                logger.warning("No universal models could be loaded")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error loading universal models: {e}")
+            return False
+    
+    async def _generate_universal_prediction(self, symbol: str, features: np.ndarray) -> Optional[EnsemblePrediction]:
+        """Generate prediction using universal models"""
+        try:
+            if not self.is_universal_mode or not self.universal_models:
+                return None
+            
+            # Get symbol embedding
+            symbol_embedding = self.universal_feature_engineering.get_symbol_embedding(symbol)
+            
+            # Prepare features for universal models
+            universal_features = self.universal_feature_engineering.prepare_universal_features(
+                features, symbol_embedding
+            )
+            
+            model_predictions = {}
+            model_confidences = {}
+            
+            # Generate predictions from each universal model
+            for model_name, model in self.universal_models.items():
+                try:
+                    model_type = ModelType(model_name)
+                    
+                    if model_type in [ModelType.LSTM, ModelType.CNN, ModelType.TRANSFORMER]:
+                        # Neural network models
+                        if model_type == ModelType.CNN:
+                            # Reshape for CNN (add channel dimension)
+                            model_input = universal_features.reshape(1, -1, 1)
+                        else:
+                            # LSTM/Transformer models
+                            model_input = universal_features.reshape(1, -1, universal_features.shape[-1])
+                        
+                        prediction = model.predict(model_input, verbose=0)[0]
+                        
+                        # Extract prediction and confidence
+                        if len(prediction) >= 2:
+                            pred_value = float(prediction[0])
+                            confidence = float(prediction[1]) if len(prediction) > 1 else 0.5
+                        else:
+                            pred_value = float(prediction[0])
+                            confidence = 0.5
+                            
+                    else:
+                        # Traditional ML models (Random Forest, XGBoost)
+                        prediction = model.predict(universal_features.reshape(1, -1))[0]
+                        pred_value = float(prediction)
+                        
+                        # Get prediction confidence for tree-based models
+                        if hasattr(model, 'predict_proba'):
+                            proba = model.predict_proba(universal_features.reshape(1, -1))[0]
+                            confidence = float(np.max(proba))
+                        else:
+                            confidence = 0.5
+                    
+                    model_predictions[model_type] = pred_value
+                    model_confidences[model_type] = confidence
+                    
+                except Exception as e:
+                    logger.error(f"Error generating prediction with universal {model_name}: {e}")
+                    continue
+            
+            if not model_predictions:
+                return None
+            
+            # Calculate ensemble prediction using universal weights
+            ensemble_weights = self.ensemble_weights.get(symbol, self.default_ensemble_weights)
+            
+            weighted_prediction = 0.0
+            total_weight = 0.0
+            weighted_confidence = 0.0
+            
+            for model_type, prediction in model_predictions.items():
+                weight = ensemble_weights.get(model_type, 0.2)  # Default weight
+                weighted_prediction += prediction * weight
+                weighted_confidence += model_confidences[model_type] * weight
+                total_weight += weight
+            
+            if total_weight > 0:
+                ensemble_prediction = weighted_prediction / total_weight
+                ensemble_confidence = weighted_confidence / total_weight
+            else:
+                ensemble_prediction = np.mean(list(model_predictions.values()))
+                ensemble_confidence = np.mean(list(model_confidences.values()))
+            
+            # Calculate prediction variance for additional confidence measure
+            prediction_values = list(model_predictions.values())
+            prediction_variance = np.var(prediction_values) if len(prediction_values) > 1 else 0.0
+            
+            # Adjust confidence based on model agreement
+            disagreement_penalty = min(prediction_variance * 0.5, 0.3)
+            final_confidence = max(0.1, ensemble_confidence - disagreement_penalty)
+            
+            return EnsemblePrediction(
+                prediction=ensemble_prediction,
+                confidence=final_confidence,
+                model_predictions=model_predictions,
+                model_confidences=model_confidences,
+                prediction_variance=prediction_variance,
+                risk_score=self._calculate_risk_score(ensemble_prediction, final_confidence),
+                signal_strength=self._calculate_signal_strength(ensemble_prediction, final_confidence)
+            )
+            
+        except Exception as e:
+            logger.error(f"Error generating universal prediction for {symbol}: {e}")
+            return None

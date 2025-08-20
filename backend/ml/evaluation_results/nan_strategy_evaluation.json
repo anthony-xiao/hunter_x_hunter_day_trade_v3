@@ -1,0 +1,906 @@
+{
+  "current_strategy_analysis": {
+    "original_nan_count": 498,
+    "remaining_nan_count": 0,
+    "nan_elimination_rate": 1.0,
+    "strategy_effectiveness": "HIGH",
+    "feature_impact": {
+      "close_price_AAPL": {
+        "original_nans": 41,
+        "mean_distortion": 0.032279570376158764,
+        "variance_distortion": 0.029120373327164256,
+        "impact_severity": "LOW"
+      },
+      "close_price_TSLA": {
+        "original_nans": 40,
+        "mean_distortion": 0.015440867300104952,
+        "variance_distortion": 0.014223005393647159,
+        "impact_severity": "LOW"
+      },
+      "rsi_AAPL": {
+        "original_nans": 60,
+        "mean_distortion": 0.014705447484157044,
+        "variance_distortion": 0.024666558670703453,
+        "impact_severity": "LOW"
+      },
+      "rsi_TSLA": {
+        "original_nans": 59,
+        "mean_distortion": 0.006254766069674433,
+        "variance_distortion": 0.014572967805414078,
+        "impact_severity": "LOW"
+      },
+      "macd_AAPL": {
+        "original_nans": 59,
+        "mean_distortion": 0.005794217587903255,
+        "variance_distortion": 0.03231701754350234,
+        "impact_severity": "LOW"
+      },
+      "macd_TSLA": {
+        "original_nans": 59,
+        "mean_distortion": 0.019692615414123125,
+        "variance_distortion": 0.0016883406248359705,
+        "impact_severity": "LOW"
+      },
+      "momentum_20d_AAPL": {
+        "original_nans": 20,
+        "mean_distortion": 0.013693620344682703,
+        "variance_distortion": 0.010822570092500497,
+        "impact_severity": "LOW"
+      },
+      "momentum_20d_TSLA": {
+        "original_nans": 20,
+        "mean_distortion": 0.013240410156526609,
+        "variance_distortion": 0.011421303359237456,
+        "impact_severity": "LOW"
+      },
+      "volatility_20d_AAPL": {
+        "original_nans": 20,
+        "mean_distortion": 0.00863723182209362,
+        "variance_distortion": 0.016360870950338606,
+        "impact_severity": "LOW"
+      },
+      "volatility_20d_TSLA": {
+        "original_nans": 20,
+        "mean_distortion": 0.007988089423584418,
+        "variance_distortion": 0.01689021948714429,
+        "impact_severity": "LOW"
+      },
+      "sector_AAPL_momentum": {
+        "original_nans": 20,
+        "mean_distortion": 0.022336695387912706,
+        "variance_distortion": 0.004451922320730358,
+        "impact_severity": "LOW"
+      },
+      "sector_AAPL_volatility": {
+        "original_nans": 20,
+        "mean_distortion": 0.018830388165189515,
+        "variance_distortion": 0.0026280333763381686,
+        "impact_severity": "LOW"
+      },
+      "sector_TSLA_momentum": {
+        "original_nans": 20,
+        "mean_distortion": 0.018775391912352123,
+        "variance_distortion": 0.002729473001908702,
+        "impact_severity": "LOW"
+      },
+      "sector_TSLA_volatility": {
+        "original_nans": 20,
+        "mean_distortion": 0.015363852595445694,
+        "variance_distortion": 0.008442090068500914,
+        "impact_severity": "LOW"
+      },
+      "volatility_regime": {
+        "original_nans": 20,
+        "mean_distortion": 0.02312531242698898,
+        "variance_distortion": 0.006210434648548927,
+        "impact_severity": "LOW"
+      }
+    }
+  },
+  "comprehensive_analysis": {
+    "model_impact_analysis": {
+      "lstm_impact": {
+        "severity": "MEDIUM",
+        "nan_percentage": 2.7666666666666666,
+        "sequential_gaps": {
+          "close_price_AAPL": {
+            "max_gap_length": 21,
+            "avg_gap_length": 1.9523809523809523,
+            "num_gaps": 21
+          },
+          "close_price_TSLA": {
+            "max_gap_length": 21,
+            "avg_gap_length": 2.0,
+            "num_gaps": 20
+          },
+          "rsi_AAPL": {
+            "max_gap_length": 21,
+            "avg_gap_length": 1.5384615384615385,
+            "num_gaps": 39
+          },
+          "rsi_TSLA": {
+            "max_gap_length": 21,
+            "avg_gap_length": 1.5526315789473684,
+            "num_gaps": 38
+          },
+          "macd_AAPL": {
+            "max_gap_length": 21,
+            "avg_gap_length": 1.5128205128205128,
+            "num_gaps": 39
+          },
+          "macd_TSLA": {
+            "max_gap_length": 21,
+            "avg_gap_length": 1.5526315789473684,
+            "num_gaps": 38
+          },
+          "momentum_20d_AAPL": {
+            "max_gap_length": 20,
+            "avg_gap_length": 20.0,
+            "num_gaps": 1
+          },
+          "momentum_20d_TSLA": {
+            "max_gap_length": 20,
+            "avg_gap_length": 20.0,
+            "num_gaps": 1
+          },
+          "volatility_20d_AAPL": {
+            "max_gap_length": 20,
+            "avg_gap_length": 20.0,
+            "num_gaps": 1
+          },
+          "volatility_20d_TSLA": {
+            "max_gap_length": 20,
+            "avg_gap_length": 20.0,
+            "num_gaps": 1
+          },
+          "sector_AAPL_momentum": {
+            "max_gap_length": 20,
+            "avg_gap_length": 20.0,
+            "num_gaps": 1
+          },
+          "sector_AAPL_volatility": {
+            "max_gap_length": 20,
+            "avg_gap_length": 20.0,
+            "num_gaps": 1
+          },
+          "sector_TSLA_momentum": {
+            "max_gap_length": 20,
+            "avg_gap_length": 20.0,
+            "num_gaps": 1
+          },
+          "sector_TSLA_volatility": {
+            "max_gap_length": 20,
+            "avg_gap_length": 20.0,
+            "num_gaps": 1
+          },
+          "volatility_regime": {
+            "max_gap_length": 20,
+            "avg_gap_length": 20.0,
+            "num_gaps": 1
+          }
+        },
+        "recommendations": [
+          "Use forward/backward fill for temporal continuity",
+          "Consider interpolation for smooth transitions",
+          "Avoid zero-fill for price-based features",
+          "Use domain-specific defaults for technical indicators"
+        ],
+        "risks": [
+          "Hidden state corruption",
+          "Gradient explosion/vanishing",
+          "Loss of temporal patterns",
+          "Reduced model convergence"
+        ]
+      },
+      "cnn_impact": {
+        "severity": "MEDIUM",
+        "nan_percentage": 2.7666666666666666,
+        "spatial_distribution": {
+          "clustered_nans": true,
+          "random_distribution": 0.28590324156089525,
+          "column_correlation": 0.4292913845718669
+        },
+        "recommendations": [
+          "Use mean/median imputation for stable features",
+          "Apply KNN imputation for correlated features",
+          "Consider zero-padding for edge cases",
+          "Use iterative imputation for complex patterns"
+        ],
+        "risks": [
+          "Convolution kernel corruption",
+          "Feature map degradation",
+          "Pooling operation failures",
+          "Pattern recognition loss"
+        ]
+      },
+      "transformer_impact": {
+        "severity": "CRITICAL",
+        "nan_percentage": 2.7666666666666666,
+        "attention_impact": {
+          "attention_disruption_score": 0.027666666666666666,
+          "sequence_breaks": 204,
+          "attention_mask_required": "True"
+        },
+        "recommendations": [
+          "Use sophisticated imputation (iterative/KNN)",
+          "Apply attention masking for missing values",
+          "Consider learned embeddings for missing data",
+          "Use domain-specific imputation strategies"
+        ],
+        "risks": [
+          "Attention weight corruption",
+          "Self-attention mechanism failure",
+          "Layer normalization instability",
+          "Positional encoding disruption"
+        ]
+      },
+      "general_impact": {
+        "total_nans": "498",
+        "nan_percentage": 2.7666666666666666,
+        "columns_with_nans": "15",
+        "rows_with_nans": "151",
+        "max_nans_per_column": "60",
+        "max_nans_per_row": "12"
+      }
+    },
+    "strategy_evaluation": {
+      "drop_rows": {
+        "strategy_name": "drop_rows",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.9990111196100742,
+          "close_price_AAPL_variance_preservation": 0.9940989923185412,
+          "close_price_TSLA_mean_preservation": 0.9977201608043079,
+          "close_price_TSLA_variance_preservation": 0.9624386501393634,
+          "rsi_AAPL_mean_preservation": 0.9907640979506003,
+          "rsi_AAPL_variance_preservation": 0.9915149400409723,
+          "rsi_TSLA_mean_preservation": 0.9808293348030536,
+          "rsi_TSLA_variance_preservation": 0.9864795282183779,
+          "macd_AAPL_mean_preservation": 0.997093754450398,
+          "macd_AAPL_variance_preservation": 0.9988388523225733,
+          "macd_TSLA_mean_preservation": 0.9695658380662073,
+          "macd_TSLA_variance_preservation": 0.9911134749250734,
+          "momentum_20d_AAPL_mean_preservation": 0.9997456515041693,
+          "momentum_20d_AAPL_variance_preservation": 0.9974489494175756,
+          "momentum_20d_TSLA_mean_preservation": 0.9872972748558042,
+          "momentum_20d_TSLA_variance_preservation": 0.9948389305795811,
+          "volatility_20d_AAPL_mean_preservation": 0.9905356672048544,
+          "volatility_20d_AAPL_variance_preservation": 0.9897919841927051,
+          "volatility_20d_TSLA_mean_preservation": 0.9823195661545697,
+          "volatility_20d_TSLA_variance_preservation": 0.9722076022729278,
+          "sector_AAPL_momentum_mean_preservation": 0.9980401889445958,
+          "sector_AAPL_momentum_variance_preservation": 0.9956993745453153,
+          "sector_AAPL_volatility_mean_preservation": 0.9845166223338636,
+          "sector_AAPL_volatility_variance_preservation": 0.9331181703331896,
+          "sector_TSLA_momentum_mean_preservation": 0.994585589452395,
+          "sector_TSLA_momentum_variance_preservation": 0.98134459758565,
+          "sector_TSLA_volatility_mean_preservation": 0.983859797757528,
+          "sector_TSLA_volatility_variance_preservation": 0.9710711421477307,
+          "correlation_AAPL_TSLA_mean_preservation": 0.9910393624469276,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9813973732777962,
+          "spread_AAPL_TSLA_mean_preservation": 0.9993458947141771,
+          "spread_AAPL_TSLA_variance_preservation": 0.9899481968286565,
+          "market_volatility_mean_preservation": 0.9883344162520131,
+          "market_volatility_variance_preservation": 0.9626135702544005,
+          "volatility_regime_mean_preservation": 0.9947134276972637,
+          "volatility_regime_variance_preservation": 0.9979209942110214,
+          "overall_quality": 0.9867000857948403
+        },
+        "computational_cost": "LOW",
+        "model_compatibility": {
+          "LSTM": "POOR",
+          "CNN": "FAIR",
+          "Transformer": "POOR"
+        },
+        "domain_appropriateness": "POOR",
+        "overall_score": 0.595
+      },
+      "forward_fill": {
+        "strategy_name": "forward_fill",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 0.99,
+          "close_price_AAPL_mean_preservation": 0.9677204296238412,
+          "close_price_AAPL_variance_preservation": 0.9717036274998556,
+          "close_price_TSLA_mean_preservation": 0.984559132699895,
+          "close_price_TSLA_variance_preservation": 0.985776994581405,
+          "rsi_AAPL_mean_preservation": 0.985294552515843,
+          "rsi_AAPL_variance_preservation": 0.9753334412965701,
+          "rsi_TSLA_mean_preservation": 0.9937452339303255,
+          "rsi_TSLA_variance_preservation": 0.9854270321596419,
+          "macd_AAPL_mean_preservation": 0.9942057824120968,
+          "macd_AAPL_variance_preservation": 0.967682979892826,
+          "macd_TSLA_mean_preservation": 0.9803073845858769,
+          "macd_TSLA_variance_preservation": 0.9983145039234332,
+          "momentum_20d_AAPL_mean_preservation": 1.0,
+          "momentum_20d_AAPL_variance_preservation": 0.9999995737295316,
+          "momentum_20d_TSLA_mean_preservation": 1.0,
+          "momentum_20d_TSLA_variance_preservation": 0.9999997774627365,
+          "volatility_20d_AAPL_mean_preservation": 1.0,
+          "volatility_20d_AAPL_variance_preservation": 0.999999833671134,
+          "volatility_20d_TSLA_mean_preservation": 1.0,
+          "volatility_20d_TSLA_variance_preservation": 0.9999999118513183,
+          "sector_AAPL_momentum_mean_preservation": 1.0,
+          "sector_AAPL_momentum_variance_preservation": 0.9999989385150272,
+          "sector_AAPL_volatility_mean_preservation": 1.0,
+          "sector_AAPL_volatility_variance_preservation": 0.9999997727880718,
+          "sector_TSLA_momentum_mean_preservation": 1.0,
+          "sector_TSLA_momentum_variance_preservation": 0.999999312426952,
+          "sector_TSLA_volatility_mean_preservation": 1.0,
+          "sector_TSLA_volatility_variance_preservation": 0.9999998929731011,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 1.0,
+          "volatility_regime_variance_preservation": 0.9999999851542725,
+          "overall_quality": 0.9941685461996698
+        },
+        "computational_cost": "LOW",
+        "model_compatibility": {
+          "LSTM": "EXCELLENT",
+          "CNN": "GOOD",
+          "Transformer": "GOOD"
+        },
+        "domain_appropriateness": "EXCELLENT",
+        "overall_score": 0.838
+      },
+      "backward_fill": {
+        "strategy_name": "backward_fill",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.9782557695445202,
+          "close_price_AAPL_variance_preservation": 0.9979122853332775,
+          "close_price_TSLA_mean_preservation": 0.9935247670634616,
+          "close_price_TSLA_variance_preservation": 0.980916988157136,
+          "rsi_AAPL_mean_preservation": 0.9885562299353358,
+          "rsi_AAPL_variance_preservation": 0.9813597452676801,
+          "rsi_TSLA_mean_preservation": 0.9624217844011581,
+          "rsi_TSLA_variance_preservation": 0.9877037155289232,
+          "macd_AAPL_mean_preservation": 0.9748295540097549,
+          "macd_AAPL_variance_preservation": 0.9944891770336383,
+          "macd_TSLA_mean_preservation": 0.9477436665728594,
+          "macd_TSLA_variance_preservation": 0.8875485070166194,
+          "momentum_20d_AAPL_mean_preservation": 0.9863063796553173,
+          "momentum_20d_AAPL_variance_preservation": 0.9891770036370312,
+          "momentum_20d_TSLA_mean_preservation": 0.9867595898434733,
+          "momentum_20d_TSLA_variance_preservation": 0.988578474103499,
+          "volatility_20d_AAPL_mean_preservation": 0.9913627681779064,
+          "volatility_20d_AAPL_variance_preservation": 0.9836389627207954,
+          "volatility_20d_TSLA_mean_preservation": 0.9920119105764156,
+          "volatility_20d_TSLA_variance_preservation": 0.983109692364174,
+          "sector_AAPL_momentum_mean_preservation": 0.9776633046120873,
+          "sector_AAPL_momentum_variance_preservation": 0.9955667526670517,
+          "sector_AAPL_volatility_mean_preservation": 0.9811696118348104,
+          "sector_AAPL_volatility_variance_preservation": 0.9973717394117337,
+          "sector_TSLA_momentum_mean_preservation": 0.9812246080876479,
+          "sector_TSLA_momentum_variance_preservation": 0.9972698394250432,
+          "sector_TSLA_volatility_mean_preservation": 0.9846361474045543,
+          "sector_TSLA_volatility_variance_preservation": 0.9915578029046002,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 0.976874687573011,
+          "volatility_regime_variance_preservation": 0.9938278820409513,
+          "overall_quality": 0.9848158032333006
+        },
+        "computational_cost": "LOW",
+        "model_compatibility": {
+          "LSTM": "GOOD",
+          "CNN": "GOOD",
+          "Transformer": "GOOD"
+        },
+        "domain_appropriateness": "GOOD",
+        "overall_score": 0.774
+      },
+      "zero_fill": {
+        "strategy_name": "zero_fill",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.3719585665359091,
+          "close_price_AAPL_variance_preservation": 0.09809548211937232,
+          "close_price_TSLA_mean_preservation": 0.5975723802542834,
+          "close_price_TSLA_variance_preservation": 0.20615996298544173,
+          "rsi_AAPL_mean_preservation": 0.8286602746654671,
+          "rsi_AAPL_variance_preservation": 0.7141166785671171,
+          "rsi_TSLA_mean_preservation": 0.8296513327572264,
+          "rsi_TSLA_variance_preservation": 0.7121353720018424,
+          "macd_AAPL_mean_preservation": 0.9968103963148074,
+          "macd_AAPL_variance_preservation": 0.9411033607986176,
+          "macd_TSLA_mean_preservation": 0.9990159093305012,
+          "macd_TSLA_variance_preservation": 0.940956401035189,
+          "momentum_20d_AAPL_mean_preservation": 0.9981639198178046,
+          "momentum_20d_AAPL_variance_preservation": 0.9801449158795832,
+          "momentum_20d_TSLA_mean_preservation": 0.997545791826035,
+          "momentum_20d_TSLA_variance_preservation": 0.9802751910395222,
+          "volatility_20d_AAPL_mean_preservation": 0.9796200501394826,
+          "volatility_20d_AAPL_variance_preservation": 0.9996478284907491,
+          "volatility_20d_TSLA_mean_preservation": 0.9791093239026878,
+          "volatility_20d_TSLA_variance_preservation": 0.9986158460924571,
+          "sector_AAPL_momentum_mean_preservation": 0.9985876658146516,
+          "sector_AAPL_momentum_variance_preservation": 0.9800767772045108,
+          "sector_AAPL_volatility_mean_preservation": 0.9808090742795551,
+          "sector_AAPL_volatility_variance_preservation": 0.9980441091591391,
+          "sector_TSLA_momentum_mean_preservation": 0.9966679488917054,
+          "sector_TSLA_momentum_variance_preservation": 0.9805238761230988,
+          "sector_TSLA_volatility_mean_preservation": 0.9802016418520344,
+          "sector_TSLA_volatility_variance_preservation": 0.9992058745787017,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 0.9743880948389264,
+          "volatility_regime_variance_preservation": 0.9879912773281981,
+          "overall_quality": 0.8896070803921936
+        },
+        "computational_cost": "LOW",
+        "model_compatibility": {
+          "LSTM": "POOR",
+          "CNN": "FAIR",
+          "Transformer": "POOR"
+        },
+        "domain_appropriateness": "POOR",
+        "overall_score": 0.556
+      },
+      "mean_imputation": {
+        "strategy_name": "mean_imputation",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.9999999999999971,
+          "close_price_AAPL_variance_preservation": 0.958958958859238,
+          "close_price_TSLA_mean_preservation": 0.9999999999999986,
+          "close_price_TSLA_variance_preservation": 0.959959959936011,
+          "rsi_AAPL_mean_preservation": 1.0,
+          "rsi_AAPL_variance_preservation": 0.939939939909179,
+          "rsi_TSLA_mean_preservation": 0.9999999999999996,
+          "rsi_TSLA_variance_preservation": 0.9409409409080605,
+          "macd_AAPL_mean_preservation": 1.0,
+          "macd_AAPL_variance_preservation": 0.9409409385286772,
+          "macd_TSLA_mean_preservation": 1.0,
+          "macd_TSLA_variance_preservation": 0.940940939865229,
+          "momentum_20d_AAPL_mean_preservation": 1.0,
+          "momentum_20d_AAPL_variance_preservation": 0.9799795622434551,
+          "momentum_20d_TSLA_mean_preservation": 1.0,
+          "momentum_20d_TSLA_variance_preservation": 0.9799797618979169,
+          "volatility_20d_AAPL_mean_preservation": 0.9999999999999999,
+          "volatility_20d_AAPL_variance_preservation": 0.9799798169810213,
+          "volatility_20d_TSLA_mean_preservation": 0.9999999999999999,
+          "volatility_20d_TSLA_variance_preservation": 0.9799798935960367,
+          "sector_AAPL_momentum_mean_preservation": 1.0,
+          "sector_AAPL_momentum_variance_preservation": 0.9799789397459574,
+          "sector_AAPL_volatility_mean_preservation": 1.0,
+          "sector_AAPL_volatility_variance_preservation": 0.9799797573168392,
+          "sector_TSLA_momentum_mean_preservation": 1.0,
+          "sector_TSLA_momentum_variance_preservation": 0.979979306172158,
+          "sector_TSLA_volatility_mean_preservation": 0.9999999999999998,
+          "sector_TSLA_volatility_variance_preservation": 0.9799798750957619,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 1.0,
+          "volatility_regime_variance_preservation": 0.9799799654314643,
+          "overall_quality": 0.9861527257217042
+        },
+        "computational_cost": "LOW",
+        "model_compatibility": {
+          "LSTM": "FAIR",
+          "CNN": "GOOD",
+          "Transformer": "GOOD"
+        },
+        "domain_appropriateness": "FAIR",
+        "overall_score": 0.714
+      },
+      "median_imputation": {
+        "strategy_name": "median_imputation",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.999870784387096,
+          "close_price_AAPL_variance_preservation": 0.9589593497894606,
+          "close_price_TSLA_mean_preservation": 0.9997808846417995,
+          "close_price_TSLA_variance_preservation": 0.9599611133664073,
+          "rsi_AAPL_mean_preservation": 0.9991300579765364,
+          "rsi_AAPL_variance_preservation": 0.9399518082971923,
+          "rsi_TSLA_mean_preservation": 0.9989292044330341,
+          "rsi_TSLA_variance_preservation": 0.9409592465622207,
+          "macd_AAPL_mean_preservation": 0.9979977784933323,
+          "macd_AAPL_variance_preservation": 0.9410049409450518,
+          "macd_TSLA_mean_preservation": 0.9999663336404991,
+          "macd_TSLA_variance_preservation": 0.9409409579604733,
+          "momentum_20d_AAPL_mean_preservation": 0.9997248252475494,
+          "momentum_20d_AAPL_variance_preservation": 0.9799832762924816,
+          "momentum_20d_TSLA_mean_preservation": 0.9997883897339183,
+          "momentum_20d_TSLA_variance_preservation": 0.979981958260329,
+          "volatility_20d_AAPL_mean_preservation": 0.9938937587791894,
+          "volatility_20d_AAPL_variance_preservation": 0.9818086685882559,
+          "volatility_20d_TSLA_mean_preservation": 0.993817977937904,
+          "volatility_20d_TSLA_variance_preservation": 0.9818544205111132,
+          "sector_AAPL_momentum_mean_preservation": 0.9994475924133249,
+          "sector_AAPL_momentum_variance_preservation": 0.9799939072536235,
+          "sector_AAPL_volatility_mean_preservation": 0.9933432245954483,
+          "sector_AAPL_volatility_variance_preservation": 0.9821532508045221,
+          "sector_TSLA_momentum_mean_preservation": 0.9995684364361552,
+          "sector_TSLA_momentum_variance_preservation": 0.9799884414110077,
+          "sector_TSLA_volatility_mean_preservation": 0.9937848967393954,
+          "sector_TSLA_volatility_variance_preservation": 0.9818745175779704,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 0.9987567036329577,
+          "volatility_regime_variance_preservation": 0.9800557847584711,
+          "overall_quality": 0.9854797794711408
+        },
+        "computational_cost": "LOW",
+        "model_compatibility": {
+          "LSTM": "FAIR",
+          "CNN": "GOOD",
+          "Transformer": "GOOD"
+        },
+        "domain_appropriateness": "FAIR",
+        "overall_score": 0.714
+      },
+      "mode_imputation": {
+        "strategy_name": "mode_imputation",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.8635879535602361,
+          "close_price_AAPL_variance_preservation": 0.7170277979684787,
+          "close_price_TSLA_mean_preservation": 0.8796617076018911,
+          "close_price_TSLA_variance_preservation": 0.764608317672814,
+          "rsi_AAPL_mean_preservation": 0.8973111341855368,
+          "rsi_AAPL_variance_preservation": 0.9047232669454798,
+          "rsi_TSLA_mean_preservation": 0.8994116214983248,
+          "rsi_TSLA_variance_preservation": 0.907048934866626,
+          "macd_AAPL_mean_preservation": 0.8234937919465072,
+          "macd_AAPL_variance_preservation": 0.6952530273726367,
+          "macd_TSLA_mean_preservation": 0.8112446489965169,
+          "macd_TSLA_variance_preservation": 0.6623589235069228,
+          "momentum_20d_AAPL_mean_preservation": 0.9439832381522479,
+          "momentum_20d_AAPL_variance_preservation": 0.8819194992343123,
+          "momentum_20d_TSLA_mean_preservation": 0.9395971154877951,
+          "momentum_20d_TSLA_variance_preservation": 0.8628603500238443,
+          "volatility_20d_AAPL_mean_preservation": 0.9796249625766084,
+          "volatility_20d_AAPL_variance_preservation": 0.999657641601745,
+          "volatility_20d_TSLA_mean_preservation": 0.97916040001593,
+          "volatility_20d_TSLA_variance_preservation": 0.9987201119130477,
+          "sector_AAPL_momentum_mean_preservation": 0.9198244811965264,
+          "sector_AAPL_momentum_variance_preservation": 0.77203743634851,
+          "sector_AAPL_volatility_mean_preservation": 0.9808345193576268,
+          "sector_AAPL_volatility_variance_preservation": 0.9979962381885072,
+          "sector_TSLA_momentum_mean_preservation": 0.9328079887246905,
+          "sector_TSLA_momentum_variance_preservation": 0.8323444374912348,
+          "sector_TSLA_volatility_mean_preservation": 0.9802077225153077,
+          "sector_TSLA_volatility_variance_preservation": 0.999194066642377,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 0.976874687573011,
+          "volatility_regime_variance_preservation": 0.9938278820409513,
+          "overall_quality": 0.9110334298527945
+        },
+        "computational_cost": "LOW",
+        "model_compatibility": {
+          "LSTM": "FAIR",
+          "CNN": "FAIR",
+          "Transformer": "FAIR"
+        },
+        "domain_appropriateness": "POOR",
+        "overall_score": 0.604
+      },
+      "knn_imputation": {
+        "strategy_name": "knn_imputation",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.9977631254380026,
+          "close_price_AAPL_variance_preservation": 0.9672955286183104,
+          "close_price_TSLA_mean_preservation": 0.9989878207267631,
+          "close_price_TSLA_variance_preservation": 0.9648145671462423,
+          "rsi_AAPL_mean_preservation": 0.9988153578684585,
+          "rsi_AAPL_variance_preservation": 0.9480660877574003,
+          "rsi_TSLA_mean_preservation": 0.9989592416911695,
+          "rsi_TSLA_variance_preservation": 0.9546177373319651,
+          "macd_AAPL_mean_preservation": 0.9909003325902984,
+          "macd_AAPL_variance_preservation": 0.9536115298101197,
+          "macd_TSLA_mean_preservation": 0.997529150307765,
+          "macd_TSLA_variance_preservation": 0.9515507895799745,
+          "momentum_20d_AAPL_mean_preservation": 0.9998962375310494,
+          "momentum_20d_AAPL_variance_preservation": 0.981225367565327,
+          "momentum_20d_TSLA_mean_preservation": 0.9980478760777591,
+          "momentum_20d_TSLA_variance_preservation": 0.9834649393612834,
+          "volatility_20d_AAPL_mean_preservation": 0.9977686012365463,
+          "volatility_20d_AAPL_variance_preservation": 0.9857089527260716,
+          "volatility_20d_TSLA_mean_preservation": 0.9999692107891553,
+          "volatility_20d_TSLA_variance_preservation": 0.9819901792630475,
+          "sector_AAPL_momentum_mean_preservation": 0.9997943977650653,
+          "sector_AAPL_momentum_variance_preservation": 0.9832129817783136,
+          "sector_AAPL_volatility_mean_preservation": 0.9941352436971849,
+          "sector_AAPL_volatility_variance_preservation": 0.9833327682986064,
+          "sector_TSLA_momentum_mean_preservation": 0.9993133083269994,
+          "sector_TSLA_momentum_variance_preservation": 0.982008055419583,
+          "sector_TSLA_volatility_mean_preservation": 0.9986605639961793,
+          "sector_TSLA_volatility_variance_preservation": 0.9817305912857857,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 0.9985627493996989,
+          "volatility_regime_variance_preservation": 0.9815643722193589,
+          "overall_quality": 0.9875915898638288
+        },
+        "computational_cost": "HIGH",
+        "model_compatibility": {
+          "LSTM": "GOOD",
+          "CNN": "EXCELLENT",
+          "Transformer": "EXCELLENT"
+        },
+        "domain_appropriateness": "GOOD",
+        "overall_score": 0.775
+      },
+      "iterative_imputation": {
+        "strategy_name": "iterative_imputation",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.9999751486790627,
+          "close_price_AAPL_variance_preservation": 0.9589625427471936,
+          "close_price_TSLA_mean_preservation": 0.999995370020006,
+          "close_price_TSLA_variance_preservation": 0.9599600989053685,
+          "rsi_AAPL_mean_preservation": 0.9999982558170745,
+          "rsi_AAPL_variance_preservation": 0.9399399942512318,
+          "rsi_TSLA_mean_preservation": 0.9999281833959536,
+          "rsi_TSLA_variance_preservation": 0.9409625082625505,
+          "macd_AAPL_mean_preservation": 0.9999784101726211,
+          "macd_AAPL_variance_preservation": 0.9409590452552085,
+          "macd_TSLA_mean_preservation": 0.9999261358760708,
+          "macd_TSLA_variance_preservation": 0.9409620010783714,
+          "momentum_20d_AAPL_mean_preservation": 0.9995715623492178,
+          "momentum_20d_AAPL_variance_preservation": 0.9800121999706211,
+          "momentum_20d_TSLA_mean_preservation": 0.9996601978807448,
+          "momentum_20d_TSLA_variance_preservation": 0.9800310112990599,
+          "volatility_20d_AAPL_mean_preservation": 0.9994553097555697,
+          "volatility_20d_AAPL_variance_preservation": 0.9800398034151047,
+          "volatility_20d_TSLA_mean_preservation": 0.9996957069279548,
+          "volatility_20d_TSLA_variance_preservation": 0.9800539457074583,
+          "sector_AAPL_momentum_mean_preservation": 0.9997346417850227,
+          "sector_AAPL_momentum_variance_preservation": 0.9801130301328984,
+          "sector_AAPL_volatility_mean_preservation": 0.999914187220517,
+          "sector_AAPL_volatility_variance_preservation": 0.9799911770313968,
+          "sector_TSLA_momentum_mean_preservation": 0.9997208977670565,
+          "sector_TSLA_momentum_variance_preservation": 0.9800320238497892,
+          "sector_TSLA_volatility_mean_preservation": 0.9992515993175001,
+          "sector_TSLA_volatility_variance_preservation": 0.9800602129744013,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 0.9995229692827488,
+          "volatility_regime_variance_preservation": 0.9800181278104134,
+          "overall_quality": 0.9860673852342374
+        },
+        "computational_cost": "HIGH",
+        "model_compatibility": {
+          "LSTM": "GOOD",
+          "CNN": "EXCELLENT",
+          "Transformer": "EXCELLENT"
+        },
+        "domain_appropriateness": "GOOD",
+        "overall_score": 0.774
+      },
+      "linear_interpolation": {
+        "strategy_name": "linear_interpolation",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 0.99,
+          "close_price_AAPL_mean_preservation": 0.9947323300396606,
+          "close_price_AAPL_variance_preservation": 0.9877202980514836,
+          "close_price_TSLA_mean_preservation": 0.9890419498816784,
+          "close_price_TSLA_variance_preservation": 0.9693093338560878,
+          "rsi_AAPL_mean_preservation": 0.9983691612902532,
+          "rsi_AAPL_variance_preservation": 0.9609721792824829,
+          "rsi_TSLA_mean_preservation": 0.9780835091657418,
+          "rsi_TSLA_variance_preservation": 0.9784393080567653,
+          "macd_AAPL_mean_preservation": 0.9845176682109258,
+          "macd_AAPL_variance_preservation": 0.9653640900801218,
+          "macd_TSLA_mean_preservation": 0.9837181409934913,
+          "macd_TSLA_variance_preservation": 0.9989605957656068,
+          "momentum_20d_AAPL_mean_preservation": 1.0,
+          "momentum_20d_AAPL_variance_preservation": 0.9999995737295316,
+          "momentum_20d_TSLA_mean_preservation": 1.0,
+          "momentum_20d_TSLA_variance_preservation": 0.9999997774627365,
+          "volatility_20d_AAPL_mean_preservation": 1.0,
+          "volatility_20d_AAPL_variance_preservation": 0.999999833671134,
+          "volatility_20d_TSLA_mean_preservation": 1.0,
+          "volatility_20d_TSLA_variance_preservation": 0.9999999118513183,
+          "sector_AAPL_momentum_mean_preservation": 1.0,
+          "sector_AAPL_momentum_variance_preservation": 0.9999989385150272,
+          "sector_AAPL_volatility_mean_preservation": 1.0,
+          "sector_AAPL_volatility_variance_preservation": 0.9999997727880718,
+          "sector_TSLA_momentum_mean_preservation": 1.0,
+          "sector_TSLA_momentum_variance_preservation": 0.999999312426952,
+          "sector_TSLA_volatility_mean_preservation": 1.0,
+          "sector_TSLA_volatility_variance_preservation": 0.9999998929731011,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 1.0,
+          "volatility_regime_variance_preservation": 0.9999999851542725,
+          "overall_quality": 0.9941451425761334
+        },
+        "computational_cost": "MEDIUM",
+        "model_compatibility": {
+          "LSTM": "EXCELLENT",
+          "CNN": "GOOD",
+          "Transformer": "GOOD"
+        },
+        "domain_appropriateness": "EXCELLENT",
+        "overall_score": 0.818
+      },
+      "domain_specific": {
+        "strategy_name": "domain_specific",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.9677204296238412,
+          "close_price_AAPL_variance_preservation": 0.9717036274998556,
+          "close_price_TSLA_mean_preservation": 0.984559132699895,
+          "close_price_TSLA_variance_preservation": 0.985776994581405,
+          "rsi_AAPL_mean_preservation": 0.985294552515843,
+          "rsi_AAPL_variance_preservation": 0.9753334412965701,
+          "rsi_TSLA_mean_preservation": 0.9937452339303255,
+          "rsi_TSLA_variance_preservation": 0.9854270321596419,
+          "macd_AAPL_mean_preservation": 0.9942057824120968,
+          "macd_AAPL_variance_preservation": 0.967682979892826,
+          "macd_TSLA_mean_preservation": 0.9803073845858769,
+          "macd_TSLA_variance_preservation": 0.9983145039234332,
+          "momentum_20d_AAPL_mean_preservation": 0.9981639198178046,
+          "momentum_20d_AAPL_variance_preservation": 0.9801449158795832,
+          "momentum_20d_TSLA_mean_preservation": 0.997545791826035,
+          "momentum_20d_TSLA_variance_preservation": 0.9802751910395222,
+          "volatility_20d_AAPL_mean_preservation": 0.9796200501394826,
+          "volatility_20d_AAPL_variance_preservation": 0.9996478284907491,
+          "volatility_20d_TSLA_mean_preservation": 0.9791093239026878,
+          "volatility_20d_TSLA_variance_preservation": 0.9986158460924571,
+          "sector_AAPL_momentum_mean_preservation": 0.9985876658146516,
+          "sector_AAPL_momentum_variance_preservation": 0.9800767772045108,
+          "sector_AAPL_volatility_mean_preservation": 0.9808090742795551,
+          "sector_AAPL_volatility_variance_preservation": 0.9980441091591391,
+          "sector_TSLA_momentum_mean_preservation": 0.9966679488917054,
+          "sector_TSLA_momentum_variance_preservation": 0.9805238761230988,
+          "sector_TSLA_volatility_mean_preservation": 0.9802016418520344,
+          "sector_TSLA_volatility_variance_preservation": 0.9992058745787017,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 0.9743880948389264,
+          "volatility_regime_variance_preservation": 0.9879912773281981,
+          "overall_quality": 0.9883247186631893
+        },
+        "computational_cost": "MEDIUM",
+        "model_compatibility": {
+          "LSTM": "EXCELLENT",
+          "CNN": "EXCELLENT",
+          "Transformer": "EXCELLENT"
+        },
+        "domain_appropriateness": "EXCELLENT",
+        "overall_score": 0.855
+      },
+      "hybrid_strategy": {
+        "strategy_name": "hybrid_strategy",
+        "status": "success",
+        "data_quality_metrics": {
+          "completeness": 1.0,
+          "close_price_AAPL_mean_preservation": 0.9677204296238412,
+          "close_price_AAPL_variance_preservation": 0.9717036274998556,
+          "close_price_TSLA_mean_preservation": 0.984559132699895,
+          "close_price_TSLA_variance_preservation": 0.985776994581405,
+          "rsi_AAPL_mean_preservation": 0.985294552515843,
+          "rsi_AAPL_variance_preservation": 0.9753334412965701,
+          "rsi_TSLA_mean_preservation": 0.9937452339303255,
+          "rsi_TSLA_variance_preservation": 0.9854270321596419,
+          "macd_AAPL_mean_preservation": 0.9942057824120968,
+          "macd_AAPL_variance_preservation": 0.967682979892826,
+          "macd_TSLA_mean_preservation": 0.9803073845858769,
+          "macd_TSLA_variance_preservation": 0.9983145039234332,
+          "momentum_20d_AAPL_mean_preservation": 0.9863063796553173,
+          "momentum_20d_AAPL_variance_preservation": 0.9891770036370312,
+          "momentum_20d_TSLA_mean_preservation": 0.9867595898434733,
+          "momentum_20d_TSLA_variance_preservation": 0.988578474103499,
+          "volatility_20d_AAPL_mean_preservation": 0.9913627681779064,
+          "volatility_20d_AAPL_variance_preservation": 0.9836389627207954,
+          "volatility_20d_TSLA_mean_preservation": 0.9920119105764156,
+          "volatility_20d_TSLA_variance_preservation": 0.983109692364174,
+          "sector_AAPL_momentum_mean_preservation": 0.9776633046120873,
+          "sector_AAPL_momentum_variance_preservation": 0.9955667526670517,
+          "sector_AAPL_volatility_mean_preservation": 0.9811696118348104,
+          "sector_AAPL_volatility_variance_preservation": 0.9973717394117337,
+          "sector_TSLA_momentum_mean_preservation": 0.9812246080876479,
+          "sector_TSLA_momentum_variance_preservation": 0.9972698394250432,
+          "sector_TSLA_volatility_mean_preservation": 0.9846361474045543,
+          "sector_TSLA_volatility_variance_preservation": 0.9915578029046002,
+          "correlation_AAPL_TSLA_mean_preservation": 1.0,
+          "correlation_AAPL_TSLA_variance_preservation": 0.9999999271668386,
+          "spread_AAPL_TSLA_mean_preservation": 1.0,
+          "spread_AAPL_TSLA_variance_preservation": 0.9999999999961582,
+          "market_volatility_mean_preservation": 1.0,
+          "market_volatility_variance_preservation": 0.9999996423313614,
+          "volatility_regime_mean_preservation": 0.976874687573011,
+          "volatility_regime_variance_preservation": 0.9938278820409513,
+          "overall_quality": 0.9880049394904464
+        },
+        "computational_cost": "HIGH",
+        "model_compatibility": {
+          "LSTM": "EXCELLENT",
+          "CNN": "EXCELLENT",
+          "Transformer": "EXCELLENT"
+        },
+        "domain_appropriateness": "EXCELLENT",
+        "overall_score": 0.835
+      }
+    },
+    "recommendations": {
+      "top_strategies": [
+        "domain_specific",
+        "forward_fill",
+        "hybrid_strategy"
+      ],
+      "lstm_specific": [
+        "forward_fill",
+        "linear_interpolation",
+        "domain_specific"
+      ],
+      "cnn_specific": [
+        "knn_imputation",
+        "iterative_imputation",
+        "domain_specific"
+      ],
+      "transformer_specific": [
+        "knn_imputation",
+        "iterative_imputation",
+        "domain_specific"
+      ],
+      "production_ready": [
+        "domain_specific",
+        "forward_fill",
+        "linear_interpolation"
+      ],
+      "development_phase": [
+        "domain_specific",
+        "forward_fill",
+        "hybrid_strategy"
+      ]
+    }
+  },
+  "timestamp": "2025-08-19T16:27:55.182184"
+}
