@@ -233,7 +233,7 @@ class UniversalTrainer:
         
         return combined_df.values
     
-    def _validate_feature_dimensions(self, features_df: pd.DataFrame, context: str, expected_total: int = 178) -> bool:
+    def _validate_feature_dimensions(self, features_df: pd.DataFrame, context: str, expected_total: int = 184) -> bool:
         """
         Comprehensive feature count validation to ensure consistent dimensions across all training phases.
         
@@ -480,10 +480,50 @@ class UniversalTrainer:
             symbol_embedding_count = len(self.symbol_to_id) + 1  # symbol_id + one-hot encodings
             total_features = total_individual_features + symbol_embedding_count + cross_symbol_count + regime_count + sector_count
             logger.info(f"[{symbol}] Total universal features: {total_features} (individual: {total_individual_features}, embeddings: {symbol_embedding_count}, cross: {cross_symbol_count}, regime: {regime_count}, sector: {sector_count})")
-            
+        
         except Exception as e:
             logger.warning(f"Failed to add universal features for {symbol}: {e}")
             logger.warning(f"Proceeding with individual features only for {symbol}")
+        
+        # Apply same symbol embedding exclusion logic as prepare_universal_dataset
+        # Define actual symbol embedding columns to exclude (not cross-symbol or market regime features)
+        symbol_embedding_cols = ['symbol_id'] + [col for col in symbol_df.columns if col.startswith('symbol_') and not any([
+            col.startswith('corr_'),
+            col.startswith('beta_'),
+            col.startswith('relative_strength_'),
+            col.startswith('market_dispersion_'),
+            col.startswith('market_volatility'),
+            col.startswith('vol_regime_'),
+            col.startswith('vol_trend'),
+            col.startswith('vol_correlation')
+        ])]
+        
+        # Keep all features except actual symbol embedding columns
+        feature_columns = [col for col in symbol_df.columns if col not in symbol_embedding_cols]
+        
+        # Log which columns are being excluded vs included for debugging
+        excluded_cols = [col for col in symbol_df.columns if col in symbol_embedding_cols]
+        cross_symbol_cols = [col for col in symbol_df.columns if any([
+            col.startswith('corr_'),
+            col.startswith('beta_'),
+            col.startswith('relative_strength_'),
+            col.startswith('market_dispersion_')
+        ])]
+        market_regime_cols = [col for col in symbol_df.columns if any([
+            col.startswith('market_volatility'),
+            col.startswith('vol_regime_'),
+            col.startswith('vol_trend'),
+            col.startswith('vol_correlation')
+        ])]
+        
+        logger.info(f"[{symbol}] Feature filtering results:")
+        logger.info(f"  - Excluded symbol embedding columns ({len(excluded_cols)}): {excluded_cols}")
+        logger.info(f"  - Included cross-symbol features ({len(cross_symbol_cols)}): {cross_symbol_cols}")
+        logger.info(f"  - Included market regime features ({len(market_regime_cols)}): {market_regime_cols}")
+        logger.info(f"  - Total feature columns kept: {len(feature_columns)}")
+        
+        # Filter to keep only non-symbol-embedding features
+        symbol_df = symbol_df[feature_columns]
         
         # Handle NaN values
         symbol_df = symbol_df.fillna(method='ffill').fillna(method='bfill').fillna(0)
@@ -491,17 +531,17 @@ class UniversalTrainer:
         # Replace infinite values
         symbol_df = symbol_df.replace([np.inf, -np.inf], [1e6, -1e6])
         
-        # Validate feature dimensions before returning
+        # Validate feature dimensions before returning (update expected_total to match training)
         validation_passed = self._validate_feature_dimensions(
             symbol_df, 
             f"Phase 2 Fine-tuning - {symbol}", 
-            expected_total=178
+            expected_total=184  # Updated to match training phase
         )
         
         if not validation_passed:
             logger.error(f"[{symbol}] Feature validation failed - proceeding with caution")
         
-        logger.info(f"[{symbol}] Final feature shape: {symbol_df.shape}")
+        logger.info(f"[{symbol}] Final feature shape after filtering: {symbol_df.shape}")
         return symbol_df.values
     
     def _extract_targets_from_market_data(self, market_data: pd.DataFrame, threshold: float = 0.001) -> np.ndarray:
@@ -622,12 +662,32 @@ class UniversalTrainer:
             logger.info(f"  - Total rows in X: {len(X)}")
             logger.info(f"  - Column names: {list(X.columns)}")
             
-            # Analyze feature types
-            technical_cols = [col for col in X.columns if not col.startswith(('symbol_', 'cross_', 'regime_', 'sector_')) and col != 'symbol_id']
+            # Analyze feature types with correct naming patterns
+            # Cross-symbol features: corr_, beta_, relative_strength_, market_dispersion_
+            cross_cols = [col for col in X.columns if any([
+                col.startswith('corr_'),
+                col.startswith('beta_'),
+                col.startswith('relative_strength_'),
+                col.startswith('market_dispersion_')
+            ])]
+            
+            # Market regime features: market_volatility, vol_regime_, vol_trend, vol_correlation
+            regime_cols = [col for col in X.columns if any([
+                col.startswith('market_volatility'),
+                col.startswith('vol_regime_'),
+                col.startswith('vol_trend'),
+                col.startswith('vol_correlation')
+            ])]
+            
+            # Symbol and sector features
             symbol_cols = [col for col in X.columns if col.startswith('symbol_') or col == 'symbol_id']
-            cross_cols = [col for col in X.columns if col.startswith('cross_')]
-            regime_cols = [col for col in X.columns if col.startswith('regime_')]
             sector_cols = [col for col in X.columns if col.startswith('sector_')]
+            
+            # Technical features: everything else except the above categories
+            excluded_prefixes = set()
+            for col in cross_cols + regime_cols + symbol_cols + sector_cols:
+                excluded_prefixes.add(col)
+            technical_cols = [col for col in X.columns if col not in excluded_prefixes]
             
             logger.info(f"  - Technical features: {len(technical_cols)} columns")
             logger.info(f"  - Symbol features: {len(symbol_cols)} columns")
