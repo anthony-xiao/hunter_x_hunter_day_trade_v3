@@ -1023,7 +1023,7 @@ class UniversalFeatureEngineering(FeatureEngineering):
             validation_passed = self._validate_feature_dimensions(
                 X, 
                 "Phase 1 Base Training", 
-                expected_total=178
+                expected_total=184
             )
             
             if not validation_passed:
@@ -1037,7 +1037,7 @@ class UniversalFeatureEngineering(FeatureEngineering):
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return pd.DataFrame(), pd.Series()
     
-    def _validate_feature_dimensions(self, features_df: pd.DataFrame, phase_name: str, expected_total: int = 178) -> bool:
+    def _validate_feature_dimensions(self, features_df: pd.DataFrame, phase_name: str, expected_total: int = 184) -> bool:
         """
         Validate feature dimensions and provide detailed breakdown.
         
