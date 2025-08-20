@@ -1,0 +1,15 @@
+Feature Comparison Report
+========================
+
+Supabase features: 155
+Our features: 156
+Missing features: 0
+Extra features: 1
+
+
+Extra Features:
+===============
+  - target
+
+All Missing Features:
+====================

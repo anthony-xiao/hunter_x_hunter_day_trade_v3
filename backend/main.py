@@ -1161,6 +1161,430 @@ async def get_trading_universe():
         logger.error(f"Error getting trading universe: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Universal training job management
+universal_training_jobs = {}
+
+@app.post("/models/universal/train")
+async def train_universal_models(
+    symbols: list[str] = Query(None, description="List of symbols to train on (optional, uses universe if not provided)"),
+    config: dict = None
+):
+    """Start universal model training with 3-phase strategy"""
+    try:
+        if not model_trainer:
+            raise HTTPException(status_code=500, detail="Model trainer not initialized")
+        
+        if not data_pipeline:
+            raise HTTPException(status_code=500, detail="Data pipeline not initialized")
+        
+        # Use trading universe if no symbols provided
+        if not symbols:
+            symbols = data_pipeline.get_ticker_universe()
+        
+        # Generate unique job ID
+        import uuid
+        job_id = str(uuid.uuid4())
+        
+        # Initialize job status
+        universal_training_jobs[job_id] = {
+            "status": "starting",
+            "phase": "initialization",
+            "progress": 0.0,
+            "symbols": symbols,
+            "start_time": datetime.now(timezone.utc),
+            "current_symbol": None,
+            "phase_details": {},
+            "error": None
+        }
+        
+        # Start training in background
+        asyncio.create_task(train_universal_models_background(job_id, symbols, config))
+        
+        return {
+            "status": "success",
+            "message": "Universal training started",
+            "job_id": job_id,
+            "symbols_count": len(symbols),
+            "estimated_duration_minutes": len(symbols) * 5  # Rough estimate
+        }
+        
+    except Exception as e:
+        logger.error(f"Error starting universal training: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/models/universal/train/{job_id}/status")
+async def get_universal_training_status(job_id: str):
+    """Get status of universal training job"""
+    try:
+        if job_id not in universal_training_jobs:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        job_status = universal_training_jobs[job_id]
+        
+        # Calculate elapsed time
+        elapsed_time = datetime.now(timezone.utc) - job_status["start_time"]
+        
+        return {
+            "job_id": job_id,
+            "status": job_status["status"],
+            "phase": job_status["phase"],
+            "progress": job_status["progress"],
+            "current_symbol": job_status["current_symbol"],
+            "symbols_total": len(job_status["symbols"]),
+            "elapsed_time_seconds": elapsed_time.total_seconds(),
+            "phase_details": job_status["phase_details"],
+            "error": job_status["error"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting training status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/models/universal/train/jobs")
+async def list_universal_training_jobs():
+    """List all universal training jobs"""
+    try:
+        jobs_summary = []
+        for job_id, job_data in universal_training_jobs.items():
+            elapsed_time = datetime.now(timezone.utc) - job_data["start_time"]
+            jobs_summary.append({
+                "job_id": job_id,
+                "status": job_data["status"],
+                "phase": job_data["phase"],
+                "progress": job_data["progress"],
+                "symbols_count": len(job_data["symbols"]),
+                "start_time": job_data["start_time"].isoformat(),
+                "elapsed_time_seconds": elapsed_time.total_seconds()
+            })
+        
+        return {"jobs": jobs_summary}
+        
+    except Exception as e:
+        logger.error(f"Error listing training jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/models/universal/status")
+async def get_universal_mode_status():
+    """Get universal mode status and configuration"""
+    try:
+        if not signal_generator:
+            raise HTTPException(status_code=500, detail="Signal generator not initialized")
+        
+        return {
+            "universal_mode_enabled": signal_generator.is_universal_mode,
+            "universal_models_loaded": bool(signal_generator.universal_models),
+            "universal_trainer_initialized": signal_generator.universal_trainer is not None,
+            "universal_architectures_initialized": signal_generator.universal_architectures is not None,
+            "universal_feature_engineering_initialized": signal_generator.universal_feature_engineering is not None,
+            "available_model_types": list(signal_generator.universal_models.keys()) if signal_generator.universal_models else [],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting universal mode status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/models/universal/enable")
+async def enable_universal_mode():
+    """Enable universal mode for signal generation"""
+    try:
+        if not signal_generator:
+            raise HTTPException(status_code=500, detail="Signal generator not initialized")
+        
+        # Try to initialize universal models if not already done
+        if not signal_generator.universal_models:
+            trading_symbols = data_pipeline.get_ticker_universe() if data_pipeline else []
+            success = await signal_generator.initialize_universal_models(trading_symbols)
+            
+            if not success:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Failed to initialize universal models. Please ensure universal models are trained first."
+                )
+        
+        signal_generator.is_universal_mode = True
+        logger.info("Universal mode enabled")
+        
+        return {
+            "status": "success",
+            "message": "Universal mode enabled successfully",
+            "universal_mode_enabled": True,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error enabling universal mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/models/universal/disable")
+async def disable_universal_mode():
+    """Disable universal mode and fall back to symbol-specific models"""
+    try:
+        if not signal_generator:
+            raise HTTPException(status_code=500, detail="Signal generator not initialized")
+        
+        signal_generator.is_universal_mode = False
+        logger.info("Universal mode disabled, falling back to symbol-specific models")
+        
+        return {
+            "status": "success",
+            "message": "Universal mode disabled, using symbol-specific models",
+            "universal_mode_enabled": False,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error disabling universal mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def train_universal_models_background(job_id: str, symbols: list[str], config: dict = None):
+    """Background task for universal model training with comprehensive pre-checks"""
+    try:
+        job_status = universal_training_jobs[job_id]
+        
+        # Phase 1: Comprehensive data and feature verification
+        job_status["status"] = "running"
+        job_status["phase"] = "data_verification"
+        job_status["progress"] = 0.05
+        
+        logger.info(f"Universal training job {job_id}: Starting comprehensive data verification for {len(symbols)} symbols")
+        
+        # Define date range for historical data
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=760)  # 2+ years of data
+        
+        all_data = {}
+        symbols_needing_data = []
+        symbols_needing_features = []
+        
+        # Step 1: Check existing market data for all symbols
+        for i, symbol in enumerate(symbols):
+            job_status["current_symbol"] = symbol
+            job_status["progress"] = 0.05 + (i / len(symbols)) * 0.15
+            
+            try:
+                # First, try to load existing data from database
+                historical_data = await data_pipeline.load_market_data(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                
+                # Check if data is sufficient
+                if historical_data is None or len(historical_data) < 100:
+                    logger.info(f"Insufficient market data for {symbol}, will download: {len(historical_data) if historical_data is not None else 0} records")
+                    symbols_needing_data.append(symbol)
+                else:
+                    all_data[symbol] = historical_data
+                    logger.info(f"Sufficient market data for {symbol}: {len(historical_data)} records")
+                    
+            except Exception as e:
+                logger.error(f"Error checking market data for {symbol}: {e}")
+                symbols_needing_data.append(symbol)
+        
+        # Step 2: Download missing market data
+        if symbols_needing_data:
+            job_status["phase"] = "downloading_market_data"
+            job_status["progress"] = 0.2
+            logger.info(f"Downloading market data for {len(symbols_needing_data)} symbols: {symbols_needing_data}")
+            
+            for i, symbol in enumerate(symbols_needing_data):
+                job_status["current_symbol"] = symbol
+                job_status["progress"] = 0.2 + (i / len(symbols_needing_data)) * 0.15
+                
+                try:
+                    logger.info(f"Downloading historical data for {symbol}...")
+                    historical_data = await data_pipeline.download_historical_data(
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date
+                    )
+                    
+                    if historical_data is not None and isinstance(historical_data, pd.DataFrame) and not historical_data.empty and len(historical_data) >= 100:
+                        all_data[symbol] = historical_data
+                        logger.info(f"Successfully downloaded {len(historical_data)} records for {symbol}")
+                    else:
+                        data_len = len(historical_data) if historical_data is not None and isinstance(historical_data, pd.DataFrame) and not historical_data.empty else 0
+                        logger.warning(f"Failed to download sufficient data for {symbol}: {data_len} records")
+                        
+                except Exception as e:
+                    logger.error(f"Error downloading data for {symbol}: {e}")
+                    continue
+        
+        # Step 3: Check feature coverage for all symbols with data
+        if feature_engineer:
+            job_status["phase"] = "feature_verification"
+            job_status["progress"] = 0.35
+            logger.info(f"Checking feature coverage for {len(all_data)} symbols")
+            
+            for i, symbol in enumerate(all_data.keys()):
+                job_status["current_symbol"] = symbol
+                job_status["progress"] = 0.35 + (i / len(all_data)) * 0.1
+                
+                try:
+                    # Check which timestamps already have features
+                    existing_timestamps = await data_pipeline.check_existing_features(
+                        symbol=symbol,
+                        start_time=start_date,
+                        end_time=end_date
+                    )
+                    
+                    total_timestamps = len(all_data[symbol])
+                    existing_count = len(existing_timestamps)
+                    coverage_percentage = (existing_count / total_timestamps * 100) if total_timestamps > 0 else 0
+                    
+                    logger.info(f"Feature coverage for {symbol}: {existing_count}/{total_timestamps} ({coverage_percentage:.1f}%)")
+                    
+                    # Mark symbols needing feature engineering if coverage < 95%
+                    if coverage_percentage < 95.0:
+                        symbols_needing_features.append(symbol)
+                        logger.info(f"Symbol {symbol} needs feature engineering (coverage: {coverage_percentage:.1f}%)")
+                    
+                except Exception as e:
+                    logger.error(f"Error checking feature coverage for {symbol}: {e}")
+                    symbols_needing_features.append(symbol)
+        
+        # Step 4: Engineer missing features
+        if symbols_needing_features and feature_engineer:
+            job_status["phase"] = "feature_engineering"
+            job_status["progress"] = 0.45
+            logger.info(f"Engineering features for {len(symbols_needing_features)} symbols: {symbols_needing_features}")
+            
+            for i, symbol in enumerate(symbols_needing_features):
+                job_status["current_symbol"] = symbol
+                job_status["progress"] = 0.45 + (i / len(symbols_needing_features)) * 0.2
+                
+                try:
+                    logger.info(f"Engineering features for {symbol}...")
+                    # Engineer features with training mode
+                    feature_set = await feature_engineer.engineer_features(
+                        symbol, start_date, end_date, training_mode=True
+                    )
+                    
+                    if feature_set is not None and not feature_set.technical_features.empty:
+                        # Combine all feature DataFrames
+                        combined_features = pd.concat([
+                            feature_set.technical_features,
+                            feature_set.market_microstructure,
+                            feature_set.sentiment_features,
+                            feature_set.macro_features,
+                            feature_set.cross_asset_features,
+                            feature_set.engineered_features
+                        ], axis=1)
+                        
+                        # Add basic OHLCV data if not already present
+                        if 'open' not in combined_features.columns:
+                            basic_data = all_data[symbol][['open', 'high', 'low', 'close', 'volume']]
+                            combined_features = pd.concat([basic_data, combined_features], axis=1)
+                        
+                        # Update data with engineered features
+                        all_data[symbol] = combined_features
+                        
+                        # Save engineered features to database
+                        if not combined_features.empty:
+                            # Ensure proper timezone handling
+                            if hasattr(combined_features.index, 'tz_localize'):
+                                if combined_features.index.tz is None:
+                                    combined_features.index = combined_features.index.tz_localize('UTC')
+                                elif combined_features.index.tz != timezone.utc:
+                                    combined_features.index = combined_features.index.tz_convert('UTC')
+                            
+                            # Save to database using batch processing
+                            await data_pipeline.store_features_batch(symbol, combined_features)
+                            logger.info(f"Successfully engineered and saved {len(combined_features.columns)} features for {symbol}")
+                    
+                except Exception as e:
+                    logger.error(f"Error engineering features for {symbol}: {e}")
+                    continue
+        
+        # Verify we have sufficient data after all pre-checks
+        if not all_data:
+            job_status["status"] = "failed"
+            job_status["error"] = "No valid data available for any symbols after comprehensive verification"
+            return
+        
+        logger.info(f"Data verification completed. Proceeding with universal training for {len(all_data)} symbols")
+        
+        # Phase 2: Universal data preparation using correct method
+        job_status["phase"] = "universal_data_preparation"
+        job_status["progress"] = 0.65
+        job_status["current_symbol"] = None
+        
+        logger.info(f"Universal training job {job_id}: Preparing universal dataset")
+        
+        # Use the correct universal data loading method
+        try:
+            universal_data = await data_pipeline.load_universal_data(
+                symbols=list(all_data.keys()),
+                start_date=start_date,
+                end_date=end_date
+            )
+            if universal_data is None or len(universal_data) == 0:
+                # Fallback to using our pre-verified data
+                logger.info("Using pre-verified symbol data for universal training")
+                universal_data = all_data
+        except Exception as e:
+            logger.warning(f"Error with load_universal_data, using pre-verified data: {e}")
+            universal_data = all_data
+        
+        # Phase 3: Universal model training
+        job_status["phase"] = "universal_training"
+        job_status["progress"] = 0.7
+        
+        logger.info(f"Universal training job {job_id}: Starting universal model training")
+        
+        # Initialize universal training
+        model_trainer.initialize_universal_training(list(universal_data.keys()))
+        
+        # Train universal models
+        training_result = await model_trainer.train_universal_models(
+            symbols=list(universal_data.keys()),
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        job_status["phase_details"]["universal_training"] = {
+            "models_trained": training_result.models_trained if training_result else [],
+            "training_metrics": training_result.training_metrics if training_result else {}
+        }
+        
+        # Phase 4: Model validation and saving
+        job_status["phase"] = "validation_and_saving"
+        job_status["progress"] = 0.9
+        
+        logger.info(f"Universal training job {job_id}: Validating and saving models")
+        
+        # Save universal models
+        if training_result and training_result.success:
+            await model_trainer.save_universal_models()
+            
+            job_status["status"] = "completed"
+            job_status["progress"] = 1.0
+            job_status["phase_details"]["completion"] = {
+                "models_saved": True,
+                "completion_time": datetime.now(timezone.utc).isoformat(),
+                "symbols_trained": len(universal_data),
+                "data_verification_summary": {
+                    "symbols_downloaded_data": len(symbols_needing_data),
+                    "symbols_engineered_features": len(symbols_needing_features)
+                }
+            }
+            
+            logger.info(f"Universal training job {job_id}: Completed successfully")
+        else:
+            job_status["status"] = "failed"
+            job_status["error"] = "Universal training failed"
+            logger.error(f"Universal training job {job_id}: Failed")
+        
+    except Exception as e:
+        logger.error(f"Universal training job {job_id} failed: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        
+        job_status["status"] = "failed"
+        job_status["error"] = str(e)
+        job_status["phase_details"]["error_details"] = traceback.format_exc()
+
 @app.get("/data/status")
 async def get_data_status():
     """Get data pipeline status"""

@@ -1599,7 +1599,7 @@ class ExecutionEngine:
             readiness_checks = {
                 'walk_forward_test': walk_forward_results.get('system_readiness', {}).get('ready_for_live_trading', False) if walk_forward_results else False,
                 'current_performance': current_validation.passed if current_validation else False,
-                'drift_status': not any(metrics.get('drift_detected', False) for metrics in drift_check.values()),
+                'drift_status': not any(metrics.drift_detected for metrics in drift_check.values()),
                 'infrastructure': infrastructure_check,
                 'risk_management': risk_check,
                 'data_pipeline': data_check
@@ -1666,7 +1666,7 @@ class ExecutionEngine:
                 scores.append(0.3)
             
             # Drift score
-            drift_detected = any(metrics.get('drift_detected', False) for metrics in drift_results.values())
+            drift_detected = any(metrics.drift_detected for metrics in drift_results.values())
             scores.append(0.2 if drift_detected else 1.0)
             
             return sum(scores) / len(scores)

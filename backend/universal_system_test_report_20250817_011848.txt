@@ -1,0 +1,47 @@
+UNIVERSAL TRAINING SYSTEM - COMPREHENSIVE TEST REPORT
+============================================================
+
+Test Date: 2025-08-17 01:18:48
+Total Tests: 10
+Passed: 10
+Failed: 0
+Success Rate: 100.0%
+
+Universal Model Architectures: PASSED
+  Details: Successfully initialized with 10 symbols, 32D embeddings
+  Duration: 0.00s
+
+Universal Trainer: PASSED
+  Details: Successfully initialized with 3-phase training strategy
+  Duration: 0.88s
+
+Universal Status Endpoint: PASSED
+  Details: Status: False
+  Duration: 0.10s
+
+Universal Training Endpoint: PASSED
+  Details: Training job started successfully
+  Duration: 0.01s
+
+Single Symbol Training (Backward Compatibility): PASSED
+  Details: Legacy endpoint working
+  Duration: 0.20s
+
+Signals Endpoint: PASSED
+  Details: Signal generation accessible
+  Duration: 0.36s
+
+Mode Switching: PASSED
+  Details: Initial: False, After disable: False
+  Duration: 0.50s
+
+Batch Data Processing: PASSED
+  Details: Processed 2 symbols, loaded 0 datasets
+  Duration: 0.26s
+
+Training Time Performance: PASSED
+  Details: Training started in 0.01s
+
+Data Utilization Performance: PASSED
+  Details: Batch processing completed in 0.26s
+

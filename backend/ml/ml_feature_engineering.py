@@ -200,16 +200,26 @@ class FeatureEngineering:
         try:
             all_data = []
             page_size = 1000  # Supabase hard limit
-            current_start = start_date
             
-            while current_start < end_date:
+            # Ensure all datetime objects are timezone-aware UTC for consistent comparison
+            if start_date.tzinfo is None:
+                current_start = start_date.replace(tzinfo=timezone.utc)
+            else:
+                current_start = start_date.astimezone(timezone.utc)
+                
+            if end_date.tzinfo is None:
+                end_date_utc = end_date.replace(tzinfo=timezone.utc)
+            else:
+                end_date_utc = end_date.astimezone(timezone.utc)
+            
+            while current_start < end_date_utc:
                 # Query market data using timestamp-based pagination
                 response = self.supabase.table('market_data').select(
                     'timestamp, open, high, low, close, volume, vwap, transactions'
                 ).eq('symbol', symbol).gte(
                     'timestamp', current_start.isoformat()
                 ).lte(
-                    'timestamp', end_date.isoformat()
+                    'timestamp', end_date_utc.isoformat()
                 ).order('timestamp').limit(page_size).execute()
                 
                 if not response.data:
@@ -223,6 +233,11 @@ class FeatureEngineering:
                 
                 # Update current_start to the timestamp after the last record
                 last_timestamp = pd.to_datetime(response.data[-1]['timestamp'])
+                # Ensure timezone-aware UTC datetime for consistent comparison
+                if last_timestamp.tz is None:
+                    last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+                else:
+                    last_timestamp = last_timestamp.astimezone(timezone.utc)
                 current_start = last_timestamp + timedelta(microseconds=1)
             
             if not all_data:
@@ -232,6 +247,11 @@ class FeatureEngineering:
             # Convert to DataFrame
             df = pd.DataFrame(all_data)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Ensure timezone-aware UTC timestamps for consistency
+            if df['timestamp'].dt.tz is None:
+                df['timestamp'] = df['timestamp'].dt.tz_localize('UTC')
+            else:
+                df['timestamp'] = df['timestamp'].dt.tz_convert('UTC')
             df.set_index('timestamp', inplace=True)
             
             # Convert to numeric
@@ -251,6 +271,17 @@ class FeatureEngineering:
         """Engineer comprehensive technical indicators"""
         try:
             features = pd.DataFrame(index=data.index)
+            
+            # Include basic OHLCV features first
+            features['open'] = data['open']
+            features['high'] = data['high']
+            features['low'] = data['low']
+            features['close'] = data['close']
+            features['volume'] = data['volume']
+            
+            # Create target: predict if next period's close will be higher than current close
+            # This is required for universal training data preparation
+            features['target'] = (data['close'].shift(-1) > data['close']).astype(int)
             
             # Price-based features
             features['returns'] = data['close'].pct_change()

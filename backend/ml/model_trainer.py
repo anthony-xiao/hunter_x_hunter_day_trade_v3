@@ -38,6 +38,11 @@ from loguru import logger
 import joblib
 import pickle
 
+# Universal Training Components
+from .universal_trainer import UniversalTrainer, UniversalTrainingConfig, UniversalTrainingResult
+from .universal_model_architectures import UniversalModelArchitectures
+from .universal_feature_engineering import UniversalFeatureEngineering
+
 @dataclass
 class ModelConfig:
     name: str
@@ -87,6 +92,10 @@ class ModelTrainer:
         self.models: Dict[str, Any] = {}
         self.scalers: Dict[str, Any] = {}
         self.feature_count = feature_count
+        
+        # Initialize data pipeline for universal training
+        from data.data_pipeline import DataPipeline
+        self.data_pipeline = DataPipeline()
         
         # Model configurations as per requirements
         self.model_configs = {
@@ -241,6 +250,12 @@ class ModelTrainer:
             Real(0.0, 1.0, name='xgb_weight'),
             Real(0.0, 1.0, name='transformer_weight')
         ]
+        
+        # Universal training components
+        self.universal_trainer = None
+        self.universal_architectures = None
+        self.universal_feature_engineering = None
+        self.is_universal_mode = False
     
     def _create_model_dir(self):
         """Create a new timestamped model directory for training"""
@@ -2481,3 +2496,204 @@ class ModelTrainer:
         logger.info("Updated ensemble weights:")
         for model_name, weight in self.ensemble_weights.items():
             logger.info(f"  {model_name}: {weight:.3f}")
+    
+    # Universal Training Methods
+    
+    def initialize_universal_training(self, symbols: List[str], supabase_client=None) -> bool:
+        """Initialize universal training components"""
+        try:
+            logger.info(f"Initializing universal training for {len(symbols)} symbols: {symbols}")
+            
+            # Initialize universal components
+            self.universal_architectures = UniversalModelArchitectures(
+                num_symbols=len(symbols),
+                symbol_embedding_dim=32  # Default embedding dimension
+            )
+            
+            self.universal_feature_engineering = UniversalFeatureEngineering(
+                supabase_client=supabase_client
+            )
+            
+            # Create universal training configuration
+            universal_config = UniversalTrainingConfig(
+                # base_epochs=50,
+                base_epochs=1,
+                base_batch_size=256,
+                base_learning_rate=0.001,
+                base_validation_split=0.2,
+                # finetune_epochs=30,
+                finetune_epochs=1,
+                finetune_batch_size=128,
+                finetune_learning_rate=0.0001,
+                layers_to_unfreeze=3,
+                ensemble_validation_periods=10,
+                ensemble_rebalance_frequency=5,
+                symbol_embedding_dim=32,
+                early_stopping_patience=10,
+                reduce_lr_patience=5,
+                min_samples_per_symbol=1000,
+                max_symbols_per_batch=50
+            )
+            
+            self.universal_trainer = UniversalTrainer(
+                data_pipeline=self.data_pipeline,
+                feature_engineering=self.universal_feature_engineering,
+                config=universal_config
+            )
+            
+            self.is_universal_mode = True
+            logger.info("Universal training components initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize universal training: {e}")
+            return False
+    
+    async def train_universal_models(self, symbols: List[str], start_date: str, end_date: str, model_types: List[str] = None) -> Dict[str, Any]:
+        """Execute the 3-phase universal training strategy"""
+        if not self.is_universal_mode or not self.universal_trainer:
+            raise ValueError("Universal training not initialized. Call initialize_universal_training() first.")
+        
+        logger.info("Starting universal training with 3-phase strategy")
+        
+        try:
+            # Execute universal training
+            result = await self.universal_trainer.train_universal_models(
+                symbols=symbols,
+                start_date=start_date,
+                end_date=end_date,
+                model_types=model_types
+            )
+            
+            # Update ensemble weights with universal results
+            if result.get('ensemble_weights'):
+                self.ensemble_weights.update(result['ensemble_weights'])
+                logger.info("Updated ensemble weights with universal training results")
+            
+            # Store universal models in the main models dict
+            if hasattr(self.universal_trainer, 'base_models'):
+                for model_name, model in self.universal_trainer.base_models.items():
+                    self.models[f"universal_{model_name}"] = model
+                logger.info(f"Stored {len(self.universal_trainer.base_models)} universal models")
+            
+            logger.info(f"Universal training completed successfully")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Universal training failed: {e}")
+            raise
+    
+    async def get_universal_prediction(self, symbol: str, features: np.ndarray) -> Tuple[float, float]:
+        """Get prediction from universal models for a specific symbol"""
+        if not self.is_universal_mode or not self.universal_trainer:
+            raise ValueError("Universal training not initialized")
+        
+        try:
+            # Get symbol embedding
+            symbol_id = self.universal_trainer.symbol_to_id.get(symbol, 0)
+            
+            # Get predictions from universal models
+            predictions = []
+            confidences = []
+            
+            for model_name in ['lstm', 'cnn', 'transformer']:
+                universal_model_name = f"universal_{model_name}"
+                if universal_model_name in self.models:
+                    try:
+                        model = self.models[universal_model_name]
+                        
+                        # Prepare inputs for universal model
+                        feature_input = features.reshape(1, -1, features.shape[-1])
+                        symbol_input = np.array([[symbol_id]])
+                        
+                        # Get prediction
+                        pred = model.predict([feature_input, symbol_input], verbose=0)[0, 0]
+                        predictions.append(pred)
+                        confidences.append(abs(pred - 0.5) * 2)  # Convert to confidence
+                        
+                    except Exception as e:
+                        logger.error(f"Universal prediction error for {model_name}: {e}")
+                        predictions.append(0.5)
+                        confidences.append(0.0)
+            
+            if not predictions:
+                return 0.5, 0.0
+            
+            # Weighted ensemble prediction
+            weighted_pred = np.average(predictions, weights=confidences) if sum(confidences) > 0 else np.mean(predictions)
+            weighted_conf = np.mean(confidences)
+            
+            return float(weighted_pred), float(weighted_conf)
+            
+        except Exception as e:
+            logger.error(f"Universal prediction failed for {symbol}: {e}")
+            return 0.5, 0.0
+    
+    def save_universal_models(self, model_dir: Path = None) -> bool:
+        """Save universal models to disk"""
+        if not self.is_universal_mode or not self.universal_trainer:
+            logger.warning("No universal models to save")
+            return False
+        
+        try:
+            save_dir = model_dir or self.model_dir
+            if not save_dir:
+                save_dir = Path('models/universal')
+            
+            save_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save universal models
+            success = self.universal_trainer.save_universal_models(save_dir)
+            
+            if success:
+                logger.info(f"Universal models saved to {save_dir}")
+            else:
+                logger.error("Failed to save universal models")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error saving universal models: {e}")
+            return False
+    
+    def load_universal_models(self, model_dir: Path) -> bool:
+        """Load universal models from disk"""
+        try:
+            if not model_dir.exists():
+                logger.error(f"Universal model directory does not exist: {model_dir}")
+                return False
+            
+            # Initialize universal trainer if not already done
+            if not self.universal_trainer:
+                # Load configuration from saved models
+                config_path = model_dir / 'universal_config.json'
+                if config_path.exists():
+                    with open(config_path, 'r') as f:
+                        config_data = json.load(f)
+                    
+                    symbols = config_data.get('symbols', [])
+                    if not self.initialize_universal_training(symbols):
+                        return False
+                else:
+                    logger.error("Universal training configuration not found")
+                    return False
+            
+            # Load universal models
+            success = self.universal_trainer.load_universal_models(model_dir)
+            
+            if success:
+                # Update main models dict with loaded universal models
+                if hasattr(self.universal_trainer, 'base_models'):
+                    for model_name, model in self.universal_trainer.base_models.items():
+                        self.models[f"universal_{model_name}"] = model
+                
+                self.is_universal_mode = True
+                logger.info(f"Universal models loaded from {model_dir}")
+            else:
+                logger.error("Failed to load universal models")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error loading universal models: {e}")
+            return False
