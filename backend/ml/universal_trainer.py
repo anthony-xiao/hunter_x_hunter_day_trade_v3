@@ -233,7 +233,7 @@ class UniversalTrainer:
         
         return combined_df.values
     
-    def _validate_feature_dimensions(self, features_df: pd.DataFrame, context: str, expected_total: int = 184) -> bool:
+    def _validate_feature_dimensions(self, features_df: pd.DataFrame, context: str, expected_total: int = 262) -> bool:
         """
         Comprehensive feature count validation to ensure consistent dimensions across all training phases.
         
@@ -281,8 +281,11 @@ class UniversalTrainer:
             ])
         )]
         
-        # Technical features: everything else
-        special_feature_cols = set(cross_cols + regime_cols + sector_cols + symbol_cols)
+        # Target feature should not be classified as technical
+        target_cols = [col for col in features_df.columns if col == 'target']
+        
+        # Technical features: everything else (excluding target)
+        special_feature_cols = set(cross_cols + regime_cols + sector_cols + symbol_cols + target_cols)
         technical_cols = [col for col in features_df.columns if col not in special_feature_cols]
         
         total_features = len(features_df.columns)
@@ -294,6 +297,7 @@ class UniversalTrainer:
         logger.info(f"    • Cross-symbol features: {len(cross_cols)}")
         logger.info(f"    • Market regime features: {len(regime_cols)}")
         logger.info(f"    • Sector features: {len(sector_cols)}")
+        logger.info(f"    • Target features: {len(target_cols)}")
         logger.info(f"    • TOTAL: {total_features}")
         
         # Log detailed feature column names for debugging
@@ -303,9 +307,10 @@ class UniversalTrainer:
         logger.info(f"    Cross-symbol columns ({len(cross_cols)}): {cross_cols}")
         logger.info(f"    Market regime columns ({len(regime_cols)}): {regime_cols}")
         logger.info(f"    Sector columns ({len(sector_cols)}): {sector_cols}")
+        logger.info(f"    Target columns ({len(target_cols)}): {target_cols}")
         
         # Check for any unclassified columns
-        all_classified = technical_cols + symbol_cols + cross_cols + regime_cols + sector_cols
+        all_classified = technical_cols + symbol_cols + cross_cols + regime_cols + sector_cols + target_cols
         unclassified = [col for col in features_df.columns if col not in all_classified]
         if unclassified:
             logger.warning(f"    ⚠️  Unclassified columns ({len(unclassified)}): {unclassified}")
@@ -322,6 +327,56 @@ class UniversalTrainer:
         if total_features != expected_total:
             logger.error(f"  ❌ FEATURE COUNT MISMATCH: Got {total_features}, expected {expected_total}")
             logger.error(f"     Difference: {total_features - expected_total} features")
+            
+            # Enhanced feature comparison logging
+            logger.error(f"  🔍 DETAILED FEATURE ANALYSIS:")
+            logger.error(f"     Expected vs Received by Category:")
+            
+            # Define expected counts based on typical training configuration
+            expected_technical = 120  # Typical technical feature count
+            expected_symbol = 0       # Symbol embeddings excluded during training
+            expected_cross = 15       # Cross-symbol features
+            expected_regime = 49      # Market regime features
+            expected_sector = 0       # Sector features (if any)
+            
+            logger.error(f"       • Technical: {len(technical_cols)} (expected ~{expected_technical})")
+            logger.error(f"       • Symbol: {len(symbol_cols)} (expected {expected_symbol})")
+            logger.error(f"       • Cross-symbol: {len(cross_cols)} (expected ~{expected_cross})")
+            logger.error(f"       • Market regime: {len(regime_cols)} (expected ~{expected_regime})")
+            logger.error(f"       • Sector: {len(sector_cols)} (expected {expected_sector})")
+            
+            # Log sample column names for each category
+            logger.error(f"     Sample Column Names by Category:")
+            if technical_cols:
+                logger.error(f"       • Technical samples: {technical_cols[:5]}")
+            if symbol_cols:
+                logger.error(f"       • Symbol samples: {symbol_cols[:5]}")
+            if cross_cols:
+                logger.error(f"       • Cross-symbol samples: {cross_cols[:5]}")
+            if regime_cols:
+                logger.error(f"       • Market regime samples: {regime_cols[:5]}")
+            if sector_cols:
+                logger.error(f"       • Sector samples: {sector_cols[:5]}")
+            if unclassified:
+                logger.error(f"       • Unclassified samples: {unclassified[:5]}")
+            
+            # Identify potential discrepancies
+            if len(symbol_cols) > 0:
+                logger.error(f"     ⚠️  POTENTIAL ISSUE: Symbol embeddings found but should be excluded during training")
+            
+            if len(cross_cols) == 0:
+                logger.error(f"     ⚠️  POTENTIAL ISSUE: No cross-symbol features found - check universal feature engineering")
+            
+            if len(regime_cols) == 0:
+                logger.error(f"     ⚠️  POTENTIAL ISSUE: No market regime features found - check universal feature engineering")
+            
+            # Log all column names for complete debugging
+            all_columns = list(features_df.columns)
+            logger.error(f"     Complete Column List ({len(all_columns)} total):")
+            for i in range(0, len(all_columns), 10):
+                batch = all_columns[i:i+10]
+                logger.error(f"       [{i+1}-{min(i+10, len(all_columns))}]: {batch}")
+            
             validation_passed = False
         else:
             logger.info(f"  ✅ FEATURE COUNT VALIDATED: {total_features} features match expected {expected_total}")
@@ -372,6 +427,7 @@ class UniversalTrainer:
             logger.info(f"    • Cross-symbol: {len(cross_cols)/total_features*100:.1f}%")
             logger.info(f"    • Market regime: {len(regime_cols)/total_features*100:.1f}%")
             logger.info(f"    • Sector: {len(sector_cols)/total_features*100:.1f}%")
+            logger.info(f"    • Target: {len(target_cols)/total_features*100:.1f}%")
         
         return validation_passed
 
@@ -445,11 +501,14 @@ class UniversalTrainer:
         # We need to engineer these universal features for the specific time period
         try:
             # Get universal features for this time period
+            # Use training_mode=True to ensure sufficient historical data for all features
+            # including sma_100, sma_200, and other long-period indicators
+            # Use all symbols for cross-symbol and sector features (same as training)
             universal_features = await self.feature_engineering.engineer_universal_features(
-                symbols=[symbol],  # Only this symbol, but we'll get universal features
+                symbols=list(self.symbol_to_id.keys()),  # Use all symbols for consistent cross-symbol/sector features
                 start_date=start_date,
                 end_date=end_date,
-                training_mode=False  # Fine-tuning mode
+                training_mode=True  # Use training mode to ensure full feature generation
             )
             
             # Add cross-symbol features if available
@@ -477,7 +536,7 @@ class UniversalTrainer:
                 logger.info(f"[{symbol}] Added {sector_count} sector features")
             
             # Calculate total features
-            symbol_embedding_count = len(self.symbol_to_id) + 1  # symbol_id + one-hot encodings
+            symbol_embedding_count = 1  # Only symbol_id (matching training phase)
             total_features = total_individual_features + symbol_embedding_count + cross_symbol_count + regime_count + sector_count
             logger.info(f"[{symbol}] Total universal features: {total_features} (individual: {total_individual_features}, embeddings: {symbol_embedding_count}, cross: {cross_symbol_count}, regime: {regime_count}, sector: {sector_count})")
         
@@ -487,19 +546,23 @@ class UniversalTrainer:
         
         # Apply same symbol embedding exclusion logic as prepare_universal_dataset
         # Define actual symbol embedding columns to exclude (not cross-symbol or market regime features)
-        symbol_embedding_cols = ['symbol_id'] + [col for col in symbol_df.columns if col.startswith('symbol_') and not any([
-            col.startswith('corr_'),
-            col.startswith('beta_'),
-            col.startswith('relative_strength_'),
-            col.startswith('market_dispersion_'),
-            col.startswith('market_volatility'),
-            col.startswith('vol_regime_'),
-            col.startswith('vol_trend'),
-            col.startswith('vol_correlation')
-        ])]
+        symbol_embedding_cols = [col for col in symbol_df.columns if (
+            col == 'symbol_id' or (
+                col.startswith('symbol_') and not any([
+                    col.startswith('corr_'),
+                    col.startswith('beta_'),
+                    col.startswith('relative_strength_'),
+                    col.startswith('market_dispersion_'),
+                    col.startswith('market_volatility'),
+                    col.startswith('vol_regime_'),
+                    col.startswith('vol_trend'),
+                    col.startswith('vol_correlation')
+                ])
+            )
+        )]
         
-        # Keep all features except actual symbol embedding columns
-        feature_columns = [col for col in symbol_df.columns if col not in symbol_embedding_cols]
+        # Keep all features except actual symbol embedding columns and target
+        feature_columns = [col for col in symbol_df.columns if col not in symbol_embedding_cols and col != 'target']
         
         # Log which columns are being excluded vs included for debugging
         excluded_cols = [col for col in symbol_df.columns if col in symbol_embedding_cols]
@@ -516,8 +579,12 @@ class UniversalTrainer:
             col.startswith('vol_correlation')
         ])]
         
+        # Check if target column was excluded
+        target_excluded = 'target' in symbol_df.columns and 'target' not in feature_columns
+        
         logger.info(f"[{symbol}] Feature filtering results:")
         logger.info(f"  - Excluded symbol embedding columns ({len(excluded_cols)}): {excluded_cols}")
+        logger.info(f"  - Excluded target column: {target_excluded}")
         logger.info(f"  - Included cross-symbol features ({len(cross_symbol_cols)}): {cross_symbol_cols}")
         logger.info(f"  - Included market regime features ({len(market_regime_cols)}): {market_regime_cols}")
         logger.info(f"  - Total feature columns kept: {len(feature_columns)}")
@@ -531,11 +598,11 @@ class UniversalTrainer:
         # Replace infinite values
         symbol_df = symbol_df.replace([np.inf, -np.inf], [1e6, -1e6])
         
-        # Validate feature dimensions before returning (update expected_total to match training)
+        # Validate feature dimensions before returning (updated to match consistent feature count)
         validation_passed = self._validate_feature_dimensions(
             symbol_df, 
             f"Phase 2 Fine-tuning - {symbol}", 
-            expected_total=184  # Updated to match training phase
+            expected_total=178  # Updated to exclude 'target' column, matching training phase
         )
         
         if not validation_passed:
@@ -748,16 +815,21 @@ class UniversalTrainer:
         symbol_ids = X['symbol_id'].values.astype(np.int32)
         
         # Define actual symbol embedding columns to exclude (not cross-symbol or market regime features)
-        symbol_embedding_cols = ['symbol_id'] + [col for col in X.columns if col.startswith('symbol_') and not any([
-            col.startswith('corr_'),
-            col.startswith('beta_'),
-            col.startswith('relative_strength_'),
-            col.startswith('market_dispersion_'),
-            col.startswith('market_volatility'),
-            col.startswith('vol_regime_'),
-            col.startswith('vol_trend'),
-            col.startswith('vol_correlation')
-        ])]
+        # FIXED: Exclude all symbol columns that match the pattern to maintain consistency
+        symbol_embedding_cols = [col for col in X.columns if (
+            col == 'symbol_id' or (
+                col.startswith('symbol_') and not any([
+                    col.startswith('corr_'),
+                    col.startswith('beta_'),
+                    col.startswith('relative_strength_'),
+                    col.startswith('market_dispersion_'),
+                    col.startswith('market_volatility'),
+                    col.startswith('vol_regime_'),
+                    col.startswith('vol_trend'),
+                    col.startswith('vol_correlation')
+                ])
+            )
+        )]
         
         # Keep all features except actual symbol embedding columns
         feature_columns = [col for col in X.columns if col not in symbol_embedding_cols]
@@ -1120,15 +1192,36 @@ class UniversalTrainer:
                         start_date=start_dt,
                         end_date=end_dt
                     )
-                    X_symbols = np.full(len(X_features), symbol_id)
                     y = self._extract_targets_from_market_data(symbol_data)
                     
+                    # Align X_features and X_symbols with targets length (targets are shortened by 1)
+                    X_features = X_features[:len(y)]
+                    X_symbols = np.full(len(X_features), symbol_id)
+                    
+                    # Create sequences for all model types (LSTM, CNN, Transformer)
+                    config = self.model_configs[model_type]
+                    lookback_window = config.lookback_window
+                    
+                    logger.info(f"Creating sequences for {symbol} with lookback_window={lookback_window}")
+                    
+                    # Use helper method to create sequences
+                    X_sequences, y_sequences = self.create_sequences(X_features, y, lookback_window)
+                    
+                    if len(X_sequences) == 0:
+                        logger.warning(f"Insufficient data for {symbol}: need at least {lookback_window} samples, got {len(X_features)}")
+                        continue
+                    
+                    # Create symbol sequences for the valid sequence length (matching create_sequences output)
+                    X_symbols_seq = np.array([X_symbols[i] for i in range(lookback_window, len(X_features))])
+                    
+                    logger.info(f"Created {len(X_sequences)} sequences for {symbol} with shape {X_sequences.shape}")
+                    
                     # Split for validation
-                    split_idx = int(len(X_features) * 0.8)
-                    X_train = [X_features[:split_idx], X_symbols[:split_idx]]
-                    y_train = y[:split_idx]
-                    X_val = [X_features[split_idx:], X_symbols[split_idx:]]
-                    y_val = y[split_idx:]
+                    split_idx = int(len(X_sequences) * 0.8)
+                    X_train = [X_sequences[:split_idx], X_symbols_seq[:split_idx]]
+                    y_train = y_sequences[:split_idx]
+                    X_val = [X_sequences[split_idx:], X_symbols_seq[split_idx:]]
+                    y_val = y_sequences[split_idx:]
                     
                     # Fine-tune model
                     history = symbol_model.fit(
@@ -1185,6 +1278,28 @@ class UniversalTrainer:
         
         logger.info(f"Phase 2 completed: Fine-tuned {len(results)} model types")
         return results
+    
+    def create_sequences(self, features: np.ndarray, targets: np.ndarray, lookback_window: int) -> tuple:
+        """
+        Helper method to create sequences for time series models.
+        Converts 2D features to 3D sequences with lookback window.
+        
+        Args:
+            features: 2D array of features (samples, features)
+            targets: 1D array of targets
+            lookback_window: Number of timesteps to look back
+            
+        Returns:
+            Tuple of (X_sequences, y_sequences) as numpy arrays
+        """
+        X_sequences = []
+        y_sequences = []
+        
+        for i in range(lookback_window, len(features)):
+            X_sequences.append(features[i-lookback_window:i])
+            y_sequences.append(targets[i])
+        
+        return np.array(X_sequences), np.array(y_sequences)
     
     async def phase3_ensemble_optimization(
         self,
@@ -1251,7 +1366,20 @@ class UniversalTrainer:
                     # Make predictions
                     symbol_id = self.symbol_to_id[symbol]
                     X_features = self._combine_features_from_featureset(features)
-                    X = [X_features, np.full(len(X_features), symbol_id)]
+                    
+                    # Create sequences for all model types (LSTM, CNN, Transformer)
+                    config = self.model_configs[model_type]
+                    lookback_window = config.lookback_window
+                    
+                    # Create sequences using helper method
+                    X_features_seq, _ = self.create_sequences(X_features, np.zeros(len(X_features)), lookback_window)
+                    
+                    if len(X_features_seq) == 0:
+                        logger.warning(f"Insufficient data for {symbol}: need at least {lookback_window} samples, got {len(X_features)}")
+                        continue
+                    
+                    X_symbols_seq = np.full(len(X_features_seq), symbol_id)
+                    X = [X_features_seq, X_symbols_seq]
                     
                     model = self.symbol_models[model_type][symbol]
                     predictions = model.predict(X, verbose=0)

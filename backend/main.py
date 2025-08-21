@@ -1351,7 +1351,8 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
         
         # Define date range for historical data
         end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=760)  # 2+ years of data
+        # start_date = end_date - timedelta(days=760)  # 2+ years of data
+        start_date = end_date - timedelta(days=60)  # 2+ years of data
         
         all_data = {}
         symbols_needing_data = []

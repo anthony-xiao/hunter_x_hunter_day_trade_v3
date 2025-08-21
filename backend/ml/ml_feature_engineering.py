@@ -344,6 +344,13 @@ class FeatureEngineering:
             features['obv'] = talib.OBV(data['close'].values.astype(np.float64), data['volume'].values.astype(np.float64))
             features['obv_sma'] = features['obv'].rolling(20).mean()
             
+            # Ultimate Oscillator
+            features['ultimate_oscillator'] = talib.ULTOSC(
+                data['high'].values.astype(np.float64), 
+                data['low'].values.astype(np.float64), 
+                data['close'].values.astype(np.float64)
+            )
+            
             # Volume indicators
             features['volume_sma_20'] = data['volume'].rolling(20).mean()
             features['volume_ratio'] = data['volume'] / features['volume_sma_20']
