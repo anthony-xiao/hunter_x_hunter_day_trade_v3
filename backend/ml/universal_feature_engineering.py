@@ -655,6 +655,93 @@ class UniversalFeatureEngineering(FeatureEngineering):
                 else:
                     logger.warning(f"SECTOR_DEBUG: {symbol} not found in symbol_features")
             
+            # Generate extended sector features if we have multiple symbols
+            if len(symbols) > 1 and not sector_features.empty:
+                logger.info(f"SECTOR_DEBUG: Generating extended sector features for {len(symbols)} symbols")
+                
+                # Calculate sector relative momentum
+                momentum_cols = [col for col in sector_features.columns if '_momentum' in col]
+                if len(momentum_cols) > 1:
+                    # Calculate average momentum across all symbols
+                    avg_momentum = sector_features[momentum_cols].mean(axis=1)
+                    sector_features['sector_relative_momentum'] = avg_momentum
+                    logger.info(f"SECTOR_DEBUG: Generated sector_relative_momentum")
+                elif len(momentum_cols) == 1:
+                    # Single symbol case - use the momentum directly
+                    sector_features['sector_relative_momentum'] = sector_features[momentum_cols[0]]
+                    logger.info(f"SECTOR_DEBUG: Generated sector_relative_momentum from single symbol")
+                else:
+                    sector_features['sector_relative_momentum'] = 0
+                    logger.warning(f"SECTOR_DEBUG: No momentum columns found, using zero")
+                
+                # Calculate sector correlation strength
+                volatility_cols = [col for col in sector_features.columns if '_volatility' in col]
+                if len(volatility_cols) > 1:
+                    # Calculate correlation strength as the average volatility correlation
+                    vol_data = sector_features[volatility_cols]
+                    # Calculate rolling correlation between volatilities
+                    corr_window = min(20, len(vol_data) // 2)
+                    if corr_window >= 5:
+                        try:
+                            # Calculate pairwise correlations and take mean
+                            corr_matrix = vol_data.rolling(corr_window).corr()
+                            if not corr_matrix.empty:
+                                # Extract upper triangle correlations (excluding diagonal)
+                                corr_values = []
+                                for idx in corr_matrix.index.get_level_values(0).unique():
+                                    matrix = corr_matrix.loc[idx]
+                                    if isinstance(matrix, pd.DataFrame) and matrix.shape[0] > 1:
+                                        mask = np.triu(np.ones_like(matrix, dtype=bool), k=1)
+                                        upper_triangle = matrix.where(mask)
+                                        mean_corr = upper_triangle.stack().mean()
+                                        corr_values.append(mean_corr if pd.notna(mean_corr) else 0)
+                                    else:
+                                        corr_values.append(0)
+                                sector_features['sector_correlation_strength'] = pd.Series(corr_values, index=vol_data.index[:len(corr_values)]).reindex(vol_data.index).fillna(0)
+                            else:
+                                sector_features['sector_correlation_strength'] = 0
+                        except Exception as e:
+                            logger.warning(f"SECTOR_DEBUG: Error calculating sector correlation: {e}")
+                            sector_features['sector_correlation_strength'] = 0
+                    else:
+                        sector_features['sector_correlation_strength'] = 0
+                    logger.info(f"SECTOR_DEBUG: Generated sector_correlation_strength")
+                elif len(volatility_cols) == 1:
+                    # Single symbol case - use normalized volatility
+                    vol_col = volatility_cols[0]
+                    vol_mean = sector_features[vol_col].rolling(50).mean()
+                    sector_features['sector_correlation_strength'] = sector_features[vol_col] / (vol_mean + 1e-8)
+                    sector_features['sector_correlation_strength'] = sector_features['sector_correlation_strength'].fillna(0)
+                    logger.info(f"SECTOR_DEBUG: Generated sector_correlation_strength from single symbol")
+                else:
+                    sector_features['sector_correlation_strength'] = 0
+                    logger.warning(f"SECTOR_DEBUG: No volatility columns found, using zero")
+            else:
+                # Single symbol or empty case - generate fallback features
+                logger.info(f"SECTOR_DEBUG: Generating fallback sector features for single symbol case")
+                if not sector_features.empty:
+                    momentum_cols = [col for col in sector_features.columns if '_momentum' in col]
+                    volatility_cols = [col for col in sector_features.columns if '_volatility' in col]
+                    
+                    if momentum_cols:
+                        sector_features['sector_relative_momentum'] = sector_features[momentum_cols[0]]
+                    else:
+                        sector_features['sector_relative_momentum'] = 0
+                    
+                    if volatility_cols:
+                        vol_col = volatility_cols[0]
+                        vol_mean = sector_features[vol_col].rolling(50).mean()
+                        sector_features['sector_correlation_strength'] = sector_features[vol_col] / (vol_mean + 1e-8)
+                        sector_features['sector_correlation_strength'] = sector_features['sector_correlation_strength'].fillna(0)
+                    else:
+                        sector_features['sector_correlation_strength'] = 0
+                else:
+                    # Create empty DataFrame with required features
+                    sector_features = pd.DataFrame({
+                        'sector_relative_momentum': 0,
+                        'sector_correlation_strength': 0
+                    })
+            
             # Final validation of sector features
             logger.info(f"SECTOR_DEBUG: Final sector_features shape: {sector_features.shape}")
             for col in sector_features.columns:
@@ -1037,7 +1124,7 @@ class UniversalFeatureEngineering(FeatureEngineering):
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return pd.DataFrame(), pd.Series()
     
-    def _validate_feature_dimensions(self, features_df: pd.DataFrame, phase_name: str, expected_total: int = 184) -> bool:
+    def _validate_feature_dimensions(self, features_df: pd.DataFrame, phase_name: str, expected_total: int = 262) -> bool:
         """
         Validate feature dimensions and provide detailed breakdown.
         
@@ -1062,8 +1149,12 @@ class UniversalFeatureEngineering(FeatureEngineering):
                 'cross_symbol': 0,
                 'market_regime': 0,
                 'sector': 0,
+                'target': 0,
                 'other': 0
             }
+            
+            # Define special features that should not be classified as technical
+            special_feature_cols = {'target'}
             
             # Check for duplicate columns
             duplicate_cols = features_df.columns[features_df.columns.duplicated()].tolist()
@@ -1085,42 +1176,76 @@ class UniversalFeatureEngineering(FeatureEngineering):
             
             for col in features_df.columns:
                 col_lower = col.lower()
-                if any(tech in col_lower for tech in ['rsi', 'macd', 'bb', 'sma', 'ema', 'stoch', 'atr', 'volume', 'price', 'return', 'momentum', 'volatility', 'trend', 'support', 'resistance', 'fibonacci', 'pivot', 'bollinger', 'williams', 'cci', 'mfi', 'adx', 'psar', 'ichimoku', 'keltner', 'donchian', 'vwap', 'obv', 'chaikin', 'accumulation', 'distribution', 'force_index', 'ease_of_movement', 'negative_volume', 'positive_volume', 'trix', 'ultimate_oscillator', 'commodity_channel', 'detrended_price', 'mass_index', 'coppock', 'know_sure_thing', 'schaff_trend', 'elder_ray', 'klinger', 'money_flow', 'price_volume_trend', 'on_balance_volume', 'accumulation_distribution', 'chaikin_money_flow', 'ease_of_movement', 'force_index', 'negative_volume_index', 'positive_volume_index', 'volume_price_trend', 'volume_weighted_average_price']):
-                    feature_counts['technical'] += 1
-                elif 'symbol' in col_lower and 'cross' not in col_lower:
-                    feature_counts['symbol'] += 1
-                elif any(cross in col_lower for cross in ['corr_', 'beta_', 'relative_strength', 'market_dispersion']):
-                    feature_counts['cross_symbol'] += 1
-                elif any(regime in col_lower for regime in ['market_volatility', 'vol_regime', 'vol_trend', 'vol_correlation', 'volatility_regime', 'composite_momentum', 'composite_volatility', 'composite_trend']):
-                    feature_counts['market_regime'] += 1
-                elif 'sector' in col_lower:
-                    feature_counts['sector'] += 1
-                elif any(time_feat in col_lower for time_feat in ['hour', 'minute', 'day_of_week', 'month', 'quarter', 'year', 'is_market_open', 'is_pre_market', 'is_after_hours', 'minutes_since_open', 'days_to_expiry', 'is_month_end', 'is_quarter_end', 'is_year_end', 'is_monday', 'is_friday']):
-                    feature_counts['technical'] += 1  # Time features are considered technical
-                elif any(price_feat in col_lower for price_feat in ['open_to_close', 'high_to_close', 'low_to_close', 'spread_ma', 'close_to_open', 'high_to_low', 'close_to_high', 'close_to_low', 'high_low_ratio']):
-                    feature_counts['technical'] += 1  # Price-based features are technical
-                elif any(flow_feat in col_lower for flow_feat in ['order_flow', 'market_depth', 'toxicity', 'imbalance', 'flow_imbalance']):
-                    feature_counts['technical'] += 1  # Order flow features are technical
-                elif col_lower.startswith('universal_embed_'):
-                    feature_counts['symbol'] += 1  # Universal embeddings are symbol features
-                # Additional technical feature patterns from the uncategorized list
-                elif any(pattern in col_lower for pattern in ['transactions_', 'liquidity_', 'spread_', 'depth_', 'tick_', 'trade_', 'bid_', 'ask_', 'size_', 'count_', 'ratio_', '_ma_', '_std_', '_min_', '_max_', '_sum_', '_mean_', '_median_', '_q25_', '_q75_', '_skew_', '_kurt_', '_range_', '_iqr_', 'proxy', 'weighted', 'normalized', 'scaled', 'lag_', 'diff_', 'pct_', 'rolling_', 'ewm_', 'expanding_']):
-                    feature_counts['technical'] += 1  # These are all technical indicators
-                # Candlestick patterns and other technical indicators
-                elif any(pattern in col_lower for pattern in ['doji', 'hammer', 'engulfing', 'consecutive_', 'frequency_ratio', 'roc_', 'gap_', 'breakout', 'reversal', 'continuation', 'pattern_', 'signal_', 'cross_', 'divergence']):
-                    feature_counts['technical'] += 1  # Candlestick and pattern features
-                # Basic OHLC and volatility features
-                elif any(basic in col_lower for basic in ['open', 'high', 'low', 'close', 'realized_vol_', 'implied_vol_', 'historical_vol_', 'garch_vol_']):
-                    feature_counts['technical'] += 1  # Basic price and volatility features
+                
+                # Check for special features first (target, etc.)
+                if col in special_feature_cols:
+                    feature_counts['target'] += 1
                 else:
-                    feature_counts['other'] += 1
-                    logger.info(f"Uncategorized feature: {col}")
+                    # First check for microstructure features that should NOT be classified as technical
+                    # These are features generated by _engineer_microstructure_features that contain technical keywords
+                    microstructure_patterns = [
+                        'avg_trade_size', 'high_frequency_ratio', 'liquidity_proxy', 'market_depth_proxy',
+                        'order_flow_toxicity', 'price_efficiency', 'price_vwap_ratio', 'trade_intensity',
+                        'transaction_momentum', 'transaction_volatility', 'vwap_deviation', 'vwap_momentum',
+                        'vwap_trend_', 'transactions_ma_', 'transactions_ratio_', 'spread_proxy',
+                        'price_impact', 'tick_direction', 'consecutive_', 'flow_imbalance'
+                    ]
+                    
+                    is_microstructure = any(pattern in col_lower for pattern in microstructure_patterns)
+                    
+                    if is_microstructure:
+                        # These are microstructure features, don't count them as technical
+                        feature_counts['other'] += 1
+                    elif any(tech in col_lower for tech in ['rsi', 'macd', 'bb', 'sma', 'ema', 'stoch', 'atr', 'volume', 'price', 'return', 'trend', 'support', 'resistance', 'fibonacci', 'pivot', 'bollinger', 'williams', 'cci', 'mfi', 'adx', 'psar', 'ichimoku', 'keltner', 'donchian', 'obv', 'chaikin', 'accumulation', 'distribution', 'force_index', 'ease_of_movement', 'negative_volume', 'positive_volume', 'trix', 'ultimate_oscillator', 'commodity_channel', 'detrended_price', 'mass_index', 'coppock', 'know_sure_thing', 'schaff_trend', 'elder_ray', 'klinger', 'money_flow', 'price_volume_trend', 'on_balance_volume', 'accumulation_distribution', 'chaikin_money_flow', 'ease_of_movement', 'force_index', 'negative_volume_index', 'positive_volume_index', 'volume_price_trend', 'volume_weighted_average_price']):
+                        # Only classify as technical if NOT a microstructure feature
+                        feature_counts['technical'] += 1
+                    elif 'symbol' in col_lower and 'cross' not in col_lower:
+                        feature_counts['symbol'] += 1
+                    elif any(cross in col_lower for cross in ['corr_', 'beta_', 'relative_strength', 'market_dispersion']):
+                        feature_counts['cross_symbol'] += 1
+                    elif any(regime in col_lower for regime in ['market_volatility', 'vol_regime', 'vol_trend', 'vol_correlation', 'volatility_regime', 'composite_momentum', 'composite_volatility', 'composite_trend']):
+                        feature_counts['market_regime'] += 1
+                    elif 'sector' in col_lower:
+                        feature_counts['sector'] += 1
+                    elif any(time_feat in col_lower for time_feat in ['hour', 'minute', 'day_of_week', 'month', 'quarter', 'year', 'is_market_open', 'is_pre_market', 'is_after_hours', 'minutes_since_open', 'days_to_expiry', 'is_month_end', 'is_quarter_end', 'is_year_end', 'is_monday', 'is_friday']):
+                        feature_counts['technical'] += 1  # Time features are considered technical
+                    elif any(price_feat in col_lower for price_feat in ['open_to_close', 'high_to_close', 'low_to_close', 'spread_ma', 'close_to_open', 'high_to_low', 'close_to_high', 'close_to_low', 'high_low_ratio']):
+                        feature_counts['technical'] += 1  # Price-based features are technical
+                    elif any(flow_feat in col_lower for flow_feat in ['order_flow', 'market_depth', 'toxicity', 'imbalance', 'flow_imbalance']) and not is_microstructure:
+                        feature_counts['technical'] += 1  # Order flow features are technical (but not microstructure)
+                    elif col_lower.startswith('universal_embed_'):
+                        feature_counts['symbol'] += 1  # Universal embeddings are symbol features
+                    # Additional technical feature patterns from the uncategorized list (excluding microstructure patterns)
+                    elif any(pattern in col_lower for pattern in ['_ma_', '_std_', '_min_', '_max_', '_sum_', '_mean_', '_median_', '_q25_', '_q75_', '_skew_', '_kurt_', '_range_', '_iqr_', 'weighted', 'normalized', 'scaled', 'lag_', 'diff_', 'pct_', 'rolling_', 'ewm_', 'expanding_']) and not is_microstructure:
+                        feature_counts['technical'] += 1  # These are technical indicators (but not microstructure)
+                    # Candlestick patterns and other technical indicators
+                    elif any(pattern in col_lower for pattern in ['doji', 'hammer', 'engulfing', 'frequency_ratio', 'roc_', 'gap_', 'breakout', 'reversal', 'continuation', 'pattern_', 'signal_', 'cross_', 'divergence']):
+                        feature_counts['technical'] += 1  # Candlestick and pattern features
+                    # Basic OHLC and volatility features (excluding microstructure volatility)
+                    elif any(basic in col_lower for basic in ['open', 'high', 'low', 'close', 'realized_vol_', 'implied_vol_', 'historical_vol_', 'garch_vol_']) and not is_microstructure:
+                        feature_counts['technical'] += 1  # Basic price and volatility features
+                    # Handle remaining momentum and volatility features that are NOT microstructure
+                    elif any(tech_pattern in col_lower for tech_pattern in ['momentum', 'volatility']) and not is_microstructure:
+                        feature_counts['technical'] += 1  # Technical momentum/volatility (but not microstructure)
+                    else:
+                        feature_counts['other'] += 1
+                        logger.info(f"Uncategorized feature: {col}")
             
             # Log feature breakdown
             logger.info(f"Feature breakdown:")
             for feature_type, count in feature_counts.items():
                 if count > 0:
                     logger.info(f"  - {feature_type}: {count}")
+            
+            # Log detailed feature analysis
+            all_classified = feature_counts['technical'] + feature_counts['symbol'] + feature_counts['cross_symbol'] + feature_counts['market_regime'] + feature_counts['sector'] + feature_counts['target'] + feature_counts['other']
+            unclassified_count = total_features - all_classified
+            if unclassified_count != 0:
+                logger.warning(f"Unclassified features: {unclassified_count}")
+            
+            # Log feature distribution percentages
+            if total_features > 0:
+                logger.info(f"Feature distribution: Technical={feature_counts['technical']/total_features*100:.1f}%, Symbol={feature_counts['symbol']/total_features*100:.1f}%, Cross-symbol={feature_counts['cross_symbol']/total_features*100:.1f}%, Market regime={feature_counts['market_regime']/total_features*100:.1f}%, Sector={feature_counts['sector']/total_features*100:.1f}%, Target={feature_counts['target']/total_features*100:.1f}%, Other={feature_counts['other']/total_features*100:.1f}%")
             
             # Check for expected total
             if total_features != expected_total:
