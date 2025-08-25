@@ -1,0 +1,57 @@
+{
+  "core_components": {
+    "model_trainer_init": {
+      "status": "PASS",
+      "details": "ModelTrainer initialized",
+      "timestamp": "2025-08-24T00:01:53.974474"
+    },
+    "model_trainer_universal_methods": {
+      "status": "PASS",
+      "details": "All universal training methods available",
+      "timestamp": "2025-08-24T00:01:53.974514"
+    },
+    "symbol_embedding_support": {
+      "status": "PASS",
+      "details": "Symbol embedding support detected via universal_trainer",
+      "timestamp": "2025-08-24T00:01:53.974523"
+    },
+    "data_pipeline_init": {
+      "status": "PASS",
+      "details": "DataPipeline initialized",
+      "timestamp": "2025-08-24T00:01:53.974599"
+    },
+    "data_pipeline_universal_methods": {
+      "status": "PASS",
+      "details": "All universal data methods available",
+      "timestamp": "2025-08-24T00:01:53.974609"
+    },
+    "signal_generator_init": {
+      "status": "PASS",
+      "details": "SignalGenerator initialized",
+      "timestamp": "2025-08-24T00:01:53.977714"
+    },
+    "signal_generator_universal_methods": {
+      "status": "PASS",
+      "details": "All universal signal methods available",
+      "timestamp": "2025-08-24T00:01:53.977733"
+    }
+  },
+  "api_availability": {
+    "endpoint__docs": {
+      "status": "PASS",
+      "details": "API documentation accessible (status: 200)",
+      "timestamp": "2025-08-24T00:01:53.982154"
+    },
+    "endpoint__models_universal_status": {
+      "status": "PASS",
+      "details": "Universal mode status accessible (status: 200)",
+      "timestamp": "2025-08-24T00:01:53.986547"
+    },
+    "endpoint__models_universal_train_jobs": {
+      "status": "PASS",
+      "details": "Universal training jobs accessible (status: 200)",
+      "timestamp": "2025-08-24T00:01:53.990629"
+    }
+  },
+  "overall_status": "CORE SYSTEM READY"
+}

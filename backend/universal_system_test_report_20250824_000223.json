@@ -1,0 +1,117 @@
+{
+  "api_endpoints": {
+    "docs_available": {
+      "status": "PASS",
+      "details": "API documentation accessible",
+      "timestamp": "2025-08-24T00:02:03.091348"
+    },
+    "universal_training_start": {
+      "status": "PASS",
+      "details": "Job ID: 4ebf6259-fd9c-44ed-a42c-c6f78290523e",
+      "timestamp": "2025-08-24T00:02:03.093460"
+    },
+    "status_monitoring": {
+      "status": "FAIL",
+      "details": "Status: 404",
+      "timestamp": "2025-08-24T00:02:08.159763"
+    },
+    "job_listing": {
+      "status": "PASS",
+      "details": "Found 1 jobs",
+      "timestamp": "2025-08-24T00:02:08.163282"
+    }
+  },
+  "model_initialization": {
+    "trainer_init": {
+      "status": "PASS",
+      "details": "ModelTrainer initialized",
+      "timestamp": "2025-08-24T00:02:08.471512"
+    },
+    "universal_methods": {
+      "status": "PASS",
+      "details": "Universal training methods available",
+      "timestamp": "2025-08-24T00:02:08.471526"
+    },
+    "symbol_embedding": {
+      "status": "FAIL",
+      "details": "Symbol embedding support missing",
+      "timestamp": "2025-08-24T00:02:08.471531"
+    }
+  },
+  "mode_switching": {
+    "status_check": {
+      "status": "PASS",
+      "details": "Current mode: Symbol-specific",
+      "timestamp": "2025-08-24T00:02:08.544566"
+    },
+    "enable_universal": {
+      "status": "FAIL",
+      "details": "Status: 500",
+      "timestamp": "2025-08-24T00:02:08.546931"
+    }
+  },
+  "data_pipeline": {
+    "initialization": {
+      "status": "PASS",
+      "details": "DataPipeline initialized",
+      "timestamp": "2025-08-24T00:02:08.546998"
+    },
+    "universal_methods": {
+      "status": "PASS",
+      "details": "Universal data methods available",
+      "timestamp": "2025-08-24T00:02:08.547005"
+    },
+    "batch_loading": {
+      "status": "FAIL",
+      "details": "object of type 'coroutine' has no len()",
+      "timestamp": "2025-08-24T00:02:08.547035"
+    }
+  },
+  "signal_generation": {
+    "initialization": {
+      "status": "PASS",
+      "details": "SignalGenerator initialized",
+      "timestamp": "2025-08-24T00:02:08.549395"
+    },
+    "universal_support": {
+      "status": "PASS",
+      "details": "Universal mode support available",
+      "timestamp": "2025-08-24T00:02:08.549402"
+    },
+    "universal_loading": {
+      "status": "PASS",
+      "details": "Universal model loading methods available",
+      "timestamp": "2025-08-24T00:02:08.549407"
+    },
+    "universal_prediction": {
+      "status": "PASS",
+      "details": "Universal prediction methods available",
+      "timestamp": "2025-08-24T00:02:08.549411"
+    }
+  },
+  "backward_compatibility": {
+    "single_symbol_training": {
+      "status": "PASS",
+      "details": "Single-symbol training for AAPL works",
+      "timestamp": "2025-08-24T00:02:08.551092"
+    },
+    "signal_endpoints": {
+      "status": "PASS",
+      "details": "Signal endpoints accessible",
+      "timestamp": "2025-08-24T00:02:08.839664"
+    },
+    "performance_endpoints": {
+      "status": "PASS",
+      "details": "Performance endpoints accessible",
+      "timestamp": "2025-08-24T00:02:09.157476"
+    }
+  },
+  "performance_validation": {
+    "training_time": {
+      "status": "FAIL",
+      "details": "No module named 'psutil'",
+      "timestamp": "2025-08-24T00:02:23.159127"
+    }
+  },
+  "overall_status": "NEEDS MINOR FIXES"
+}

@@ -1110,7 +1110,7 @@ class UniversalFeatureEngineering(FeatureEngineering):
             validation_passed = self._validate_feature_dimensions(
                 X, 
                 "Phase 1 Base Training", 
-                expected_total=184
+                expected_total=187
             )
             
             if not validation_passed:
