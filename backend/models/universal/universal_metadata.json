@@ -1,0 +1,23 @@
+{
+  "symbol_mappings": {
+    "symbol_to_id": {
+      "AAPL": 0,
+      "TSLA": 1
+    },
+    "id_to_symbol": {
+      "0": "AAPL",
+      "1": "TSLA"
+    }
+  },
+  "ensemble_weights": {
+    "lstm": 0.3333333333333333,
+    "cnn": 0.3333333333333333,
+    "transformer": 0.3333333333333333
+  },
+  "config": {
+    "symbol_embedding_dim": 32,
+    "base_epochs": 1,
+    "finetune_epochs": 1
+  },
+  "training_timestamp": "2025-08-22T07:07:32.751144"
+}
