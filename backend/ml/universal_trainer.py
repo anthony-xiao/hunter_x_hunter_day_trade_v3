@@ -598,11 +598,39 @@ class UniversalTrainer:
         # Replace infinite values
         symbol_df = symbol_df.replace([np.inf, -np.inf], [1e6, -1e6])
         
+        # Add detailed feature consistency logging for debugging
+        logger.info(f"[{symbol}] === FEATURE CONSISTENCY DEBUG ===")
+        logger.info(f"[{symbol}] Total feature columns: {len(symbol_df.columns)}")
+        logger.info(f"[{symbol}] Feature column names: {sorted(list(symbol_df.columns))}")
+        
+        # Categorize features for consistency checking
+        technical_features = [col for col in symbol_df.columns if any([
+            'rsi' in col.lower(), 'macd' in col.lower(), 'bb' in col.lower(), 
+            'sma' in col.lower(), 'ema' in col.lower(), 'stoch' in col.lower(),
+            'atr' in col.lower(), 'volume' in col.lower(), 'price' in col.lower(),
+            'return' in col.lower(), 'trend' in col.lower()
+        ])]
+        cross_symbol_features = [col for col in symbol_df.columns if any([
+            col.startswith('corr_'), col.startswith('beta_'), 
+            col.startswith('relative_strength_'), col.startswith('market_dispersion_')
+        ])]
+        market_regime_features = [col for col in symbol_df.columns if any([
+            col.startswith('market_volatility'), col.startswith('vol_regime_'),
+            col.startswith('vol_trend'), col.startswith('vol_correlation')
+        ])]
+        sector_features = [col for col in symbol_df.columns if col.startswith('sector_')]
+        
+        logger.info(f"[{symbol}] Technical features ({len(technical_features)}): {technical_features[:5]}..." if len(technical_features) > 5 else f"[{symbol}] Technical features ({len(technical_features)}): {technical_features}")
+        logger.info(f"[{symbol}] Cross-symbol features ({len(cross_symbol_features)}): {cross_symbol_features}")
+        logger.info(f"[{symbol}] Market regime features ({len(market_regime_features)}): {market_regime_features}")
+        logger.info(f"[{symbol}] Sector features ({len(sector_features)}): {sector_features}")
+        logger.info(f"[{symbol}] === END FEATURE CONSISTENCY DEBUG ===")
+        
         # Validate feature dimensions before returning (updated to match consistent feature count)
         validation_passed = self._validate_feature_dimensions(
             symbol_df, 
             f"Phase 2 Fine-tuning - {symbol}", 
-            expected_total=178  # Updated to exclude 'target' column, matching training phase
+            expected_total=187  # Updated to match actual feature count from training
         )
         
         if not validation_passed:
@@ -1363,32 +1391,50 @@ class UniversalTrainer:
                         end_date=validation_end_dt
                     )
                     
-                    # Make predictions
+                    # Make predictions using exact same feature preparation as phase2
                     symbol_id = self.symbol_to_id[symbol]
-                    X_features = self._combine_features_from_featureset(features)
+                    
+                    # Prepare universal features using same method as fine-tuning
+                    X_features = await self._prepare_universal_features_for_symbol(
+                        symbol=symbol,
+                        feature_set=features,
+                        start_date=validation_start_dt,
+                        end_date=validation_end_dt
+                    )
+                    y = self._extract_targets_from_market_data(validation_data)
+                    
+                    # Align X_features and X_symbols with targets length (targets are shortened by 1)
+                    X_features = X_features[:len(y)]
+                    X_symbols = np.full(len(X_features), symbol_id)
                     
                     # Create sequences for all model types (LSTM, CNN, Transformer)
                     config = self.model_configs[model_type]
                     lookback_window = config.lookback_window
                     
-                    # Create sequences using helper method
-                    X_features_seq, _ = self.create_sequences(X_features, np.zeros(len(X_features)), lookback_window)
+                    logger.info(f"Creating sequences for {symbol} with lookback_window={lookback_window}")
                     
-                    if len(X_features_seq) == 0:
+                    # Use helper method to create sequences
+                    X_sequences, y_sequences = self.create_sequences(X_features, y, lookback_window)
+                    
+                    if len(X_sequences) == 0:
                         logger.warning(f"Insufficient data for {symbol}: need at least {lookback_window} samples, got {len(X_features)}")
                         continue
                     
-                    X_symbols_seq = np.full(len(X_features_seq), symbol_id)
-                    X = [X_features_seq, X_symbols_seq]
+                    # Create symbol sequences for the valid sequence length (matching create_sequences output)
+                    X_symbols_seq = np.array([X_symbols[i] for i in range(lookback_window, len(X_features))])
+                    
+                    logger.info(f"Created {len(X_sequences)} sequences for {symbol} with shape {X_sequences.shape}")
+                    
+                    X = [X_sequences, X_symbols_seq]
                     
                     model = self.symbol_models[model_type][symbol]
-                    predictions = model.predict(X, verbose=0)
+                    predictions = model.predict(X, batch_size=None, verbose=0)
                     
-                    targets = self._extract_targets_from_market_data(validation_data)
+                    # Use the properly aligned targets from sequences (same as phase2)
                     model_predictions[model_type][symbol] = {
                         'predictions': predictions.flatten(),
-                        'targets': targets,
-                        'accuracy': accuracy_score(targets, (predictions > 0.5).astype(int))
+                        'targets': y_sequences,
+                        'accuracy': accuracy_score(y_sequences, (predictions > 0.5).astype(int))
                     }
                     
                 except Exception as e:
@@ -1455,7 +1501,7 @@ class UniversalTrainer:
             # Phase 3: Ensemble optimization
             # Use 5-day validation period for day trading (optimal for capturing recent patterns)
             end_dt = datetime.strptime(end_date, '%Y-%m-%d') if isinstance(end_date, str) else end_date
-            validation_start_dt = end_dt - timedelta(days=5)  # 5 days before end_date
+            validation_start_dt = end_dt - timedelta(days=30)  # 30 days before end_date
             validation_end_dt = end_dt  # End at the training end date
             
             validation_start = validation_start_dt.strftime('%Y-%m-%d')

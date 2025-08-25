@@ -140,8 +140,8 @@ class DataPipeline:
                 
                 logger.info(f"Found {len(existing_data)} existing data points for {symbol} (estimated {coverage_percentage:.1f}% coverage)")
                 
-                # If we have good coverage (>80%), return existing data
-                if coverage_percentage > 80.0:
+                # If we have good coverage (>90%), return existing data
+                if coverage_percentage > 90.0:
                     logger.info(f"Using existing data for {symbol} - sufficient coverage ({coverage_percentage:.1f}%)")
                     # Cache the data
                     self.data_cache[symbol] = existing_data
