@@ -1545,8 +1545,8 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
         )
         
         job_status["phase_details"]["universal_training"] = {
-            "models_trained": training_result.models_trained if training_result else [],
-            "training_metrics": training_result.training_metrics if training_result else {}
+            "models_trained": training_result.get('symbols_trained', []) if training_result else [],
+            "training_metrics": training_result.get('performance_summary', {}) if training_result else {}
         }
         
         # Phase 4: Model validation and saving
@@ -1556,7 +1556,7 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
         logger.info(f"Universal training job {job_id}: Validating and saving models")
         
         # Save universal models
-        if training_result and training_result.success:
+        if training_result and training_result.get('training_completed', False):
             await model_trainer.save_universal_models()
             
             job_status["status"] = "completed"

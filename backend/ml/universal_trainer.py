@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from pathlib import Path
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from loguru import logger
 import tensorflow as tf
 from sklearn.metrics import accuracy_score
@@ -1453,8 +1453,13 @@ class UniversalTrainer:
             )
             
             # Phase 3: Ensemble optimization
-            validation_start = end_date  # Use recent data for validation
-            validation_end = datetime.now().strftime('%Y-%m-%d')
+            # Use 5-day validation period for day trading (optimal for capturing recent patterns)
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d') if isinstance(end_date, str) else end_date
+            validation_start_dt = end_dt - timedelta(days=5)  # 5 days before end_date
+            validation_end_dt = end_dt  # End at the training end date
+            
+            validation_start = validation_start_dt.strftime('%Y-%m-%d')
+            validation_end = validation_end_dt.strftime('%Y-%m-%d')
             
             ensemble_weights = await self.phase3_ensemble_optimization(
                 symbols=symbols,

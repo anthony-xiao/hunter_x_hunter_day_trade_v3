@@ -448,6 +448,24 @@ class DataPipeline:
                 return combined_df
             else:
                 logger.warning(f"No market data found for {symbol} between {start_date} and {end_date}")
+                logger.info(f"Attempting to fetch historical data from Polygon for {symbol}")
+                
+                # Fallback: Try to download historical data from Polygon
+                try:
+                    await self.download_historical_data(
+                        symbol=symbol,
+                        start_date=start_date.strftime('%Y-%m-%d'),
+                        end_date=end_date.strftime('%Y-%m-%d')
+                    )
+                    
+                    # After downloading, try to load the data again
+                    logger.info(f"Successfully downloaded data from Polygon, retrying load for {symbol}")
+                    return await self.load_market_data(symbol, start_date, end_date, chunk_days)
+                    
+                except Exception as download_error:
+                    logger.error(f"Failed to download historical data from Polygon for {symbol}: {download_error}")
+                    return pd.DataFrame()
+                
                 return pd.DataFrame()
             
         except Exception as e:
