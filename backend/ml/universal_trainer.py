@@ -92,6 +92,11 @@ class UniversalTrainingConfig:
     ensemble_validation_periods: int = 10
     ensemble_rebalance_frequency: int = 5
     
+    # Dual Exit Target Configuration
+    prediction_window: int = 15  # Maximum prediction window in minutes (periods)
+    take_profit_pct: float = 0.003  # Take profit threshold (0.3%)
+    stop_loss_pct: float = 0.002   # Stop loss threshold (0.2%)
+    
     # General settings
     symbol_embedding_dim: int = 32
     early_stopping_patience: int = 10
@@ -639,30 +644,85 @@ class UniversalTrainer:
         logger.info(f"[{symbol}] Final feature shape after filtering: {symbol_df.shape}")
         return symbol_df.values
     
-    def _extract_targets_from_market_data(self, market_data: pd.DataFrame, threshold: float = 0.001) -> np.ndarray:
+    def _create_dual_exit_targets(self, market_data: pd.DataFrame) -> np.ndarray:
         """
-        Extract binary targets from market data based on future returns.
+        Create binary targets using dual exit conditions within a prediction window.
+        
+        This method implements a more sophisticated target generation approach that:
+        1. Uses a maximum prediction window (default 15 minutes)
+        2. Applies dual exit conditions:
+           - Take profit: Trigger when price increases by take_profit_pct within the horizon
+           - Stop loss: Trigger when price decreases by stop_loss_pct within the same period
+        3. Returns 1 for take profit hit, 0 for stop loss hit or no exit
         
         Args:
             market_data: DataFrame with market data including 'close' prices
-            threshold: Minimum return threshold for positive target (default 0.1%)
             
         Returns:
-            Binary targets as numpy array (1 for positive return > threshold, 0 otherwise)
+            Binary targets as numpy array (1 for take profit, 0 for stop loss or no exit)
         """
         if 'close' not in market_data.columns:
             raise ValueError("Market data must contain 'close' column for target extraction")
         
-        # Calculate next period returns
-        returns = market_data['close'].pct_change().shift(-1)
+        close_prices = market_data['close'].values
+        targets = np.zeros(len(close_prices) - self.config.prediction_window, dtype=int)
         
-        # Create binary targets based on threshold
-        targets = (returns > threshold).astype(int)
+        logger.info(f"Creating dual exit targets with {self.config.prediction_window}-period window")
+        logger.info(f"Take profit threshold: {self.config.take_profit_pct*100:.2f}%")
+        logger.info(f"Stop loss threshold: {self.config.stop_loss_pct*100:.2f}%")
         
-        # Remove the last NaN value (no future return available)
-        targets = targets[:-1]
+        # Iterate through each possible starting point
+        for i in range(len(targets)):
+            current_price = close_prices[i]
+            take_profit_price = current_price * (1 + self.config.take_profit_pct)
+            stop_loss_price = current_price * (1 - self.config.stop_loss_pct)
+            
+            # Look ahead within the prediction window
+            window_end = min(i + self.config.prediction_window + 1, len(close_prices))
+            future_prices = close_prices[i+1:window_end]
+            
+            # Check for exit conditions
+            target_hit = False
+            for future_price in future_prices:
+                if future_price >= take_profit_price:
+                    targets[i] = 1  # Take profit hit
+                    target_hit = True
+                    break
+                elif future_price <= stop_loss_price:
+                    targets[i] = 0  # Stop loss hit
+                    target_hit = True
+                    break
+            
+            # If no exit condition is met within the window, default to 0
+            if not target_hit:
+                targets[i] = 0
         
-        return targets.values
+        # Log target distribution for analysis
+        take_profit_count = np.sum(targets == 1)
+        stop_loss_count = np.sum(targets == 0)
+        total_targets = len(targets)
+        
+        logger.info(f"Target distribution:")
+        logger.info(f"  Take profit hits: {take_profit_count} ({take_profit_count/total_targets*100:.2f}%)")
+        logger.info(f"  Stop loss/no exit: {stop_loss_count} ({stop_loss_count/total_targets*100:.2f}%)")
+        logger.info(f"  Total targets: {total_targets}")
+        
+        return targets
+    
+    def _extract_targets_from_market_data(self, market_data: pd.DataFrame, threshold: float = 0.001) -> np.ndarray:
+        """
+        Extract binary targets from market data using dual exit conditions.
+        
+        This method now uses the dual exit approach instead of simple next-period returns.
+        
+        Args:
+            market_data: DataFrame with market data including 'close' prices
+            threshold: Deprecated parameter (kept for compatibility)
+            
+        Returns:
+            Binary targets as numpy array (1 for take profit, 0 for stop loss or no exit)
+        """
+        return self._create_dual_exit_targets(market_data)
     
     async def prepare_universal_dataset(
         self,
@@ -1428,13 +1488,93 @@ class UniversalTrainer:
                     X = [X_sequences, X_symbols_seq]
                     
                     model = self.symbol_models[model_type][symbol]
+                    
+                    # === COMPREHENSIVE DEBUGGING FOR IDENTICAL ACCURACY INVESTIGATION ===
+                    logger.info(f"\n=== DEBUGGING {model_type.upper()}-{symbol} MODEL ===")
+                    
+                    # 1. Log model object ID to verify different instances
+                    model_id = id(model)
+                    logger.info(f"Model object ID: {model_id}")
+                    
+                    # 2. Log input data shapes and first few values
+                    logger.info(f"Input data shapes: X_sequences={X_sequences.shape}, X_symbols_seq={X_symbols_seq.shape}")
+                    logger.info(f"First 3 X_sequences values: {X_sequences[:3].flatten()[:10] if len(X_sequences) > 0 else 'None'}")
+                    logger.info(f"First 3 X_symbols_seq values: {X_symbols_seq[:3] if len(X_symbols_seq) > 0 else 'None'}")
+                    logger.info(f"First 3 y_sequences values: {y_sequences[:3] if len(y_sequences) > 0 else 'None'}")
+                    
+                    # 3. Log model architecture summary
+                    try:
+                        total_params = model.count_params()
+                        trainable_params = sum([tf.keras.backend.count_params(w) for w in model.trainable_weights])
+                        logger.info(f"Model params: total={total_params}, trainable={trainable_params}")
+                        
+                        # Log layer names and types
+                        layer_info = [(layer.name, type(layer).__name__, getattr(layer, 'units', getattr(layer, 'filters', 'N/A'))) for layer in model.layers]
+                        logger.info(f"Model layers: {layer_info[:5]}...")  # First 5 layers
+                        
+                        # Log model input/output shapes
+                        logger.info(f"Model input shape: {model.input_shape if hasattr(model, 'input_shape') else 'Multiple inputs'}")
+                        logger.info(f"Model output shape: {model.output_shape}")
+                    except Exception as arch_e:
+                        logger.warning(f"Could not log architecture info: {arch_e}")
+                    
+                    # 4. Validate model weights are different by checking first layer weights
+                    try:
+                        if len(model.layers) > 1:
+                            first_trainable_layer = None
+                            for layer in model.layers:
+                                if len(layer.get_weights()) > 0:
+                                    first_trainable_layer = layer
+                                    break
+                            
+                            if first_trainable_layer:
+                                weights = first_trainable_layer.get_weights()[0]
+                                weight_hash = hash(weights.tobytes())
+                                weight_mean = np.mean(weights)
+                                weight_std = np.std(weights)
+                                logger.info(f"First layer ({first_trainable_layer.name}) weight stats: hash={weight_hash}, mean={weight_mean:.6f}, std={weight_std:.6f}")
+                                logger.info(f"First layer weight sample: {weights.flatten()[:5]}")
+                    except Exception as weight_e:
+                        logger.warning(f"Could not log weight info: {weight_e}")
+                    
+                    # 5. Make predictions and log detailed results
                     predictions = model.predict(X, batch_size=None, verbose=0)
+                    predictions_flat = predictions.flatten()
+                    
+                    # 6. Log actual prediction values and target values for comparison
+                    logger.info(f"Predictions shape: {predictions.shape}")
+                    logger.info(f"First 10 raw predictions: {predictions_flat[:10]}")
+                    logger.info(f"First 10 binary predictions: {(predictions_flat[:10] > 0.5).astype(int)}")
+                    logger.info(f"First 10 targets: {y_sequences[:10]}")
+                    
+                    # 7. Calculate and log detailed accuracy metrics
+                    binary_predictions = (predictions_flat > 0.5).astype(int)
+                    accuracy = accuracy_score(y_sequences, binary_predictions)
+                    
+                    # Additional metrics for debugging
+                    unique_predictions = np.unique(predictions_flat)
+                    unique_binary_predictions = np.unique(binary_predictions)
+                    unique_targets = np.unique(y_sequences)
+                    
+                    logger.info(f"Accuracy: {accuracy:.6f}")
+                    logger.info(f"Unique raw predictions count: {len(unique_predictions)}")
+                    logger.info(f"Unique binary predictions: {unique_binary_predictions}")
+                    logger.info(f"Unique targets: {unique_targets}")
+                    logger.info(f"Prediction distribution: min={np.min(predictions_flat):.6f}, max={np.max(predictions_flat):.6f}, mean={np.mean(predictions_flat):.6f}")
+                    
+                    # 8. Check if predictions are constant (indicating potential issue)
+                    if len(unique_predictions) == 1:
+                        logger.error(f"WARNING: All predictions are identical ({unique_predictions[0]:.6f}) - model may not be learning!")
+                    
+                    logger.info(f"=== END DEBUGGING {model_type.upper()}-{symbol} ===")
                     
                     # Use the properly aligned targets from sequences (same as phase2)
                     model_predictions[model_type][symbol] = {
-                        'predictions': predictions.flatten(),
+                        'predictions': predictions_flat,
                         'targets': y_sequences,
-                        'accuracy': accuracy_score(y_sequences, (predictions > 0.5).astype(int))
+                        'accuracy': accuracy,
+                        'model_id': model_id,  # Store for cross-reference
+                        'weight_hash': weight_hash if 'weight_hash' in locals() else None
                     }
                     
                 except Exception as e:
@@ -1442,20 +1582,104 @@ class UniversalTrainer:
                     continue
         
         # Calculate ensemble weights based on performance
+        logger.info("=== PHASE 3 ENSEMBLE WEIGHT CALCULATION DEBUG ===")
+        
+        # === CROSS-MODEL COMPARISON FOR IDENTICAL ACCURACY INVESTIGATION ===
+        logger.info("\n=== CROSS-MODEL COMPARISON ANALYSIS ===")
+        
+        # 1. Compare model object IDs across types
+        logger.info("\n--- MODEL OBJECT ID COMPARISON ---")
+        for model_type in model_predictions.keys():
+            for symbol, pred_data in model_predictions[model_type].items():
+                model_id = pred_data.get('model_id', 'Unknown')
+                weight_hash = pred_data.get('weight_hash', 'Unknown')
+                logger.info(f"{model_type}-{symbol}: ID={model_id}, WeightHash={weight_hash}")
+        
+        # 2. Compare predictions across model types for same symbol
+        logger.info("\n--- PREDICTION COMPARISON ACROSS MODEL TYPES ---")
+        symbols_with_all_models = set()
+        for model_type in model_predictions.keys():
+            symbols_with_all_models.update(model_predictions[model_type].keys())
+        
+        for symbol in symbols_with_all_models:
+            logger.info(f"\nSymbol {symbol} predictions comparison:")
+            symbol_predictions = {}
+            symbol_accuracies = {}
+            
+            for model_type in model_predictions.keys():
+                if symbol in model_predictions[model_type]:
+                    pred_data = model_predictions[model_type][symbol]
+                    predictions = pred_data['predictions'][:5]  # First 5 predictions
+                    accuracy = pred_data['accuracy']
+                    symbol_predictions[model_type] = predictions
+                    symbol_accuracies[model_type] = accuracy
+                    logger.info(f"  {model_type}: accuracy={accuracy:.6f}, first_5_preds={predictions}")
+            
+            # Check if all accuracies are identical
+            unique_accuracies = set(symbol_accuracies.values())
+            if len(unique_accuracies) == 1:
+                logger.error(f"  WARNING: All model types have IDENTICAL accuracy ({list(unique_accuracies)[0]:.6f}) for {symbol}!")
+            
+            # Check if all predictions are identical
+            if len(symbol_predictions) > 1:
+                pred_values = list(symbol_predictions.values())
+                if all(np.allclose(pred_values[0], pred_val, atol=1e-6) for pred_val in pred_values[1:]):
+                    logger.error(f"  WARNING: All model types have IDENTICAL predictions for {symbol}!")
+        
+        # 3. Overall statistics
+        logger.info("\n--- OVERALL ACCURACY STATISTICS ---")
+        all_accuracies = []
+        for model_type in model_predictions.keys():
+            for symbol, pred_data in model_predictions[model_type].items():
+                all_accuracies.append(pred_data['accuracy'])
+        
+        unique_accuracy_values = set(all_accuracies)
+        logger.info(f"Total models evaluated: {len(all_accuracies)}")
+        logger.info(f"Unique accuracy values: {len(unique_accuracy_values)}")
+        logger.info(f"Accuracy range: {min(all_accuracies):.6f} to {max(all_accuracies):.6f}")
+        
+        if len(unique_accuracy_values) == 1:
+            logger.error(f"CRITICAL: ALL MODELS HAVE IDENTICAL ACCURACY ({list(unique_accuracy_values)[0]:.6f})!")
+        elif len(unique_accuracy_values) < len(all_accuracies) * 0.1:  # Less than 10% unique values
+            logger.warning(f"WARNING: Very few unique accuracy values ({len(unique_accuracy_values)}) for {len(all_accuracies)} models!")
+        
+        logger.info("=== END CROSS-MODEL COMPARISON ANALYSIS ===")
+        
+        # Log individual model predictions and accuracies
+        for model_type in model_predictions.keys():
+            logger.info(f"\n--- {model_type.upper()} MODEL PERFORMANCE ---")
+            for symbol, pred_data in model_predictions[model_type].items():
+                accuracy = pred_data['accuracy']
+                num_predictions = len(pred_data['predictions'])
+                logger.info(f"  {symbol}: accuracy={accuracy:.4f}, predictions={num_predictions}")
+        
         model_scores = {}
         for model_type in model_predictions.keys():
             accuracies = [pred['accuracy'] for pred in model_predictions[model_type].values()]
-            model_scores[model_type] = np.mean(accuracies) if accuracies else 0.0
+            avg_accuracy = np.mean(accuracies) if accuracies else 0.0
+            model_scores[model_type] = float(avg_accuracy)  # Convert to Python float
+            logger.info(f"{model_type} average accuracy: {avg_accuracy:.4f} (from {len(accuracies)} symbols)")
+        
+        logger.info(f"\nModel scores summary: {model_scores}")
         
         # Normalize weights
         total_score = sum(model_scores.values())
+        logger.info(f"Total score for normalization: {total_score:.4f}")
+        
         if total_score > 0:
-            self.ensemble_weights = {model: score / total_score for model, score in model_scores.items()}
+            self.ensemble_weights = {model: float(score / total_score) for model, score in model_scores.items()}
+            logger.info("Weights calculated using performance-based normalization")
         else:
             # Equal weights if no valid scores
             num_models = len(model_scores)
-            self.ensemble_weights = {model: 1.0 / num_models for model in model_scores.keys()}
+            self.ensemble_weights = {model: float(1.0 / num_models) for model in model_scores.keys()}
+            logger.warning(f"Using equal weights ({1.0/num_models:.4f}) because total_score={total_score}")
         
+        logger.info(f"\nFinal ensemble weights:")
+        for model_type, weight in self.ensemble_weights.items():
+            logger.info(f"  {model_type}: {weight:.6f}")
+        
+        logger.info("=== END PHASE 3 ENSEMBLE WEIGHT CALCULATION DEBUG ===")
         logger.info(f"Phase 3 completed: Ensemble weights = {self.ensemble_weights}")
         return self.ensemble_weights
     
@@ -1501,7 +1725,7 @@ class UniversalTrainer:
             # Phase 3: Ensemble optimization
             # Use 5-day validation period for day trading (optimal for capturing recent patterns)
             end_dt = datetime.strptime(end_date, '%Y-%m-%d') if isinstance(end_date, str) else end_date
-            validation_start_dt = end_dt - timedelta(days=30)  # 30 days before end_date
+            validation_start_dt = end_dt - timedelta(days=20)  # 30 days before end_date
             validation_end_dt = end_dt  # End at the training end date
             
             validation_start = validation_start_dt.strftime('%Y-%m-%d')
@@ -1553,12 +1777,58 @@ class UniversalTrainer:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         
+        logger.info(f"Starting model saving process to {save_dir}")
+        
         # Save base models
         base_dir = save_dir / "base_models"
         base_dir.mkdir(exist_ok=True)
         
         for model_type, model in self.base_models.items():
-            model.save(base_dir / f"{model_type}_base.h5")
+            logger.info(f"Saving base {model_type} model...")
+            
+            # Validate model architecture before saving
+            try:
+                logger.info(f"Base {model_type} - Architecture validation:")
+                logger.info(f"  - Model name: {model.name}")
+                logger.info(f"  - Total parameters: {model.count_params():,}")
+                logger.info(f"  - Input shape: {model.input_shape if hasattr(model, 'input_shape') else 'Multiple inputs'}")
+                logger.info(f"  - Output shape: {model.output_shape if hasattr(model, 'output_shape') else 'Multiple outputs'}")
+                logger.info(f"  - Number of layers: {len(model.layers)}")
+                
+                # Test model connectivity with dummy prediction
+                try:
+                    if hasattr(model, 'input_shape') and model.input_shape:
+                        # Handle single input models
+                        if isinstance(model.input_shape, tuple):
+                            dummy_input = np.random.random((1,) + model.input_shape[1:])
+                            dummy_output = model.predict(dummy_input, verbose=0)
+                            logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
+                        # Handle multiple input models
+                        elif isinstance(model.input_shape, list):
+                            dummy_inputs = []
+                            for input_shape in model.input_shape:
+                                if input_shape is not None:
+                                    dummy_inputs.append(np.random.random((1,) + input_shape[1:]))
+                            dummy_output = model.predict(dummy_inputs, verbose=0)
+                            logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
+                        else:
+                            logger.info(f"  - Connectivity test: SKIPPED (unknown input shape format)")
+                    else:
+                        logger.info(f"  - Connectivity test: SKIPPED (no input shape)")
+                except Exception as connectivity_error:
+                    logger.error(f"  - Connectivity test: FAILED ({connectivity_error})")
+                    
+            except Exception as e:
+                logger.error(f"Base {model_type} - Architecture validation FAILED: {e}")
+                
+            # Save the model with detailed error logging
+            try:
+                model_path = base_dir / f"{model_type}_base.h5"
+                model.save(model_path)
+                logger.info(f"✓ Successfully saved base {model_type} model to {model_path}")
+            except Exception as e:
+                logger.error(f"✗ Failed to save base {model_type} model: {e}")
+                raise
         
         # Save symbol-specific models
         symbol_dir = save_dir / "symbol_models"
@@ -1569,7 +1839,52 @@ class UniversalTrainer:
             type_dir.mkdir(exist_ok=True)
             
             for symbol, model in symbol_models.items():
-                model.save(type_dir / f"{symbol}.h5")
+                logger.info(f"Saving {model_type} model for symbol {symbol}...")
+                
+                # Validate model architecture before saving
+                try:
+                    logger.info(f"Symbol {symbol} {model_type} - Architecture validation:")
+                    logger.info(f"  - Model name: {model.name}")
+                    logger.info(f"  - Total parameters: {model.count_params():,}")
+                    logger.info(f"  - Input shape: {model.input_shape if hasattr(model, 'input_shape') else 'Multiple inputs'}")
+                    logger.info(f"  - Output shape: {model.output_shape if hasattr(model, 'output_shape') else 'Multiple outputs'}")
+                    logger.info(f"  - Number of layers: {len(model.layers)}")
+                    
+                    # Test model connectivity with dummy prediction
+                    try:
+                        if hasattr(model, 'input_shape') and model.input_shape:
+                            # Handle single input models
+                            if isinstance(model.input_shape, tuple):
+                                dummy_input = np.random.random((1,) + model.input_shape[1:])
+                                dummy_output = model.predict(dummy_input, verbose=0)
+                                logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
+                            # Handle multiple input models
+                            elif isinstance(model.input_shape, list):
+                                dummy_inputs = []
+                                for input_shape in model.input_shape:
+                                    if input_shape is not None:
+                                        dummy_inputs.append(np.random.random((1,) + input_shape[1:]))
+                                dummy_output = model.predict(dummy_inputs, verbose=0)
+                                logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
+                            else:
+                                logger.info(f"  - Connectivity test: SKIPPED (unknown input shape format)")
+                        else:
+                            logger.info(f"  - Connectivity test: SKIPPED (no input shape)")
+                    except Exception as connectivity_error:
+                        logger.error(f"  - Connectivity test: FAILED ({connectivity_error})")
+                        
+                except Exception as e:
+                    logger.error(f"Symbol {symbol} {model_type} - Architecture validation FAILED: {e}")
+                    logger.error(f"  - This model may be corrupted and could cause loading issues")
+                    
+                # Save the model with detailed error logging
+                try:
+                    model_path = type_dir / f"{symbol}.h5"
+                    model.save(model_path)
+                    logger.info(f"✓ Successfully saved {model_type} model for {symbol} to {model_path}")
+                except Exception as e:
+                    logger.error(f"✗ Failed to save {model_type} model for {symbol}: {e}")
+                    raise
         
         # Save metadata
         metadata = {
@@ -1591,44 +1906,190 @@ class UniversalTrainer:
         
         logger.info(f"Saved universal models to {save_dir}")
     
-    async def load_universal_models(self, load_dir: Path) -> None:
+    async def load_universal_models(self, load_dir: Path) -> bool:
         """
         Load universal models and training state.
         
         Args:
             load_dir: Directory to load models from
+            
+        Returns:
+            bool: True if models loaded successfully, False otherwise
         """
-        load_dir = Path(load_dir)
-        
-        # Load metadata
-        with open(load_dir / "universal_metadata.json", 'r') as f:
-            metadata = json.load(f)
-        
-        self.symbol_to_id = metadata['symbol_mappings']['symbol_to_id']
-        self.id_to_symbol = {int(k): v for k, v in metadata['symbol_mappings']['id_to_symbol'].items()}
-        self.ensemble_weights = metadata['ensemble_weights']
-        
-        # Initialize architectures
-        self.universal_architectures = UniversalModelArchitectures(
-            num_symbols=len(self.symbol_to_id),
-            symbol_embedding_dim=metadata['config']['symbol_embedding_dim']
-        )
-        
-        # Load base models
-        base_dir = load_dir / "base_models"
-        for model_file in base_dir.glob("*_base.h5"):
-            model_type = model_file.stem.replace('_base', '')
-            self.base_models[model_type] = tf.keras.models.load_model(model_file)
-        
-        # Load symbol-specific models
-        symbol_dir = load_dir / "symbol_models"
-        for type_dir in symbol_dir.iterdir():
-            if type_dir.is_dir():
-                model_type = type_dir.name
-                self.symbol_models[model_type] = {}
+        try:
+            load_dir = Path(load_dir)
+            
+            # Load metadata
+            metadata_path = load_dir / "universal_metadata.json"
+            if not metadata_path.exists():
+                logger.error(f"Universal metadata not found: {metadata_path}")
+                return False
                 
-                for model_file in type_dir.glob("*.h5"):
-                    symbol = model_file.stem
-                    self.symbol_models[model_type][symbol] = tf.keras.models.load_model(model_file)
-        
-        logger.info(f"Loaded universal models from {load_dir}")
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            
+            self.symbol_to_id = metadata['symbol_mappings']['symbol_to_id']
+            self.id_to_symbol = {int(k): v for k, v in metadata['symbol_mappings']['id_to_symbol'].items()}
+            self.ensemble_weights = metadata['ensemble_weights']
+            
+            # Initialize architectures
+            self.universal_architectures = UniversalModelArchitectures(
+                num_symbols=len(self.symbol_to_id),
+                symbol_embedding_dim=metadata['config']['symbol_embedding_dim']
+            )
+            
+            # Define custom objects for model loading
+            from tensorflow.keras.layers import (
+                MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D,
+                Embedding, Concatenate, BatchNormalization, Add, Reshape,
+                Conv2D, MaxPooling2D, Flatten, LSTM, Dense, Dropout, Input
+            )
+            
+            custom_objects = {
+                'MultiHeadAttention': MultiHeadAttention,
+                'LayerNormalization': LayerNormalization,
+                'GlobalAveragePooling1D': GlobalAveragePooling1D,
+                'Embedding': Embedding,
+                'Concatenate': Concatenate,
+                'BatchNormalization': BatchNormalization,
+                'Add': Add,
+                'Reshape': Reshape,
+                'Conv2D': Conv2D,
+                'MaxPooling2D': MaxPooling2D,
+                'Flatten': Flatten,
+                'LSTM': LSTM,
+                'Dense': Dense,
+                'Dropout': Dropout,
+                'Input': Input
+            }
+            
+            # Load base models
+            base_dir = load_dir / "base_models"
+            base_models_loaded = 0
+            if base_dir.exists():
+                for model_file in base_dir.glob("*_base.h5"):
+                    model_type = model_file.stem.replace('_base', '')
+                    try:
+                        loaded_model = tf.keras.models.load_model(
+                            model_file, 
+                            custom_objects=custom_objects,
+                            compile=False
+                        )
+                        
+                        # Perform integrity check after loading
+                        try:
+                            logger.info(f"Base {model_type} - Post-load integrity check:")
+                            logger.info(f"  - Model name: {loaded_model.name}")
+                            logger.info(f"  - Total parameters: {loaded_model.count_params():,}")
+                            logger.info(f"  - Input shape: {loaded_model.input_shape if hasattr(loaded_model, 'input_shape') else 'Multiple inputs'}")
+                            logger.info(f"  - Output shape: {loaded_model.output_shape if hasattr(loaded_model, 'output_shape') else 'Multiple outputs'}")
+                            logger.info(f"  - Number of layers: {len(loaded_model.layers)}")
+                            
+                            # Test model connectivity with dummy prediction
+                            try:
+                                if hasattr(loaded_model, 'input_shape') and loaded_model.input_shape:
+                                    # Handle both single and multiple input models
+                                    if isinstance(loaded_model.input_shape, tuple):
+                                        # Single input model
+                                        dummy_input = np.random.random((1,) + loaded_model.input_shape[1:])
+                                    else:
+                                        # Multiple input model - use first input shape (feature input)
+                                        dummy_input = [np.random.random((1,) + tuple(loaded_model.input_shape[0][1:])),
+                                                     np.random.random((1, 1))]  # symbol input
+                                    dummy_output = loaded_model.predict(dummy_input, verbose=0)
+                                    logger.info(f"  - Post-load connectivity test: PASSED (output shape: {dummy_output.shape})")
+                                else:
+                                    logger.info(f"  - Post-load connectivity test: SKIPPED (no input_shape attribute)")
+                            except Exception as conn_error:
+                                logger.warning(f"  - Post-load connectivity test: FAILED ({conn_error})")
+                                
+                            self.base_models[model_type] = loaded_model
+                            base_models_loaded += 1
+                            logger.info(f"✓ Loaded and verified base {model_type} model")
+                            
+                        except Exception as integrity_error:
+                            logger.error(f"Base {model_type} - Post-load integrity check FAILED: {integrity_error}")
+                            logger.error(f"  - Model loaded but failed verification, skipping")
+                            
+                    except Exception as e:
+                        logger.error(f"Failed to load base {model_type} model: {e}")
+            
+            # Load symbol-specific models
+            symbol_dir = load_dir / "symbol_models"
+            symbol_models_loaded = 0
+            corrupted_models = []
+            if symbol_dir.exists():
+                for type_dir in symbol_dir.iterdir():
+                    if type_dir.is_dir():
+                        model_type = type_dir.name
+                        self.symbol_models[model_type] = {}
+                        
+                        for model_file in type_dir.glob("*.h5"):
+                            symbol = model_file.stem
+                            try:
+                                loaded_model = tf.keras.models.load_model(
+                                    model_file,
+                                    custom_objects=custom_objects,
+                                    compile=False
+                                )
+                                
+                                # Perform integrity check after loading
+                                try:
+                                    logger.info(f"Symbol {symbol} {model_type} - Post-load integrity check:")
+                                    logger.info(f"  - Model name: {loaded_model.name}")
+                                    logger.info(f"  - Total parameters: {loaded_model.count_params():,}")
+                                    logger.info(f"  - Input shape: {loaded_model.input_shape if hasattr(loaded_model, 'input_shape') else 'Multiple inputs'}")
+                                    logger.info(f"  - Output shape: {loaded_model.output_shape if hasattr(loaded_model, 'output_shape') else 'Multiple outputs'}")
+                                    logger.info(f"  - Number of layers: {len(loaded_model.layers)}")
+                                    
+                                    # Test model connectivity with dummy prediction
+                                    try:
+                                        if hasattr(loaded_model, 'input_shape') and loaded_model.input_shape:
+                                            # Handle both single and multiple input models
+                                            if isinstance(loaded_model.input_shape, tuple):
+                                                # Single input model
+                                                dummy_input = np.random.random((1,) + loaded_model.input_shape[1:])
+                                            else:
+                                                # Multiple input model - use first input shape (feature input)
+                                                dummy_input = [np.random.random((1,) + tuple(loaded_model.input_shape[0][1:])),
+                                                             np.random.random((1, 1))]  # symbol input
+                                            dummy_output = loaded_model.predict(dummy_input, verbose=0)
+                                            logger.info(f"  - Post-load connectivity test: PASSED (output shape: {dummy_output.shape})")
+                                        else:
+                                            logger.info(f"  - Post-load connectivity test: SKIPPED (no input_shape attribute)")
+                                    except Exception as conn_error:
+                                        logger.warning(f"  - Post-load connectivity test: FAILED ({conn_error})")
+                                        
+                                    self.symbol_models[model_type][symbol] = loaded_model
+                                    symbol_models_loaded += 1
+                                    logger.info(f"✓ Loaded and verified {model_type} model for {symbol}")
+                                    
+                                except Exception as integrity_error:
+                                    logger.error(f"Symbol {symbol} {model_type} - Post-load integrity check FAILED: {integrity_error}")
+                                    logger.error(f"  - Model loaded but failed verification, marking as corrupted")
+                                    corrupted_models.append(f"{model_type}/{symbol}")
+                                    
+                            except ValueError as e:
+                                if "inputs` not connected to `outputs" in str(e):
+                                    corrupted_models.append(f"{model_type}/{symbol}")
+                                    logger.warning(f"⚠️  Corrupted {model_type} model for {symbol} (architectural issue) - will be regenerated during training")
+                                    logger.error(f"  - ValueError details: {e}")
+                                else:
+                                    logger.error(f"Failed to load {model_type} model for {symbol}: {e}")
+                            except Exception as e:
+                                logger.error(f"Failed to load {model_type} model for {symbol}: {e}")
+            
+            total_models = base_models_loaded + symbol_models_loaded
+            
+            if corrupted_models:
+                logger.info(f"Successfully loaded {base_models_loaded} base models and {symbol_models_loaded} symbol-specific models (total: {total_models})")
+                logger.info(f"Found {len(corrupted_models)} corrupted symbol-specific models that will be regenerated: {corrupted_models}")
+            else:
+                logger.info(f"Successfully loaded {base_models_loaded} base models and {symbol_models_loaded} symbol-specific models (total: {total_models})")
+            
+            # Return True if we have at least base models (symbol models can be regenerated)
+            return base_models_loaded > 0
+            
+        except Exception as e:
+            logger.error(f"Error loading universal models: {e}")
+            return False

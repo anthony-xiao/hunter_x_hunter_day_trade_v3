@@ -279,9 +279,42 @@ class FeatureEngineering:
             features['close'] = data['close']
             features['volume'] = data['volume']
             
-            # Create target: predict if next period's close will be higher than current close
-            # This is required for universal training data preparation
-            features['target'] = (data['close'].shift(-1) > data['close']).astype(int)
+            # Create dual exit targets using UniversalTrainer's sophisticated approach
+            # This replaces the simple binary target with dual exit strategy (take profit/stop loss)
+            try:
+                from .universal_trainer import UniversalTrainer, UniversalTrainingConfig
+                
+                # Create minimal config for dual exit target generation
+                config = UniversalTrainingConfig(
+                    prediction_window=15,  # 15-minute prediction window
+                    take_profit_pct=0.003,  # 0.3% take profit
+                    stop_loss_pct=0.002    # 0.2% stop loss
+                )
+                
+                # Create a minimal UniversalTrainer instance for target generation
+                # We only need the _create_dual_exit_targets method, so we pass None for dependencies
+                trainer = UniversalTrainer(
+                    data_pipeline=None,
+                    feature_engineering=None,
+                    config=config
+                )
+                
+                # Generate dual exit targets
+                dual_exit_targets = trainer._create_dual_exit_targets(data)
+                
+                # Pad the targets to match the original data length
+                # The dual exit method returns fewer targets due to the prediction window
+                padded_targets = np.zeros(len(data), dtype=int)
+                padded_targets[:len(dual_exit_targets)] = dual_exit_targets
+                
+                features['target'] = padded_targets
+                
+                logger.info(f"Successfully created dual exit targets: {len(dual_exit_targets)} targets generated")
+                
+            except Exception as e:
+                logger.warning(f"Failed to create dual exit targets, falling back to simple binary: {e}")
+                # Fallback to simple binary target if dual exit fails
+                features['target'] = (data['close'].shift(-1) > data['close']).astype(int)
             
             # Price-based features
             features['returns'] = data['close'].pct_change()

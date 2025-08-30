@@ -132,7 +132,7 @@ async def initialize_trading_system():
         
         # Initialize signal generator
         logger.info("Initializing signal generator...")
-        signal_generator = SignalGenerator()
+        signal_generator = SignalGenerator(model_trainer=model_trainer)
         
         # Get trading universe (this is not actually async)
         trading_symbols = data_pipeline.get_ticker_universe()
