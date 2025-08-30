@@ -701,8 +701,7 @@ class ModelTrainer:
     async def _train_cnn(self, X_train: np.ndarray, y_train: np.ndarray, 
                         X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> Sequential:
         """Train CNN model"""
-        # epochs = config.parameters.get('epochs', 80)
-        epochs = config.parameters.get('epochs', 1)
+        epochs = config.parameters.get('epochs', 80)
         batch_size = config.parameters.get('batch_size', 128)
         logger.info(f"Starting CNN training with {epochs} epochs, batch size {batch_size}")
         
@@ -2517,13 +2516,13 @@ class ModelTrainer:
             # Create universal training configuration
             universal_config = UniversalTrainingConfig(
                 # base_epochs=50,
-                base_epochs=1,
+                base_epochs=2,
                 # base_batch_size=256,
                 base_batch_size=64,
                 base_learning_rate=0.001,
                 base_validation_split=0.2,
                 # finetune_epochs=30,
-                finetune_epochs=1,
+                finetune_epochs=2,
                 # finetune_batch_size=128,
                 finetune_batch_size=32,
                 finetune_learning_rate=0.0001,
@@ -2659,7 +2658,7 @@ class ModelTrainer:
             logger.error(f"Error saving universal models: {e}")
             return False
     
-    def load_universal_models(self, model_dir: Path) -> bool:
+    async def load_universal_models(self, model_dir: Path) -> bool:
         """Load universal models from disk"""
         try:
             if not model_dir.exists():
@@ -2669,20 +2668,26 @@ class ModelTrainer:
             # Initialize universal trainer if not already done
             if not self.universal_trainer:
                 # Load configuration from saved models
-                config_path = model_dir / 'universal_config.json'
-                if config_path.exists():
-                    with open(config_path, 'r') as f:
-                        config_data = json.load(f)
+                metadata_path = model_dir / 'universal_metadata.json'
+                if metadata_path.exists():
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
                     
-                    symbols = config_data.get('symbols', [])
+                    # Extract symbols from symbol_mappings
+                    symbol_mappings = metadata.get('symbol_mappings', {})
+                    symbols = list(symbol_mappings.get('symbol_to_id', {}).keys())
+                    if not symbols:
+                        logger.error("No symbols found in universal metadata")
+                        return False
+                    
                     if not self.initialize_universal_training(symbols):
                         return False
                 else:
                     logger.error("Universal training configuration not found")
                     return False
             
-            # Load universal models
-            success = self.universal_trainer.load_universal_models(model_dir)
+            # Load universal models (await the async method)
+            success = await self.universal_trainer.load_universal_models(model_dir)
             
             if success:
                 # Update main models dict with loaded universal models

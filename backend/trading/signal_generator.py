@@ -97,9 +97,12 @@ class MarketRegime:
     timestamp: datetime
 
 class SignalGenerator:
-    def __init__(self):
+    def __init__(self, model_trainer: Optional[ModelTrainer] = None):
         self.models: Dict[str, Dict[ModelType, Any]] = {}  # symbol -> model_type -> model
         self.scalers: Dict[str, StandardScaler] = {}  # symbol -> scaler
+        
+        # Store ModelTrainer instance for universal model loading
+        self.model_trainer = model_trainer
         
         # Initialize ensemble weights - will be loaded from optimization results
         self.ensemble_weights: Dict[str, Dict[ModelType, float]] = {}  # symbol -> model_type -> weight
@@ -146,6 +149,8 @@ class SignalGenerator:
         self.universal_feature_engineering: Optional[UniversalFeatureEngineering] = None
         self.is_universal_mode: bool = False
         self.universal_models: Dict[str, Any] = {}  # Store loaded universal models
+        self.universal_symbol_models: Dict[str, Dict[str, Any]] = {}  # Store symbol-specific universal models
+        self.universal_metadata: Dict[str, Any] = {}  # Store universal metadata
         
         # Initialize additional attributes
         self._initialize_attributes()
@@ -317,13 +322,20 @@ class SignalGenerator:
         """Initialize ML models for given symbols"""
         try:
             # Try to initialize universal models first
-            universal_success = await self.initialize_universal_models(symbols)
-            if universal_success:
-                logger.info("Universal models initialized successfully")
-                self.is_universal_mode = True
-            else:
-                logger.info("Falling back to symbol-specific models")
+            universal_success = False
+            try:
+                universal_success = await self.initialize_universal_models(symbols)
+                if universal_success:
+                    logger.info("Universal models initialized successfully")
+                    self.is_universal_mode = True
+                else:
+                    logger.warning("Universal model initialization returned False, falling back to symbol-specific models")
+                    self.is_universal_mode = False
+            except Exception as universal_error:
+                logger.error(f"Error during universal model initialization: {universal_error}")
+                logger.info("Falling back to symbol-specific models due to universal model error")
                 self.is_universal_mode = False
+                universal_success = False
             
             for symbol in symbols:
                 logger.info(f"Initializing models for {symbol}")
@@ -1848,23 +1860,25 @@ class SignalGenerator:
         try:
             logger.info("Initializing universal models...")
             
-            # Initialize universal components
-            # Get data_pipeline and feature_engineering from model_trainer if available
-            if hasattr(self, 'model_trainer') and self.model_trainer:
-                data_pipeline = self.model_trainer.data_pipeline
-                feature_engineering = UniversalFeatureEngineering()
-                self.universal_trainer = UniversalTrainer(
-                    data_pipeline=data_pipeline,
-                    feature_engineering=feature_engineering
-                )
-            else:
-                logger.warning("Model trainer not available, cannot initialize UniversalTrainer")
+            # Check if ModelTrainer is available
+            if not self.model_trainer:
+                logger.warning("ModelTrainer not available, cannot initialize universal models")
                 return False
+            
+            # Initialize universal components
+            data_pipeline = self.model_trainer.data_pipeline
+            feature_engineering = UniversalFeatureEngineering()
+            self.universal_trainer = UniversalTrainer(
+                data_pipeline=data_pipeline,
+                feature_engineering=feature_engineering
+            )
                 
-            self.universal_architectures = UniversalModelArchitectures()
+            # Initialize UniversalModelArchitectures with number of symbols
+            num_symbols = len(symbols) if symbols else 10  # Default to 10 if no symbols provided
+            self.universal_architectures = UniversalModelArchitectures(num_symbols=num_symbols)
             self.universal_feature_engineering = feature_engineering
             
-            # Load universal models if they exist
+            # Load universal models using ModelTrainer's method
             universal_models_loaded = await self._load_universal_models()
             
             if universal_models_loaded:
@@ -1880,41 +1894,70 @@ class SignalGenerator:
             return False
     
     async def _load_universal_models(self) -> bool:
-        """Load trained universal models from disk"""
+        """Load trained universal models using ModelTrainer's universal loading method"""
         try:
-            model_types = [ModelType.LSTM, ModelType.CNN, ModelType.TRANSFORMER, 
-                          ModelType.RANDOM_FOREST, ModelType.XGBOOST]
+            if not self.model_trainer:
+                logger.error("ModelTrainer not available for loading universal models")
+                return False
             
-            for model_type in model_types:
-                model_path = f"models/universal/{model_type.value}_universal_model"
-                
-                try:
-                    if model_type in [ModelType.LSTM, ModelType.CNN, ModelType.TRANSFORMER]:
-                        # Load TensorFlow models
-                        import tensorflow as tf
-                        model = tf.keras.models.load_model(f"{model_path}.h5")
-                        self.universal_models[model_type.value] = model
-                        logger.info(f"✓ Loaded universal {model_type.value} model")
-                    elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST]:
-                        # Load scikit-learn/XGBoost models
-                        with open(f"{model_path}.pkl", 'rb') as f:
-                            model = pickle.load(f)
-                        self.universal_models[model_type.value] = model
-                        logger.info(f"✓ Loaded universal {model_type.value} model")
+            # Use ModelTrainer's load_universal_models method
+            from pathlib import Path
+            universal_dir = Path("/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal")
+            
+            # Check if universal directory exists
+            if not universal_dir.exists():
+                logger.warning(f"Universal models directory not found: {universal_dir}")
+                return False
+            
+            # Load universal models using ModelTrainer
+            success = await self.model_trainer.load_universal_models(universal_dir)
+            
+            if success:
+                # Get the loaded models from ModelTrainer's universal_trainer
+                if hasattr(self.model_trainer, 'universal_trainer') and self.model_trainer.universal_trainer:
+                    universal_trainer = self.model_trainer.universal_trainer
+                    
+                    # Copy base models to our universal_models dict
+                    if hasattr(universal_trainer, 'base_models'):
+                        for model_type, model in universal_trainer.base_models.items():
+                            self.universal_models[model_type] = model
+                            logger.info(f"✓ Loaded universal base {model_type} model")
+                    
+                    # Store symbol-specific models if available
+                    if hasattr(universal_trainer, 'symbol_models'):
+                        self.universal_symbol_models = universal_trainer.symbol_models
+                        logger.info(f"✓ Loaded symbol-specific models for {len(self.universal_symbol_models)} model types")
+                    
+                    # Load universal metadata
+                    metadata_path = universal_dir / 'universal_metadata.json'
+                    if metadata_path.exists():
+                        with open(metadata_path, 'r') as f:
+                            self.universal_metadata = json.load(f)
+                        logger.info("✓ Loaded universal metadata")
                         
-                except FileNotFoundError:
-                    logger.warning(f"Universal {model_type.value} model not found at {model_path}")
-                    continue
-                except Exception as e:
-                    logger.error(f"Error loading universal {model_type.value} model: {e}")
-                    continue
-            
-            # Check if any universal models were loaded
-            if self.universal_models:
-                logger.info(f"Loaded {len(self.universal_models)} universal models")
-                return True
+                        # Update ensemble weights from universal metadata
+                        if 'ensemble_weights' in self.universal_metadata:
+                            universal_weights = self.universal_metadata['ensemble_weights']
+                            # Convert to ModelType enum keys
+                            converted_weights = {}
+                            for model_name, weight in universal_weights.items():
+                                try:
+                                    model_type = ModelType(model_name.lower())
+                                    converted_weights[model_type] = weight
+                                except ValueError:
+                                    logger.warning(f"Unknown model type in universal weights: {model_name}")
+                            
+                            if converted_weights:
+                                self.default_ensemble_weights = converted_weights
+                                logger.info("✓ Updated ensemble weights from universal metadata")
+                    
+                    logger.info(f"Successfully loaded {len(self.universal_models)} universal models")
+                    return True
+                else:
+                    logger.error("ModelTrainer's universal_trainer not available after loading")
+                    return False
             else:
-                logger.warning("No universal models could be loaded")
+                logger.warning("Failed to load universal models using ModelTrainer")
                 return False
                 
         except Exception as e:
