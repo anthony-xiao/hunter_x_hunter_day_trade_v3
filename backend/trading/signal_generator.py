@@ -15,9 +15,7 @@ from collections import defaultdict, deque
 # ML libraries
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
-import xgboost as xgb
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # Technical analysis
@@ -29,6 +27,7 @@ from ml.model_trainer import ModelTrainer
 from ml.universal_trainer import UniversalTrainer
 from ml.universal_model_architectures import UniversalModelArchitectures
 from ml.universal_feature_engineering import UniversalFeatureEngineering
+from ml.ml_feature_engineering import FeatureEngineering
 
 class SignalType(Enum):
     BUY = "buy"
@@ -40,8 +39,6 @@ class ModelType(Enum):
     LSTM = "lstm"
     CNN = "cnn"
     TRANSFORMER = "transformer"
-    RANDOM_FOREST = "random_forest"
-    XGBOOST = "xgboost"
 
 class ConfidenceLevel(Enum):
     LOW = "low"        # 0.5-0.6
@@ -107,11 +104,9 @@ class SignalGenerator:
         # Initialize ensemble weights - will be loaded from optimization results
         self.ensemble_weights: Dict[str, Dict[ModelType, float]] = {}  # symbol -> model_type -> weight
         self.default_ensemble_weights = {
-            ModelType.LSTM: 0.25,
-            ModelType.CNN: 0.20,
-            ModelType.TRANSFORMER: 0.25,
-            ModelType.RANDOM_FOREST: 0.15,
-            ModelType.XGBOOST: 0.15
+            ModelType.LSTM: 0.35,
+            ModelType.CNN: 0.30,
+            ModelType.TRANSFORMER: 0.35
         }
         
         # Initialize ensemble configuration manager with absolute path
@@ -165,8 +160,12 @@ class SignalGenerator:
             optimized_weights = self.ensemble_config.load_optimized_weights()
             
             # Convert string keys to ModelType enum for internal use
+            # Filter out unsupported model types (random_forest, xgboost)
+            supported_models = {'lstm', 'cnn', 'transformer'}
             converted_weights = {}
             for model_name, weight in optimized_weights.items():
+                if model_name.lower() not in supported_models:
+                    continue  # Skip unsupported models silently
                 try:
                     model_type = ModelType(model_name)
                     converted_weights[model_type] = weight
@@ -189,11 +188,9 @@ class SignalGenerator:
             logger.error(f"Error loading optimized ensemble weights: {e}")
             # Fallback to default equal weights
             self.default_ensemble_weights = {
-                ModelType.LSTM: 0.2,
-                ModelType.CNN: 0.2,
-                ModelType.RANDOM_FOREST: 0.2,
-                ModelType.XGBOOST: 0.2,
-                ModelType.TRANSFORMER: 0.2
+                ModelType.LSTM: 0.33,
+                ModelType.CNN: 0.33,
+                ModelType.TRANSFORMER: 0.34
             }
             logger.info("Using default equal ensemble weights as fallback")
     
@@ -299,8 +296,6 @@ class SignalGenerator:
         self.model_configs = {
             'lstm': {'feature_count': default_feature_count},
             'cnn': {'feature_count': default_feature_count},
-            'random_forest': {'feature_count': default_feature_count},
-            'xgboost': {'feature_count': default_feature_count},
             'transformer': {'feature_count': default_feature_count}
         }
         logger.info(f"Using default model configurations with {default_feature_count} features for all models")
@@ -342,11 +337,9 @@ class SignalGenerator:
                 
                 # Initialize ensemble weights (equal weights initially)
                 self.ensemble_weights[symbol] = {
-                    ModelType.LSTM: 0.25,
-                    ModelType.CNN: 0.20,
-                    ModelType.TRANSFORMER: 0.25,
-                    ModelType.RANDOM_FOREST: 0.15,
-                    ModelType.XGBOOST: 0.15
+                    ModelType.LSTM: 0.35,
+                    ModelType.CNN: 0.30,
+                    ModelType.TRANSFORMER: 0.35
                 }
                 
                 # Load or create symbol-specific models (as fallback or primary)
@@ -382,29 +375,28 @@ class SignalGenerator:
             model_trainer = ModelTrainer(create_model_dir=False)
             
             try:
-                # Use ModelTrainer's sophisticated load_models method
-                await model_trainer.load_models(version="latest")
+                # Load universal models into the ModelTrainer instance
+                from pathlib import Path
+                universal_models_dir = Path(os.path.dirname(os.path.dirname(__file__))) / 'models' / 'universal'
+                await model_trainer.load_universal_models(universal_models_dir)
                 
+                # Use universal models from ModelTrainer if available
                 # Map ModelTrainer's models to SignalGenerator's model structure
-                # ModelTrainer uses string keys, SignalGenerator uses ModelType enum
                 model_mapping = {
                     'lstm': ModelType.LSTM,
                     'cnn': ModelType.CNN,
-                    'transformer': ModelType.TRANSFORMER,
-                    'random_forest': ModelType.RANDOM_FOREST,
-                    'xgboost': ModelType.XGBOOST
+                    'transformer': ModelType.TRANSFORMER
                 }
                 
-                # Copy loaded models from ModelTrainer to SignalGenerator
+                # Copy loaded universal models from ModelTrainer to SignalGenerator
                 for trainer_key, signal_type in model_mapping.items():
-                    if trainer_key in model_trainer.models:
-                        self.models[symbol][signal_type] = model_trainer.models[trainer_key]
-                        logger.info(f"✓ Loaded {signal_type.value} model for {symbol} using ModelTrainer")
+                    universal_key = f"universal_{trainer_key}"
+                    if universal_key in model_trainer.models:
+                        self.models[symbol][signal_type] = model_trainer.models[universal_key]
+                        logger.info(f"✓ Using universal {signal_type.value} model for {symbol}")
                     else:
-                        logger.warning(f"Model {trainer_key} not found in ModelTrainer, creating fallback")
+                        logger.warning(f"Universal model {trainer_key} not found, creating fallback")
                         self.models[symbol][signal_type] = await self._create_model(signal_type, symbol)
-                
-                # All models loaded from ModelTrainer or created as fallback
                 
                 # Copy scalers from ModelTrainer if available
                 if hasattr(model_trainer, 'scalers') and model_trainer.scalers:
@@ -419,19 +411,19 @@ class SignalGenerator:
                     else:
                         # Single scaler
                         self.scalers[symbol] = model_trainer.scalers
-                    logger.info(f"✓ Loaded scalers for {symbol} from ModelTrainer")
+                    logger.info(f"✓ Using universal scalers for {symbol}")
                 else:
                     # Create default scaler if none available
                     self.scalers[symbol] = StandardScaler()
                     logger.info(f"Created default scaler for {symbol}")
                 
-                logger.info(f"Successfully loaded models for {symbol} using ModelTrainer's load_models method")
+                logger.info(f"Successfully configured models for {symbol} using universal models")
                 
             except Exception as trainer_error:
-                logger.error(f"Failed to load models using ModelTrainer: {trainer_error}")
+                logger.error(f"Failed to use universal models: {trainer_error}")
                 logger.info(f"Falling back to creating new models for {symbol}")
                 
-                # Fallback: create new models if ModelTrainer loading fails
+                # Fallback: create new models if universal model usage fails
                 for model_type in ModelType:
                     self.models[symbol][model_type] = await self._create_model(model_type, symbol)
                 
@@ -456,23 +448,9 @@ class SignalGenerator:
                 return self._create_cnn_model(feature_count)
             elif model_type == ModelType.TRANSFORMER:
                 return self._create_transformer_model(feature_count)
-            elif model_type == ModelType.RANDOM_FOREST:
-                return RandomForestRegressor(
-                    n_estimators=100,
-                    max_depth=10,
-                    min_samples_split=5,
-                    min_samples_leaf=2,
-                    random_state=42
-                )
-            elif model_type == ModelType.XGBOOST:
-                return xgb.XGBRegressor(
-                    n_estimators=100,
-                    max_depth=6,
-                    learning_rate=0.1,
-                    subsample=0.8,
-                    colsample_bytree=0.8,
-                    random_state=42
-                )
+            else:
+                logger.error(f"Unsupported model type: {model_type}")
+                return None
             
         except Exception as e:
             logger.error(f"Error creating {model_type.value} model: {e}")
@@ -674,13 +652,11 @@ class SignalGenerator:
             if self.is_universal_mode and self.universal_models:
                 logger.debug(f"Using universal models for {symbol}")
                 
-                # Prepare features for universal models
-                features = await self._prepare_features(symbol, data, None, feature_count)
-                if features is not None and len(features) > 0:
-                    universal_prediction = await self._generate_universal_prediction(symbol, features)
-                    if universal_prediction is not None:
-                        logger.info(f"✓ Generated universal prediction for {symbol}: {universal_prediction.prediction:.4f} (confidence: {universal_prediction.confidence:.4f})")
-                        return universal_prediction
+                # Use market data directly for universal models
+                universal_prediction = await self._generate_universal_prediction(symbol, data)
+                if universal_prediction is not None:
+                    logger.info(f"✓ Generated universal prediction for {symbol}: {universal_prediction.final_prediction:.4f} (confidence: {universal_prediction.confidence:.4f})")
+                    return universal_prediction
                 
                 logger.warning(f"Universal prediction failed for {symbol}, falling back to symbol-specific models")
             
@@ -803,8 +779,106 @@ class SignalGenerator:
             # FEATURE COUNT DEBUG: Log feature count being passed to model
             logger.info(f"[FEATURE_DEBUG] {symbol}: _get_model_prediction - {model_type.value} model receiving features with shape {features.shape}, actual_feature_count: {actual_feature_count}, requested_feature_count: {feature_count}")
             
-            if model_type == ModelType.CNN:
-                # CNN model - expects 4D input (batch_size, height, width, channels) for 2D CNN
+            # Check if this is a universal model (has 2 inputs)
+            is_universal_model = False
+            logger.info(f"[UNIVERSAL_DEBUG] Checking if {model_type.value} is universal model. is_universal_mode: {self.is_universal_mode}")
+            
+            if self.is_universal_mode and model_type in [ModelType.CNN, ModelType.LSTM, ModelType.TRANSFORMER]:
+                # Check if model has multiple inputs (universal models have 2 inputs)
+                model_inputs = getattr(model, 'inputs', None)
+                model_input_shape = getattr(model, 'input_shape', None)
+                model_name = getattr(model, '_name', None)
+                
+                logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} - inputs: {model_inputs}, input_shape: {model_input_shape}, name: {model_name}")
+                
+                if hasattr(model, 'inputs') and len(model.inputs) == 2:
+                    is_universal_model = True
+                    logger.info(f"[UNIVERSAL_DEBUG] Detected universal model {model_type.value} with {len(model.inputs)} inputs")
+                elif hasattr(model, 'input_shape') and isinstance(model.input_shape, list) and len(model.input_shape) == 2:
+                    is_universal_model = True
+                    logger.info(f"[UNIVERSAL_DEBUG] Detected universal model {model_type.value} with input_shape list of length {len(model.input_shape)}")
+                elif hasattr(model, '_name') and model._name and 'universal' in model._name.lower():
+                    is_universal_model = True
+                    logger.info(f"[UNIVERSAL_DEBUG] Detected universal model {model_type.value} by name: {model._name}")
+                else:
+                    logger.info(f"[UNIVERSAL_DEBUG] Model {model_type.value} not detected as universal")
+            else:
+                logger.info(f"[UNIVERSAL_DEBUG] Skipping universal check for {model_type.value} - not in universal mode or not neural network model")
+            
+            if is_universal_model:
+                # Universal models expect 2 inputs: [features, symbol_embedding]
+                logger.debug(f"Using universal model path for {model_type.value}")
+                
+                # Get symbol embedding
+                symbol_embedding = self.universal_feature_engineering.get_symbol_embedding(symbol)
+                
+                # Prepare feature input for universal models
+                # Universal models expect (batch_size, sequence_length, feature_dim)
+                # Model expects: (None, 30, 187) based on training architecture
+                
+                logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} input features shape: {features.shape}")
+                
+                # Expected dimensions from model architecture
+                expected_sequence_length = 30
+                expected_feature_dim = 187
+                
+                if len(features.shape) == 2:
+                    # Features are in (time_steps, features) format
+                    current_time_steps, current_features = features.shape
+                    
+                    # We need to reshape to match (1, 30, 187)
+                    # Option 1: Truncate/pad time dimension to 30
+                    if current_time_steps >= expected_sequence_length:
+                        # Take the last 30 time steps
+                        time_adjusted_features = features[-expected_sequence_length:, :]
+                    else:
+                        # Pad with zeros at the beginning
+                        time_adjusted_features = np.zeros((expected_sequence_length, current_features))
+                        time_adjusted_features[-current_time_steps:, :] = features
+                    
+                    # Option 2: Handle feature dimension to match 187
+                    if current_features >= expected_feature_dim:
+                        # Truncate features to 187
+                        feature_input = time_adjusted_features[:, :expected_feature_dim]
+                    else:
+                        # Pad features with zeros to reach 187
+                        feature_input = np.zeros((expected_sequence_length, expected_feature_dim))
+                        feature_input[:, :current_features] = time_adjusted_features
+                    
+                    # Add batch dimension
+                    feature_input = feature_input.reshape(1, expected_sequence_length, expected_feature_dim)
+                    
+                else:
+                    # Features are flattened - reshape to expected dimensions
+                    total_features = features.size
+                    expected_total = expected_sequence_length * expected_feature_dim
+                    
+                    if total_features >= expected_total:
+                        # Truncate and reshape
+                        feature_input = features.flatten()[:expected_total].reshape(1, expected_sequence_length, expected_feature_dim)
+                    else:
+                        # Pad with zeros and reshape
+                        padded_features = np.zeros(expected_total)
+                        padded_features[:total_features] = features.flatten()
+                        feature_input = padded_features.reshape(1, expected_sequence_length, expected_feature_dim)
+                
+                logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} feature_input shape: {feature_input.shape}")
+                
+                # Symbol embedding as integer tensor
+                import tensorflow as tf
+                symbol_input = tf.constant([[symbol_embedding]], dtype=tf.int32)
+                
+                logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} symbol_input shape: {symbol_input.shape}")
+                
+                # Pass both inputs to the universal model
+                prediction = model.predict([feature_input, symbol_input], verbose=0)[0][0]
+                
+                # Enhanced confidence for universal models
+                base_confidence = 0.6 + abs(prediction) * 0.3  # Higher base for universal models
+                confidence = min(0.9, max(0.4, base_confidence))
+                
+            elif model_type == ModelType.CNN:
+                # Regular CNN model - expects 4D input (batch_size, height, width, channels) for 2D CNN
                 # The trained model architecture: Conv2D(32,(3,3)) + MaxPool(2,2) + Conv2D(64,(3,3)) + MaxPool(2,2) + Flatten()
                 # Dense layer expects 14976 features = 64 * 39 * 6 (calculated from conv/pool operations)
                 # Working backwards: final size after flatten should be 64 * 39 * 6 = 14976
@@ -860,7 +934,7 @@ class SignalGenerator:
                 confidence = min(0.9, max(0.3, base_confidence + model_variance + input_complexity))
                 
             elif model_type in [ModelType.LSTM, ModelType.TRANSFORMER]:
-                # LSTM/Transformer models - expect 3D input (batch_size, time_steps, features)
+                # Regular LSTM/Transformer models - expect 3D input (batch_size, time_steps, features)
                 time_steps = features.shape[0]
                 
                 # Reshape features to match model expectations
@@ -882,34 +956,7 @@ class SignalGenerator:
                 model_type_bonus = 0.02 if model_type == ModelType.TRANSFORMER else 0.01  # Transformer slight bonus
                 confidence = min(0.9, max(0.3, base_confidence + model_variance + sequence_stability + model_type_bonus))
                 
-            elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST]:
-                # Sklearn-style models - use only latest features (no time sequence)
-                # Random Forest and XGBoost were trained with lookback_window=1
-                if len(features.shape) > 1:
-                    # Use only the latest row of features
-                    latest_features = features[-1:].reshape(1, -1)
-                else:
-                    # Already flattened
-                    latest_features = features.reshape(1, -1)
-                
-                # All models now use all available features (no filtering)
-                logger.debug(f"Features shape for {model_type.value}: {latest_features.shape}")
-                prediction = model.predict(latest_features)[0]
-                
-                # Enhanced confidence calculation for tree-based models
-                base_confidence = 0.5 + abs(prediction) * 0.3
-                
-                if hasattr(model, 'feature_importances_'):
-                    importance_score = np.mean(model.feature_importances_)
-                    # Add feature importance and model-specific factors
-                    importance_bonus = importance_score * 0.15
-                    model_variance = np.random.normal(0, 0.04)  # Medium variance for tree models
-                    feature_diversity = np.std(latest_features.flatten()) * 0.05  # Reward diverse features
-                    model_type_bonus = 0.03 if model_type == ModelType.XGBOOST else 0.02  # XGBoost slight bonus
-                    confidence = min(0.9, max(0.3, base_confidence + importance_bonus + model_variance + feature_diversity + model_type_bonus))
-                else:
-                    model_variance = np.random.normal(0, 0.04)
-                    confidence = min(0.9, max(0.3, base_confidence + model_variance))
+
             
             else:
                 return None
@@ -1868,6 +1915,13 @@ class SignalGenerator:
             # Initialize universal components
             data_pipeline = self.model_trainer.data_pipeline
             feature_engineering = UniversalFeatureEngineering()
+            
+            # Set symbol mappings for embedding lookup
+            if symbols:
+                symbol_mappings = {symbol: idx for idx, symbol in enumerate(symbols)}
+                feature_engineering.set_symbol_mappings(symbol_mappings)
+                logger.info(f"Set symbol mappings for {len(symbols)} symbols: {list(symbols)}")
+            
             self.universal_trainer = UniversalTrainer(
                 data_pipeline=data_pipeline,
                 feature_engineering=feature_engineering
@@ -1964,19 +2018,202 @@ class SignalGenerator:
             logger.error(f"Error loading universal models: {e}")
             return False
     
-    async def _generate_universal_prediction(self, symbol: str, features: np.ndarray) -> Optional[EnsemblePrediction]:
+    async def _prepare_universal_features(self, symbol: str, market_data: pd.DataFrame) -> Optional[np.ndarray]:
+        """Prepare universal features for a symbol using the same process as training
+        
+        This method follows the same universal feature engineering process as
+        _prepare_universal_features_for_symbol in universal_trainer.py to ensure
+        consistent feature dimensions (187 features) between training and live trading.
+        """
+        try:
+            logger.info(f"Preparing universal features for {symbol} in live trading")
+            
+            # Step 1: Engineer individual symbol features
+            # Create FeatureEngineering instance for individual symbol features
+            feature_engineering = FeatureEngineering()
+            
+            # Use training_mode=True to ensure consistent feature generation with training
+            feature_set = await feature_engineering.engineer_features(
+                symbol=symbol,
+                start_date=market_data.index[0].to_pydatetime(),
+                end_date=market_data.index[-1].to_pydatetime(),
+                include_cross_asset=True,
+                training_mode=True  # Use training mode for consistent feature generation
+            )
+            
+            if not feature_set or not hasattr(feature_set, 'technical_features') or feature_set.technical_features.empty:
+                logger.error(f"No individual features generated for {symbol}")
+                return None
+            
+            # Step 2: Combine individual symbol features (same as training)
+            feature_dfs = []
+            feature_counts = {}
+            
+            # Add technical features
+            if hasattr(feature_set, 'technical_features') and feature_set.technical_features is not None and not feature_set.technical_features.empty:
+                feature_dfs.append(feature_set.technical_features)
+                feature_counts['technical'] = len(feature_set.technical_features.columns)
+            
+            # Add market microstructure features
+            if hasattr(feature_set, 'market_microstructure') and feature_set.market_microstructure is not None and not feature_set.market_microstructure.empty:
+                feature_dfs.append(feature_set.market_microstructure)
+                feature_counts['market_microstructure'] = len(feature_set.market_microstructure.columns)
+            
+            # Add sentiment features
+            if hasattr(feature_set, 'sentiment_features') and feature_set.sentiment_features is not None and not feature_set.sentiment_features.empty:
+                feature_dfs.append(feature_set.sentiment_features)
+                feature_counts['sentiment'] = len(feature_set.sentiment_features.columns)
+            
+            # Add macro features
+            if hasattr(feature_set, 'macro_features') and feature_set.macro_features is not None and not feature_set.macro_features.empty:
+                feature_dfs.append(feature_set.macro_features)
+                feature_counts['macro'] = len(feature_set.macro_features.columns)
+            
+            # Add cross-asset features
+            if hasattr(feature_set, 'cross_asset_features') and feature_set.cross_asset_features is not None and not feature_set.cross_asset_features.empty:
+                feature_dfs.append(feature_set.cross_asset_features)
+                feature_counts['cross_asset'] = len(feature_set.cross_asset_features.columns)
+            
+            # Add engineered features
+            if hasattr(feature_set, 'engineered_features') and feature_set.engineered_features is not None and not feature_set.engineered_features.empty:
+                feature_dfs.append(feature_set.engineered_features)
+                feature_counts['engineered'] = len(feature_set.engineered_features.columns)
+            
+            if not feature_dfs:
+                logger.error(f"No valid feature DataFrames found for symbol {symbol}")
+                return None
+            
+            # Combine individual features
+            symbol_df = pd.concat(feature_dfs, axis=1)
+            total_individual_features = sum(feature_counts.values())
+            logger.info(f"[{symbol}] Combined individual features: {total_individual_features} columns")
+            
+            # Step 3: Add universal features (cross-symbol, regime, sector)
+            try:
+                # Get all symbols for universal feature engineering
+                all_symbols = list(self.universal_feature_engineering._symbol_mappings.keys()) if hasattr(self.universal_feature_engineering, '_symbol_mappings') else [symbol]
+                
+                # Engineer universal features for the current time period
+                # Use training_mode=True to ensure sufficient historical data for all features
+                # including sma_100, sma_200, and other long-period indicators
+                universal_features = await self.universal_feature_engineering.engineer_universal_features(
+                    symbols=all_symbols,
+                    start_date=market_data.index[0].to_pydatetime(),
+                    end_date=market_data.index[-1].to_pydatetime(),
+                    training_mode=True  # Use training mode to ensure full feature generation
+                )
+                
+                # Add cross-symbol features if available
+                cross_symbol_count = 0
+                if hasattr(universal_features, 'cross_symbol_features') and not universal_features.cross_symbol_features.empty:
+                    aligned_cross = universal_features.cross_symbol_features.reindex(symbol_df.index)
+                    symbol_df = pd.concat([symbol_df, aligned_cross], axis=1)
+                    cross_symbol_count = len(universal_features.cross_symbol_features.columns)
+                    logger.info(f"[{symbol}] Added {cross_symbol_count} cross-symbol features")
+                
+                # Add regime features if available
+                regime_count = 0
+                if hasattr(universal_features, 'market_regime_features') and not universal_features.market_regime_features.empty:
+                    aligned_regime = universal_features.market_regime_features.reindex(symbol_df.index)
+                    symbol_df = pd.concat([symbol_df, aligned_regime], axis=1)
+                    regime_count = len(universal_features.market_regime_features.columns)
+                    logger.info(f"[{symbol}] Added {regime_count} market regime features")
+                
+                # Add sector features if available
+                sector_count = 0
+                if hasattr(universal_features, 'sector_features') and not universal_features.sector_features.empty:
+                    aligned_sector = universal_features.sector_features.reindex(symbol_df.index)
+                    symbol_df = pd.concat([symbol_df, aligned_sector], axis=1)
+                    sector_count = len(universal_features.sector_features.columns)
+                    logger.info(f"[{symbol}] Added {sector_count} sector features")
+                
+                total_features = total_individual_features + cross_symbol_count + regime_count + sector_count
+                logger.info(f"[{symbol}] Total universal features before filtering: {total_features}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to add universal features for {symbol}: {e}")
+                logger.warning(f"Proceeding with individual features only for {symbol}")
+            
+            # Step 4: Filter out symbol embedding columns (same as training)
+            # Define actual symbol embedding columns to exclude (not cross-symbol or market regime features)
+            symbol_embedding_cols = [col for col in symbol_df.columns if (
+                col == 'symbol_id' or (
+                    col.startswith('symbol_') and not any([
+                        col.startswith('corr_'),
+                        col.startswith('beta_'),
+                        col.startswith('relative_strength_'),
+                        col.startswith('market_dispersion_'),
+                        col.startswith('market_volatility'),
+                        col.startswith('vol_regime_'),
+                        col.startswith('vol_trend'),
+                        col.startswith('vol_correlation')
+                    ])
+                )
+            )]
+            
+            # Keep all features except actual symbol embedding columns and target
+            feature_columns = [col for col in symbol_df.columns if col not in symbol_embedding_cols and col != 'target']
+            
+            logger.info(f"[{symbol}] Excluded symbol embedding columns ({len(symbol_embedding_cols)}): {symbol_embedding_cols}")
+            logger.info(f"[{symbol}] Final feature columns kept: {len(feature_columns)}")
+            
+            # Filter to keep only non-symbol-embedding features
+            symbol_df = symbol_df[feature_columns]
+            
+            # Step 5: Handle NaN and infinite values
+            symbol_df = symbol_df.fillna(method='ffill').fillna(method='bfill').fillna(0)
+            symbol_df = symbol_df.replace([np.inf, -np.inf], [1e6, -1e6])
+            
+            logger.info(f"[{symbol}] Final feature shape: {symbol_df.shape}")
+            
+            # Return the last 30 rows of features for sequence creation (or all available if less than 30)
+            if len(symbol_df) > 0:
+                lookback_window = 30
+                if len(symbol_df) >= lookback_window:
+                    return symbol_df.iloc[-lookback_window:].values
+                else:
+                    # If we have less than 30 rows, pad with the first row repeated
+                    available_data = symbol_df.values
+                    padding_needed = lookback_window - len(available_data)
+                    if padding_needed > 0:
+                        first_row = available_data[0:1]
+                        padding = np.tile(first_row, (padding_needed, 1))
+                        return np.vstack([padding, available_data])
+                    else:
+                        return available_data
+            else:
+                logger.error(f"No feature data available for {symbol}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error preparing universal features for {symbol}: {e}")
+            return None
+    
+    async def _generate_universal_prediction(self, symbol: str, market_data: pd.DataFrame) -> Optional[EnsemblePrediction]:
         """Generate prediction using universal models"""
         try:
             if not self.is_universal_mode or not self.universal_models:
                 return None
-            
+
             # Get symbol embedding
             symbol_embedding = self.universal_feature_engineering.get_symbol_embedding(symbol)
+
+            # Prepare universal features using the same process as training
+            universal_features = await self._prepare_universal_features(symbol, market_data)
+            if universal_features is None:
+                logger.error(f"Failed to prepare universal features for {symbol}")
+                return None
             
-            # Prepare features for universal models
-            universal_features = self.universal_feature_engineering.prepare_universal_features(
-                features, symbol_embedding
-            )
+            # universal_features is now a 2D array with shape (30, features)
+            # Reshape to (1, lookback_window, features) for batch prediction
+            feature_input = universal_features.reshape(1, universal_features.shape[0], universal_features.shape[1])
+            
+            logger.info(f"[{symbol}] Created feature sequence with shape: {feature_input.shape}")
+            
+            # Verify the shape is correct for universal models
+            expected_shape = (1, 30, 187)
+            if feature_input.shape != expected_shape:
+                logger.warning(f"[{symbol}] Feature input shape {feature_input.shape} does not match expected {expected_shape}")
             
             model_predictions = {}
             model_confidences = {}
@@ -1987,15 +2224,13 @@ class SignalGenerator:
                     model_type = ModelType(model_name)
                     
                     if model_type in [ModelType.LSTM, ModelType.CNN, ModelType.TRANSFORMER]:
-                        # Neural network models
-                        if model_type == ModelType.CNN:
-                            # Reshape for CNN (add channel dimension)
-                            model_input = universal_features.reshape(1, -1, 1)
-                        else:
-                            # LSTM/Transformer models
-                            model_input = universal_features.reshape(1, -1, universal_features.shape[-1])
+                        # Neural network models - use the sequence input
+                        # Symbol embedding as integer tensor
+                        import tensorflow as tf
+                        symbol_input = tf.constant([[symbol_embedding]], dtype=tf.int32)
                         
-                        prediction = model.predict(model_input, verbose=0)[0]
+                        # Pass both inputs to the model
+                        prediction = model.predict([feature_input, symbol_input], verbose=0)[0]
                         
                         # Extract prediction and confidence
                         if len(prediction) >= 2:
@@ -2055,16 +2290,64 @@ class SignalGenerator:
             disagreement_penalty = min(prediction_variance * 0.5, 0.3)
             final_confidence = max(0.1, ensemble_confidence - disagreement_penalty)
             
+            # Create individual predictions list
+            individual_predictions = []
+            for model_type, pred_value in model_predictions.items():
+                individual_predictions.append(ModelPrediction(
+                    model_type=model_type,
+                    symbol=symbol,
+                    prediction=pred_value,
+                    confidence=model_confidences[model_type],
+                    probability=model_confidences[model_type],  # Use confidence as probability
+                    features_used=[f"universal_feature_{i}" for i in range(universal_features.shape[1])],
+                    timestamp=datetime.now(),
+                    model_version="universal_v1.0"
+                ))
+            
             return EnsemblePrediction(
-                prediction=ensemble_prediction,
+                symbol=symbol,
+                final_prediction=ensemble_prediction,
                 confidence=final_confidence,
-                model_predictions=model_predictions,
-                model_confidences=model_confidences,
-                prediction_variance=prediction_variance,
-                risk_score=self._calculate_risk_score(ensemble_prediction, final_confidence),
-                signal_strength=self._calculate_signal_strength(ensemble_prediction, final_confidence)
+                individual_predictions=individual_predictions,
+                ensemble_weights=ensemble_weights,
+                risk_score=self._calculate_risk_score(ensemble_prediction, prediction_variance),
+                signal_strength=self._calculate_signal_strength(ensemble_prediction, final_confidence),
+                timestamp=datetime.now()
             )
             
         except Exception as e:
             logger.error(f"Error generating universal prediction for {symbol}: {e}")
             return None
+    
+    def _calculate_risk_score(self, prediction: float, prediction_variance: float) -> float:
+        """Calculate risk score based on prediction and variance"""
+        try:
+            # Base risk from prediction magnitude
+            prediction_risk = min(1.0, abs(prediction) * 0.5)
+            
+            # Variance risk (higher variance = higher risk)
+            variance_risk = min(1.0, prediction_variance * 2.0)
+            
+            # Combined risk score (weighted average)
+            risk_score = (prediction_risk * 0.7) + (variance_risk * 0.3)
+            
+            return min(1.0, max(0.0, risk_score))
+            
+        except Exception as e:
+            logger.error(f"Error calculating risk score: {e}")
+            return 0.5  # Default moderate risk
+    
+    def _calculate_signal_strength(self, prediction: float, confidence: float) -> float:
+        """Calculate signal strength based on prediction and confidence"""
+        try:
+            # Signal strength is combination of prediction magnitude and confidence
+            prediction_strength = abs(prediction)
+            
+            # Combine prediction strength with confidence
+            signal_strength = prediction_strength * confidence
+            
+            return min(1.0, max(0.0, signal_strength))
+            
+        except Exception as e:
+            logger.error(f"Error calculating signal strength: {e}")
+            return 0.5  # Default moderate strength

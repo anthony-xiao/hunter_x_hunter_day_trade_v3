@@ -10,11 +10,9 @@ import json
 from pathlib import Path
 
 # ML Libraries
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import TimeSeriesSplit, ParameterGrid
 from sklearn.metrics import accuracy_score, precision_score, recall_score, classification_report
 from sklearn.preprocessing import StandardScaler, RobustScaler
-import xgboost as xgb
 
 # Deep Learning
 import tensorflow as tf
@@ -138,37 +136,7 @@ class ModelTrainer:
                 learning_rate=0.0005,
                 prediction_threshold=0.35
             ),
-            'random_forest': ModelConfig(
-                name='random_forest',
-                model_type='ensemble',
-                parameters={
-                    'n_estimators': 200,
-                    'max_depth': 15,
-                    'min_samples_split': 10,
-                    'random_state': 42,
-                    'oob_score': True
-                },
-                training_window=18,
-                validation_window=6,
-                lookback_window=1,
-                feature_count=feature_count
-            ),
-            'xgboost': ModelConfig(
-                name='xgboost',
-                model_type='gradient_boosting',
-                parameters={
-                    'n_estimators': 500,
-                    'learning_rate': 0.1,
-                    'max_depth': 8,
-                    'random_state': 42,
-                    'tree_method': 'hist'  # GPU acceleration if available
-                },
-                training_window=18,
-                validation_window=6,
-                lookback_window=1,
-                feature_count=feature_count,  # Use all features
-                learning_rate=0.1
-            ),
+
             'transformer': ModelConfig(
                 name='transformer',
                 model_type='neural_network',
@@ -192,11 +160,9 @@ class ModelTrainer:
         
         # Dynamic ensemble weights (updated based on performance)
         self.ensemble_weights = {
-            'lstm': 0.25,
-            'cnn': 0.20,
-            'random_forest': 0.20,
-            'xgboost': 0.20,
-            'transformer': 0.15
+            'lstm': 0.35,
+            'cnn': 0.30,
+            'transformer': 0.35
         }
         
         self.performance_history: Dict[str, List[ModelPerformance]] = {}
@@ -280,7 +246,7 @@ class ModelTrainer:
         logger.info(f"Updating model configurations with actual feature count: {actual_feature_count}")
         
         # Update feature count for all models to use all features
-        for model_name in ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']:
+        for model_name in ['lstm', 'cnn', 'transformer']:
             if model_name in self.model_configs:
                 old_count = self.model_configs[model_name].feature_count
                 self.model_configs[model_name].feature_count = actual_feature_count
@@ -482,10 +448,6 @@ class ModelTrainer:
             model = await self._train_lstm(X_train, y_train, X_val, y_val, config)
         elif model_name == "cnn":
             model = await self._train_cnn(X_train, y_train, X_val, y_val, config)
-        elif model_name == "random_forest":
-            model = await self._train_random_forest(X_train, y_train, X_val, y_val, config)
-        elif model_name == "xgboost":
-            model = await self._train_xgboost(X_train, y_train, X_val, y_val, config)
         elif model_name == "transformer":
             model = await self._train_transformer(X_train, y_train, X_val, y_val, config)
         else:
@@ -766,218 +728,7 @@ class ModelTrainer:
         logger.info(f"CNN training completed. Final validation accuracy: {history.history['val_accuracy'][-1]:.4f}")
         return model
     
-    async def _train_random_forest(self, X_train: np.ndarray, y_train: np.ndarray, 
-                                  X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> RandomForestClassifier:
-        """Train Random Forest model"""
-        logger.info(f"Starting Random Forest training with {config.parameters['n_estimators']} estimators, max_depth={config.parameters['max_depth']}")
-        
-        # Flatten sequences for traditional ML
-        X_train_flat = X_train.reshape(X_train.shape[0], -1)
-        X_val_flat = X_val.reshape(X_val.shape[0], -1)
-        
-        # Data validation and logging before scaling
-        logger.info(f"Random Forest - Data shapes: X_train_flat={X_train_flat.shape}, X_val_flat={X_val_flat.shape}, y_train={y_train.shape}")
-        
-        # Check for infinite values
-        inf_mask_train = np.isinf(X_train_flat)
-        inf_mask_val = np.isinf(X_val_flat)
-        if np.any(inf_mask_train):
-            inf_indices = np.where(inf_mask_train)
-            logger.error(f"Random Forest - Found {np.sum(inf_mask_train)} infinite values in X_train at positions: {list(zip(inf_indices[0][:10], inf_indices[1][:10]))}")
-            logger.error(f"Random Forest - Infinite values: {X_train_flat[inf_mask_train][:10]}")
-        if np.any(inf_mask_val):
-            inf_indices = np.where(inf_mask_val)
-            logger.error(f"Random Forest - Found {np.sum(inf_mask_val)} infinite values in X_val at positions: {list(zip(inf_indices[0][:10], inf_indices[1][:10]))}")
-        
-        # Check for extremely large values (potential overflow)
-        large_threshold = 1e10
-        large_mask_train = np.abs(X_train_flat) > large_threshold
-        large_mask_val = np.abs(X_val_flat) > large_threshold
-        if np.any(large_mask_train):
-            large_indices = np.where(large_mask_train)
-            logger.warning(f"Random Forest - Found {np.sum(large_mask_train)} extremely large values (>{large_threshold}) in X_train")
-            logger.warning(f"Random Forest - Large values sample: {X_train_flat[large_mask_train][:10]}")
-        if np.any(large_mask_val):
-            large_indices = np.where(large_mask_val)
-            logger.warning(f"Random Forest - Found {np.sum(large_mask_val)} extremely large values (>{large_threshold}) in X_val")
-        
-        # Log data statistics for each feature
-        logger.info(f"Random Forest - X_train statistics: min={np.min(X_train_flat):.6f}, max={np.max(X_train_flat):.6f}, mean={np.mean(X_train_flat):.6f}, std={np.std(X_train_flat):.6f}")
-        logger.info(f"Random Forest - X_val statistics: min={np.min(X_val_flat):.6f}, max={np.max(X_val_flat):.6f}, mean={np.mean(X_val_flat):.6f}, std={np.std(X_val_flat):.6f}")
-        
-        # Check for NaN values
-        nan_mask_train = np.isnan(X_train_flat)
-        nan_mask_val = np.isnan(X_val_flat)
-        if np.any(nan_mask_train):
-            logger.error(f"Random Forest - Found {np.sum(nan_mask_train)} NaN values in X_train")
-        if np.any(nan_mask_val):
-            logger.error(f"Random Forest - Found {np.sum(nan_mask_val)} NaN values in X_val")
-        
-        # Scale features
-        scaler = StandardScaler()
-        try:
-            X_train_scaled = scaler.fit_transform(X_train_flat)
-            X_val_scaled = scaler.transform(X_val_flat)
-            logger.info(f"Random Forest - Scaling completed successfully")
-        except Exception as e:
-            logger.error(f"Random Forest - Scaling failed: {str(e)}")
-            logger.error(f"Random Forest - Scaler statistics: mean={scaler.mean_[:10] if hasattr(scaler, 'mean_') else 'N/A'}, scale={scaler.scale_[:10] if hasattr(scaler, 'scale_') else 'N/A'}")
-            raise
-        
-        # Log scaled data statistics
-        logger.info(f"Random Forest - X_train_scaled statistics: min={np.min(X_train_scaled):.6f}, max={np.max(X_train_scaled):.6f}, mean={np.mean(X_train_scaled):.6f}, std={np.std(X_train_scaled):.6f}")
-        logger.info(f"Random Forest - X_val_scaled statistics: min={np.min(X_val_scaled):.6f}, max={np.max(X_val_scaled):.6f}, mean={np.mean(X_val_scaled):.6f}, std={np.std(X_val_scaled):.6f}")
-        
-        self.scalers["random_forest"] = scaler
-        
-        model = RandomForestClassifier(
-            n_estimators=config.parameters['n_estimators'],
-            max_depth=config.parameters['max_depth'],
-            min_samples_split=config.parameters['min_samples_split'],
-            random_state=config.parameters['random_state'],
-            oob_score=config.parameters['oob_score']
-        )
-        
-        logger.info("Random Forest training started...")
-        # Use thread executor to make blocking model.fit() truly asynchronous
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            try:
-                await loop.run_in_executor(
-                    executor,
-                    lambda: model.fit(X_train_scaled, y_train.ravel())
-                )
-                logger.info("Random Forest model.fit() completed successfully")
-            except Exception as e:
-                logger.error(f"Random Forest model.fit() failed: {str(e)}")
-                logger.error(f"Random Forest - Error type: {type(e).__name__}")
-                # Log additional debugging info
-                logger.error(f"Random Forest - X_train_scaled shape: {X_train_scaled.shape}, dtype: {X_train_scaled.dtype}")
-                logger.error(f"Random Forest - y_train shape: {y_train.shape}, dtype: {y_train.dtype}")
-                logger.error(f"Random Forest - X_train_scaled contains inf: {np.any(np.isinf(X_train_scaled))}")
-                logger.error(f"Random Forest - X_train_scaled contains nan: {np.any(np.isnan(X_train_scaled))}")
-                logger.error(f"Random Forest - y_train contains inf: {np.any(np.isinf(y_train))}")
-                logger.error(f"Random Forest - y_train contains nan: {np.any(np.isnan(y_train))}")
-                raise
-        
-        # Calculate validation accuracy
-        y_val_pred = model.predict(X_val_scaled)
-        val_accuracy = accuracy_score(y_val.ravel(), y_val_pred)
-        
-        # Log out-of-bag score if available
-        if hasattr(model, 'oob_score_') and model.oob_score_ is not None:
-            logger.info(f"Random Forest OOB Score: {model.oob_score_:.4f}")
-        
-        logger.info(f"Random Forest training completed. Final validation accuracy: {val_accuracy:.4f}")
-        
-        return model
-    
-    async def _train_xgboost(self, X_train: np.ndarray, y_train: np.ndarray, 
-                            X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> xgb.XGBClassifier:
-        """Train XGBoost model"""
-        logger.info(f"Starting XGBoost training with {config.parameters['n_estimators']} estimators, learning_rate={config.parameters['learning_rate']}, max_depth={config.parameters['max_depth']}")
-        
-        # Flatten sequences for traditional ML
-        X_train_flat = X_train.reshape(X_train.shape[0], -1)
-        X_val_flat = X_val.reshape(X_val.shape[0], -1)
-        
-        # Data validation and logging before scaling
-        logger.info(f"XGBoost - Data shapes: X_train_flat={X_train_flat.shape}, X_val_flat={X_val_flat.shape}, y_train={y_train.shape}")
-        
-        # Check for infinite values
-        inf_mask_train = np.isinf(X_train_flat)
-        inf_mask_val = np.isinf(X_val_flat)
-        if np.any(inf_mask_train):
-            inf_indices = np.where(inf_mask_train)
-            logger.error(f"XGBoost - Found {np.sum(inf_mask_train)} infinite values in X_train at positions: {list(zip(inf_indices[0][:10], inf_indices[1][:10]))}")
-            logger.error(f"XGBoost - Infinite values: {X_train_flat[inf_mask_train][:10]}")
-        if np.any(inf_mask_val):
-            inf_indices = np.where(inf_mask_val)
-            logger.error(f"XGBoost - Found {np.sum(inf_mask_val)} infinite values in X_val at positions: {list(zip(inf_indices[0][:10], inf_indices[1][:10]))}")
-        
-        # Check for extremely large values (potential overflow)
-        large_threshold = 1e10
-        large_mask_train = np.abs(X_train_flat) > large_threshold
-        large_mask_val = np.abs(X_val_flat) > large_threshold
-        if np.any(large_mask_train):
-            large_indices = np.where(large_mask_train)
-            logger.warning(f"XGBoost - Found {np.sum(large_mask_train)} extremely large values (>{large_threshold}) in X_train")
-            logger.warning(f"XGBoost - Large values sample: {X_train_flat[large_mask_train][:10]}")
-        if np.any(large_mask_val):
-            large_indices = np.where(large_mask_val)
-            logger.warning(f"XGBoost - Found {np.sum(large_mask_val)} extremely large values (>{large_threshold}) in X_val")
-        
-        # Log data statistics
-        logger.info(f"XGBoost - X_train statistics: min={np.min(X_train_flat):.6f}, max={np.max(X_train_flat):.6f}, mean={np.mean(X_train_flat):.6f}, std={np.std(X_train_flat):.6f}")
-        logger.info(f"XGBoost - X_val statistics: min={np.min(X_val_flat):.6f}, max={np.max(X_val_flat):.6f}, mean={np.mean(X_val_flat):.6f}, std={np.std(X_val_flat):.6f}")
-        
-        # Check for NaN values
-        nan_mask_train = np.isnan(X_train_flat)
-        nan_mask_val = np.isnan(X_val_flat)
-        if np.any(nan_mask_train):
-            logger.error(f"XGBoost - Found {np.sum(nan_mask_train)} NaN values in X_train")
-        if np.any(nan_mask_val):
-            logger.error(f"XGBoost - Found {np.sum(nan_mask_val)} NaN values in X_val")
-        
-        # Scale features
-        scaler = StandardScaler()
-        try:
-            X_train_scaled = scaler.fit_transform(X_train_flat)
-            X_val_scaled = scaler.transform(X_val_flat)
-            logger.info(f"XGBoost - Scaling completed successfully")
-        except Exception as e:
-            logger.error(f"XGBoost - Scaling failed: {str(e)}")
-            logger.error(f"XGBoost - Scaler statistics: mean={scaler.mean_[:10] if hasattr(scaler, 'mean_') else 'N/A'}, scale={scaler.scale_[:10] if hasattr(scaler, 'scale_') else 'N/A'}")
-            raise
-        
-        # Log scaled data statistics
-        logger.info(f"XGBoost - X_train_scaled statistics: min={np.min(X_train_scaled):.6f}, max={np.max(X_train_scaled):.6f}, mean={np.mean(X_train_scaled):.6f}, std={np.std(X_train_scaled):.6f}")
-        logger.info(f"XGBoost - X_val_scaled statistics: min={np.min(X_val_scaled):.6f}, max={np.max(X_val_scaled):.6f}, mean={np.mean(X_val_scaled):.6f}, std={np.std(X_val_scaled):.6f}")
-        
-        self.scalers["xgboost"] = scaler
-        
-        model = xgb.XGBClassifier(
-            n_estimators=config.parameters['n_estimators'],
-            learning_rate=config.parameters['learning_rate'],
-            max_depth=config.parameters['max_depth'],
-            random_state=config.parameters['random_state'],
-            tree_method=config.parameters.get('tree_method', 'hist')
-        )
-        
-        logger.info("XGBoost training started...")
-        # Use thread executor to make blocking model.fit() truly asynchronous
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            try:
-                await loop.run_in_executor(
-                    executor,
-                    lambda: model.fit(
-                        X_train_scaled, y_train.ravel(),
-                        verbose=True
-                    )
-                )
-                logger.info("XGBoost model.fit() completed successfully")
-            except Exception as e:
-                logger.error(f"XGBoost model.fit() failed: {str(e)}")
-                logger.error(f"XGBoost - Error type: {type(e).__name__}")
-                # Log additional debugging info
-                logger.error(f"XGBoost - X_train_scaled shape: {X_train_scaled.shape}, dtype: {X_train_scaled.dtype}")
-                logger.error(f"XGBoost - y_train shape: {y_train.shape}, dtype: {y_train.dtype}")
-                logger.error(f"XGBoost - X_train_scaled contains inf: {np.any(np.isinf(X_train_scaled))}")
-                logger.error(f"XGBoost - X_train_scaled contains nan: {np.any(np.isnan(X_train_scaled))}")
-                logger.error(f"XGBoost - y_train contains inf: {np.any(np.isinf(y_train))}")
-                logger.error(f"XGBoost - y_train contains nan: {np.any(np.isnan(y_train))}")
-                raise
-        
-        # Calculate final validation accuracy
-        y_val_pred = model.predict(X_val_scaled)
-        val_accuracy = accuracy_score(y_val.ravel(), y_val_pred)
-        
-        # Get best iteration info
-        best_iteration = getattr(model, 'best_iteration', config.parameters['n_estimators'])
-        logger.info(f"XGBoost training completed. Best iteration: {best_iteration}, Final validation accuracy: {val_accuracy:.4f}")
-        
-        return model
+
     
     async def _train_transformer(self, X_train: np.ndarray, y_train: np.ndarray, 
                                 X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> Model:
@@ -1047,20 +798,7 @@ class ModelTrainer:
     async def _evaluate_model(self, model_name: str, model: any, X_test: np.ndarray, y_test: np.ndarray, symbol: str = None, test_timestamps: pd.DatetimeIndex = None) -> ModelPerformance:
         """Evaluate model performance with realistic trading metrics"""
         # Make predictions
-        if model_name in ["random_forest", "xgboost"]:
-            X_test_flat = X_test.reshape(X_test.shape[0], -1)
-            X_test_scaled = self.scalers[model_name].transform(X_test_flat)
-            
-            # Get prediction probabilities with safety check for single class
-            pred_proba = model.predict_proba(X_test_scaled)
-            if pred_proba.shape[1] == 1:
-                # Only one class present, use the single probability
-                y_pred_proba = pred_proba[:, 0]
-                logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
-            else:
-                # Normal binary classification with two classes
-                y_pred_proba = pred_proba[:, 1]
-        elif model_name == "cnn":
+        if model_name == "cnn":
             X_test_cnn = X_test.reshape(X_test.shape[0], X_test.shape[1], X_test.shape[2], 1)
             y_pred_proba = model.predict(X_test_cnn).flatten()
         else:
@@ -1318,11 +1056,6 @@ class ModelTrainer:
                     except Exception as save_error:
                         logger.error(f"✗ Failed to save {model_name} model: {save_error}")
                         raise save_error
-                else:
-                    # Save sklearn/xgboost models
-                    with open(model_path, 'wb') as f:
-                        pickle.dump(model, f)
-                    logger.info(f"✓ Successfully saved {model_name} model to {model_path}")
             
             # Save scalers
             scalers_path = self.model_dir / "scalers.pkl"
@@ -1673,7 +1406,7 @@ class ModelTrainer:
                     
                     # Check which model files exist
                     model_files = []
-                    for model_name in ['lstm', 'cnn', 'transformer', 'random_forest', 'xgboost']:
+                    for model_name in ['lstm', 'cnn', 'transformer']:
                         h5_path = version_dir / f"{model_name}_model.h5"
                         pkl_path = version_dir / f"{model_name}_model.pkl"
                         if h5_path.exists() or pkl_path.exists():
@@ -1741,20 +1474,7 @@ class ModelTrainer:
         model = self.models[model_name]
         
         try:
-            if model_name in ["random_forest", "xgboost"]:
-                features_flat = features.reshape(1, -1)
-                features_scaled = self.scalers[model_name].transform(features_flat)
-                
-                # Get prediction probabilities with safety check for single class
-                pred_proba = model.predict_proba(features_scaled)
-                if pred_proba.shape[1] == 1:
-                    # Only one class present, use the single probability
-                    prediction_proba = pred_proba[0, 0]
-                    logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
-                else:
-                    # Normal binary classification with two classes
-                    prediction_proba = pred_proba[0, 1]
-            elif model_name == "cnn":
+            if model_name == "cnn":
                 features_cnn = features.reshape(1, features.shape[0], features.shape[1], 1)
                 prediction_proba = model.predict(features_cnn, verbose=0)[0, 0]
             else:
@@ -1956,10 +1676,6 @@ class ModelTrainer:
             model = await self._train_lstm(X_train, y_train, X_val, y_val, config)
         elif model_name == "cnn":
             model = await self._train_cnn(X_train, y_train, X_val, y_val, config)
-        elif model_name == "random_forest":
-            model = await self._train_random_forest(X_train, y_train, X_val, y_val, config)
-        elif model_name == "xgboost":
-            model = await self._train_xgboost(X_train, y_train, X_val, y_val, config)
         elif model_name == "transformer":
             model = await self._train_transformer(X_train, y_train, X_val, y_val, config)
         else:
@@ -1989,10 +1705,6 @@ class ModelTrainer:
                 model = await self._train_lstm(X_train, y_train, X_val, y_val, config)
             elif model_name == "cnn":
                 model = await self._train_cnn(X_train, y_train, X_val, y_val, config)
-            elif model_name == "random_forest":
-                model = await self._train_random_forest(X_train, y_train, X_val, y_val, config)
-            elif model_name == "xgboost":
-                model = await self._train_xgboost(X_train, y_train, X_val, y_val, config)
             elif model_name == "transformer":
                 model = await self._train_transformer(X_train, y_train, X_val, y_val, config)
             else:
@@ -2035,25 +1747,7 @@ class ModelTrainer:
                                      y_test: np.ndarray, timestamps: pd.DatetimeIndex) -> ModelPerformance:
         """Detailed model evaluation with proper trading metrics based on actual predictions"""
         # Make predictions
-        if model_name in ["random_forest", "xgboost"]:
-            X_test_flat = X_test.reshape(X_test.shape[0], -1)
-            # Use existing scaler if available, otherwise create new one
-            if model_name in self.scalers:
-                X_test_scaled = self.scalers[model_name].transform(X_test_flat)
-            else:
-                scaler = StandardScaler()
-                X_test_scaled = scaler.fit_transform(X_test_flat)
-            
-            # Get prediction probabilities with safety check for single class
-            pred_proba = model.predict_proba(X_test_scaled)
-            if pred_proba.shape[1] == 1:
-                # Only one class present, use the single probability
-                y_pred_proba = pred_proba[:, 0]
-                logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
-            else:
-                # Normal binary classification with two classes
-                y_pred_proba = pred_proba[:, 1]
-        elif model_name == "cnn":
+        if model_name == "cnn":
             X_test_cnn = X_test.reshape(X_test.shape[0], X_test.shape[1], X_test.shape[2], 1)
             y_pred_proba = model.predict(X_test_cnn).flatten()
         else:
@@ -2298,7 +1992,7 @@ class ModelTrainer:
                 optimized_ensemble_weights[model_name] = 0.0
         
         # Set zero weights for unloaded models
-        all_model_names = ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']
+        all_model_names = ['lstm', 'cnn', 'transformer']
         for model_name in all_model_names:
             if model_name not in optimized_ensemble_weights:
                 optimized_ensemble_weights[model_name] = 0.0
@@ -2351,39 +2045,7 @@ class ModelTrainer:
             feature_window = feature_values[i-config.lookback_window:i]
             
             try:
-                if model_name in ["random_forest", "xgboost"]:
-                    # Flatten for traditional ML models
-                    feature_flat = feature_window.flatten().reshape(1, -1)
-                    
-                    # Additional check for flattened feature dimensions
-                    expected_flat_size = config.lookback_window * expected_feature_count
-                    if feature_flat.shape[1] != expected_flat_size:
-                        logger.warning(f"{model_name}: Flattened feature size mismatch. Expected {expected_flat_size}, got {feature_flat.shape[1]}")
-                        # Truncate or pad the flattened features
-                        if feature_flat.shape[1] > expected_flat_size:
-                            feature_flat = feature_flat[:, :expected_flat_size]
-                        else:
-                            padding = np.zeros((1, expected_flat_size - feature_flat.shape[1]))
-                            feature_flat = np.concatenate([feature_flat, padding], axis=1)
-                    
-                    if model_name in self.scalers:
-                        feature_scaled = self.scalers[model_name].transform(feature_flat)
-                        # Get prediction probabilities with safety check for single class
-                        pred_proba_result = model.predict_proba(feature_scaled)
-                        if pred_proba_result.shape[1] == 1:
-                            pred_proba = pred_proba_result[0, 0]
-                            logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
-                        else:
-                            pred_proba = pred_proba_result[0, 1]
-                    else:
-                        # Get prediction probabilities with safety check for single class
-                        pred_proba_result = model.predict_proba(feature_flat)
-                        if pred_proba_result.shape[1] == 1:
-                            pred_proba = pred_proba_result[0, 0]
-                            logger.warning(f"{model_name}: Only one class detected in predictions, using single class probability")
-                        else:
-                            pred_proba = pred_proba_result[0, 1]
-                elif model_name == "cnn":
+                if model_name == "cnn":
                     # Reshape for CNN
                     feature_cnn = feature_window.reshape(1, feature_window.shape[0], feature_window.shape[1], 1)
                     pred_proba = model.predict(feature_cnn, verbose=0)[0, 0]
@@ -2515,20 +2177,20 @@ class ModelTrainer:
             
             # Create universal training configuration
             universal_config = UniversalTrainingConfig(
-                # base_epochs=50,
-                base_epochs=2,
-                # base_batch_size=256,
-                base_batch_size=64,
+                base_epochs=50,
+                # base_epochs=2,
+                base_batch_size=256,
+                # base_batch_size=64,
                 base_learning_rate=0.001,
                 base_validation_split=0.2,
-                # finetune_epochs=30,
-                finetune_epochs=2,
-                # finetune_batch_size=128,
-                finetune_batch_size=32,
+                finetune_epochs=30,
+                # finetune_epochs=2,
+                finetune_batch_size=128,
+                # finetune_batch_size=32,
                 finetune_learning_rate=0.0001,
                 layers_to_unfreeze=3,
-                # ensemble_validation_periods=10,
-                ensemble_validation_periods=3,
+                ensemble_validation_periods=10,
+                # ensemble_validation_periods=3,
                 ensemble_rebalance_frequency=5,
                 symbol_embedding_dim=32,
                 early_stopping_patience=10,

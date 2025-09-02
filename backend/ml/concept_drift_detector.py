@@ -573,7 +573,7 @@ class ConceptDriftDetector:
         try:
             if not self.supabase_client:
                 logger.error("Supabase client not available for getting active models")
-                return ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']  # Default models
+                return ['lstm', 'cnn', 'transformer']  # Default models
                 
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=7)
             
@@ -586,11 +586,11 @@ class ConceptDriftDetector:
                 model_names = list(set(row['model_name'] for row in response.data))
                 return model_names
             else:
-                return ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']  # Default models
+                return ['lstm', 'cnn', 'transformer']  # Default models
                 
         except Exception as e:
             logger.error(f"Failed to get active models: {e}")
-            return ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer']  # Default models
+            return ['lstm', 'cnn', 'transformer']  # Default models
     
     async def _generate_system_drift_summary(self, drift_results: Dict[str, DriftMetrics]) -> None:
         """Generate system-wide drift summary"""
