@@ -354,16 +354,31 @@ async def trading_loop():
                 
                 # Update model performance based on recent trades
                 if execution_engine and signal_generator:
-                    recent_trades = await execution_engine.get_recent_trades()
+                    recent_trades = execution_engine.get_recent_trades()
                     
                     for trade in recent_trades:
-                        if hasattr(trade, 'model_predictions') and trade.model_predictions:
-                            await signal_generator.update_model_performance(
-                                symbol=trade.symbol,
-                                actual_return=trade.realized_pnl / trade.entry_price if trade.entry_price > 0 else 0,
-                                predicted_return=trade.predicted_return or 0,
-                                model_predictions=trade.model_predictions
-                            )
+                        try:
+                            # Extract data from trade dictionary
+                            signal_data = trade.get('signal', {})
+                            order_data = trade.get('order', {})
+                            
+                            if signal_data.get('model_predictions'):
+                                symbol = order_data.get('symbol') or signal_data.get('symbol')
+                                predicted_return = signal_data.get('predicted_return', 0)
+                                
+                                # Calculate actual return from order data
+                                filled_price = order_data.get('filled_price', 0)
+                                quantity = order_data.get('filled_quantity', 0)
+                                
+                                if symbol and filled_price > 0:
+                                    await signal_generator.update_model_performance(
+                                        symbol=symbol,
+                                        actual_return=0,  # Will be calculated when position is closed
+                                        predicted_return=predicted_return,
+                                        model_predictions=signal_data['model_predictions']
+                                    )
+                        except Exception as e:
+                            logger.error(f"Error updating model performance for trade: {e}")
             
             # Sleep for 30 seconds before next iteration
             await asyncio.sleep(30)
@@ -675,10 +690,8 @@ async def optimize_ensemble_weights():
         from ensemble.ensemble_config import EnsembleConfigManager
         ensemble_config = EnsembleConfigManager()
         
-        # Load trained models before optimization
-        logger.info("Loading trained models for ensemble optimization...")
-        await model_trainer.load_models(version="latest")
-        logger.info(f"Loaded {len(model_trainer.models)} models for optimization")
+        # Models are now loaded automatically during initialization
+        logger.info("Using pre-loaded universal models for ensemble optimization...")
         
         # Get recent validation data for optimization (last 30 days)
         end_date = datetime.now(timezone.utc)

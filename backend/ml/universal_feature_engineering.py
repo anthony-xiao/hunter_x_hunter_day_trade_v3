@@ -48,6 +48,70 @@ class UniversalFeatureEngineering(FeatureEngineering):
         
         logger.info("Universal Feature Engineering initialized")
     
+    def get_symbol_embedding(self, symbol: str) -> int:
+        """Get symbol embedding ID for neural network models
+        
+        Args:
+            symbol: Stock symbol to get embedding for
+            
+        Returns:
+            Symbol ID for embedding layer
+        """
+        try:
+            # Check if we have symbol mappings available
+            if not hasattr(self, '_symbol_mappings') or not self._symbol_mappings:
+                logger.warning(f"No symbol mappings available, using default ID 0 for {symbol}")
+                return 0
+            
+            # Get symbol ID from mappings
+            symbol_id = self._symbol_mappings.get(symbol, 0)
+            logger.debug(f"Symbol {symbol} mapped to ID {symbol_id}")
+            return symbol_id
+            
+        except Exception as e:
+            logger.error(f"Error getting symbol embedding for {symbol}: {e}")
+            return 0
+    
+    def prepare_universal_features(self, features: np.ndarray, symbol_embedding: int) -> np.ndarray:
+        """Prepare features for universal model input
+        
+        Args:
+            features: Feature array for the symbol
+            symbol_embedding: Symbol embedding ID
+            
+        Returns:
+            Prepared features array for universal models
+        """
+        try:
+            # Ensure features is a numpy array
+            if not isinstance(features, np.ndarray):
+                features = np.array(features)
+            
+            # For universal models, we typically just return the features as-is
+            # The symbol embedding is handled separately in the model architecture
+            # through the symbol input layer
+            
+            # Ensure features are in the right shape (flatten if needed)
+            if features.ndim > 1:
+                features = features.flatten()
+            
+            logger.debug(f"Prepared universal features with shape {features.shape} for symbol embedding {symbol_embedding}")
+            return features
+            
+        except Exception as e:
+            logger.error(f"Error preparing universal features: {e}")
+            # Return empty array as fallback
+            return np.array([])
+    
+    def set_symbol_mappings(self, symbol_mappings: Dict[str, int]) -> None:
+        """Set symbol mappings for embedding lookup
+        
+        Args:
+            symbol_mappings: Dictionary mapping symbols to IDs
+        """
+        self._symbol_mappings = symbol_mappings
+        logger.info(f"Set symbol mappings for {len(symbol_mappings)} symbols")
+    
     async def engineer_universal_features(self, 
                                         symbols: List[str], 
                                         start_date: datetime, 

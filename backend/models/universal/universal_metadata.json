@@ -10,14 +10,14 @@
     }
   },
   "ensemble_weights": {
-    "lstm": 0.3341201622871901,
-    "cnn": 0.3340545932077021,
-    "transformer": 0.3318252445051078
+    "lstm": 0.3362898067801342,
+    "cnn": 0.33925689634830436,
+    "transformer": 0.32445329687156144
   },
   "config": {
     "symbol_embedding_dim": 32,
-    "base_epochs": 2,
-    "finetune_epochs": 2
+    "base_epochs": 50,
+    "finetune_epochs": 30
   },
-  "training_timestamp": "2025-08-30T23:53:45.988352"
+  "training_timestamp": "2025-08-31T04:37:03.021022"
 }

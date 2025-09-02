@@ -1280,6 +1280,15 @@ class ExecutionEngine:
         """Get current orders"""
         return self.orders.copy()
     
+    def get_recent_trades(self, limit: int = 10) -> List[Dict]:
+        """Get recent trades from trade history"""
+        try:
+            # Return the most recent trades, limited by the specified number
+            return self.trade_history[-limit:] if self.trade_history else []
+        except Exception as e:
+            logger.error(f"Error getting recent trades: {e}")
+            return []
+    
     def get_account_info(self) -> Dict:
         """Get comprehensive account information"""
         try:
