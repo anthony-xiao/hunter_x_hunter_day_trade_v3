@@ -314,7 +314,7 @@ async def trading_loop():
             end_date=datetime.now(timezone.utc)
                         )
                         
-                        if data is not None and len(data) >= 60:
+                        if data is not None and len(data) >= 101:
                             market_data[symbol] = data
                             
                     except Exception as e:
@@ -559,6 +559,41 @@ async def stop_trading():
         
     except Exception as e:
         logger.error(f"Error stopping trading: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/trading/mock-start")
+async def start_mock_trading(background_tasks: BackgroundTasks):
+    """Start mock trading system using historical data for testing"""
+    try:
+        from mock_trading_system import MockTradingSystem
+        
+        # Validate all components are initialized
+        if not all([data_pipeline, feature_engineer, signal_generator, risk_manager]):
+            raise HTTPException(status_code=500, detail="Trading system components not fully initialized")
+        
+        # Initialize mock trading system
+        mock_system = MockTradingSystem(
+            data_pipeline=data_pipeline,
+            feature_engineer=feature_engineer,
+            signal_generator=signal_generator,
+            risk_manager=risk_manager
+        )
+        
+        # Start mock trading session in background
+        background_tasks.add_task(mock_system.start_mock_trading)
+        
+        logger.info("Mock trading system started")
+        
+        return {
+            "message": "Mock trading started successfully",
+            "status": "mock_active",
+            "data_source": "historical_market_data",
+            "replay_period": "last_3_days",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error starting mock trading: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/models/walk-forward-test")

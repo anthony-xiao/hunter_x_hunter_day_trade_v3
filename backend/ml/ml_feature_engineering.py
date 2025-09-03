@@ -139,10 +139,14 @@ class FeatureEngineering:
                 logger.warning(f"No market data available for {symbol} in the specified range")
                 return self._get_empty_feature_set()
             
-            # In training mode, ensure we have sufficient data for feature engineering
-            min_required_data = 200
-            if training_mode and len(market_data) < min_required_data:
-                logger.warning(f"Insufficient market data for training mode: {len(market_data)} < {min_required_data} for {symbol}")
+            # Dual thresholds for minimum required data:
+            # - Training mode: 200 points for robust model training quality
+            # - Live trading: 50 points for operational flexibility during sparse data periods
+            min_required_data = 30 if training_mode else 30
+            
+            if len(market_data) < min_required_data:
+                mode_desc = "training mode" if training_mode else "live trading"
+                logger.warning(f"Insufficient market data for {mode_desc}: {len(market_data)} < {min_required_data} for {symbol}")
                 return self._get_empty_feature_set()
             
             # Log the actual data range we're working with

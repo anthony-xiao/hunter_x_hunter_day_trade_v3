@@ -207,6 +207,9 @@ class PolygonWebSocketManager:
                 close=float(trade.price)  # Store trade price as close
             )
             
+            # Add comprehensive logging for trade data
+            logger.info(f"WebSocket received trade data for {trade.symbol}: price=${data.close:.4f}, volume={data.volume}, timestamp={data.timestamp}")
+            
             # Update cache
             self.latest_trades[trade.symbol] = data
             
@@ -234,6 +237,9 @@ class PolygonWebSocketManager:
                 data_type="quote",
                 close=mid_price  # Store mid-price as close
             )
+            
+            # Add comprehensive logging for quote data
+            logger.info(f"WebSocket received quote data for {quote.symbol}: bid=${data.bid:.4f}, ask=${data.ask:.4f}, mid=${mid_price:.4f}, timestamp={data.timestamp}")
             
             # Update cache
             self.latest_quotes[quote.symbol] = data
@@ -276,8 +282,49 @@ class PolygonWebSocketManager:
                 transactions=int(getattr(agg, 'transactions', None)) if getattr(agg, 'transactions', None) is not None else None
             )
             
-            # Add debug logging to track WebSocket data reception
-            logger.info(f"WebSocket received complete aggregate data for {agg.symbol}: O={data.open}, H={data.high}, L={data.low}, C={data.close}, V={data.volume}, VWAP={data.vwap}, timestamp={data.timestamp}")
+            # Log ALL available fields from the EquityAgg object for comprehensive debugging
+            all_fields = {}
+            for attr_name in dir(agg):
+                if not attr_name.startswith('_'):  # Skip private attributes
+                    try:
+                        attr_value = getattr(agg, attr_name)
+                        if not callable(attr_value):  # Skip methods
+                            all_fields[attr_name] = attr_value
+                    except Exception:
+                        pass  # Skip attributes that can't be accessed
+            
+            # Comprehensive logging with all available fields
+            logger.info(f"WebSocket received COMPLETE aggregate data for {agg.symbol}:")
+            logger.info(f"  Basic OHLCV: O={data.open}, H={data.high}, L={data.low}, C={data.close}, V={data.volume}")
+            logger.info(f"  Extended fields: VWAP={data.vwap}, AccumVol={data.accumulated_volume}, OpenPrice={data.opening_price}")
+            logger.info(f"  Trade metrics: AvgTradeSize={data.average_trade_size}, Transactions={data.transactions}")
+            logger.info(f"  Timestamp: {data.timestamp}")
+            logger.info(f"  ALL RAW FIELDS from EquityAgg: {all_fields}")
+            
+            # Store in database - this is the key fix!
+            if (data.open is not None and data.high is not None and 
+                data.low is not None and data.close is not None and data.volume is not None):
+                try:
+                    # Import data pipeline here to avoid circular imports
+                    from .data_pipeline import DataPipeline
+                    pipeline = DataPipeline()
+                    
+                    await pipeline.store_realtime_market_data(
+                        symbol=data.symbol,
+                        timestamp=data.timestamp,
+                        open_price=data.open,
+                        high=data.high,
+                        low=data.low,
+                        close=data.close,
+                        volume=data.volume,
+                        vwap=data.vwap,
+                        transactions=data.transactions
+                    )
+                    logger.info(f"Successfully stored aggregate data for {data.symbol} at {data.timestamp} in database")
+                except Exception as e:
+                    logger.error(f"Failed to store aggregate data in database for {data.symbol}: {e}")
+            else:
+                logger.warning(f"Incomplete OHLCV data for {data.symbol}, skipping database storage")
             
             # Update cache
             self.latest_aggs[agg.symbol] = data
