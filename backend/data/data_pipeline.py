@@ -58,7 +58,7 @@ class DataPipeline:
         
         # Hybrid Feature Storage Strategy
         self.feature_cache: Dict[str, Dict[datetime, Dict]] = {}  # In-memory cache for recent features
-        self.cache_duration_hours = 2  # Cache last 2 hours of features
+        self.cache_duration_hours = 4  # Cache last 4 hours of features (240 minutes to match bootstrap)
         self.cache_max_size = 10000  # Maximum cached feature records per symbol
         
         # Universal training cache for batch processing
@@ -69,7 +69,7 @@ class DataPipeline:
         self.trading_universe = [
             'AAPL','TSLA'
             # Technology
-            # 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META'
+            # 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META',
             # Biotechnology
             # 'MRNA', 'GILD', 'BIIB', 'VRTX',
             # Energy
@@ -454,8 +454,8 @@ class DataPipeline:
                 try:
                     await self.download_historical_data(
                         symbol=symbol,
-                        start_date=start_date.strftime('%Y-%m-%d'),
-                        end_date=end_date.strftime('%Y-%m-%d')
+                        start_date=start_date,
+                        end_date=end_date
                     )
                     
                     # After downloading, try to load the data again
@@ -546,7 +546,15 @@ class DataPipeline:
             df = pd.DataFrame(all_data)
             
             # Convert timestamp column to datetime and set as index
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Use robust parsing to handle varying microsecond precision
+            try:
+                # First try ISO8601 format for optimal performance
+                df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601')
+            except (ValueError, TypeError) as e:
+                # Fallback to flexible parsing for inconsistent microsecond precision
+                logger.debug(f"ISO8601 parsing failed for {symbol}, using flexible parsing: {e}")
+                df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+            
             # Ensure timezone-naive timestamps for consistency
             if df['timestamp'].dt.tz is not None:
                 df['timestamp'] = df['timestamp'].dt.tz_localize(None)
@@ -1231,7 +1239,7 @@ class DataPipeline:
         2. Handle market gaps (overnight, weekends) intelligently
         3. Ensure sufficient features for signal generation (60 minimum)
         4. Auto-bootstrap from database if cache is empty
-        5. In training mode, respect the full training date range instead of 2-hour window
+        5. In training mode, respect the full training date range instead of 4-hour window
         
         Args:
             symbol: Stock symbol to get features for
@@ -1500,6 +1508,41 @@ class DataPipeline:
             logger.error(f"Failed to load features from database for {symbol}: {e}")
             return pd.DataFrame()
     
+    async def store_realtime_market_data(self, symbol: str, timestamp: datetime,
+                                       open_price: float, high: float, low: float, 
+                                       close: float, volume: int, vwap: float = None,
+                                       transactions: int = None):
+        """Store individual real-time market data point in database"""
+        try:
+            # Ensure timestamp is in UTC timezone for consistency
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            elif timestamp.tzinfo != timezone.utc:
+                timestamp = timestamp.astimezone(timezone.utc)
+            
+            market_data = {
+                'symbol': symbol,
+                'timestamp': timestamp.isoformat(),
+                'open': float(open_price),
+                'high': float(high),
+                'low': float(low),
+                'close': float(close),
+                'volume': int(volume),
+                'vwap': float(vwap) if vwap is not None else None,
+                'transactions': int(transactions) if transactions is not None else None
+            }
+            
+            # Use upsert to handle potential duplicates
+            self.supabase.table('market_data').upsert(
+                market_data,
+                on_conflict='symbol,timestamp'
+            ).execute()
+            
+            logger.debug(f"Stored real-time market data for {symbol} at {timestamp}")
+                
+        except Exception as e:
+            logger.error(f"Failed to store real-time market data for {symbol}: {e}")
+
     async def store_prediction(self, symbol: str, timestamp: datetime, 
                              model_name: str, prediction: float, confidence: float):
         """Store model prediction in database"""

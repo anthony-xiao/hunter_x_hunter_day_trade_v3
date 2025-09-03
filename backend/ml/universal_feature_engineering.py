@@ -35,7 +35,7 @@ class UniversalFeatureEngineering(FeatureEngineering):
         super().__init__(supabase_client)
         
         # Universal feature engineering parameters
-        self.correlation_windows = [5, 10, 20, 50]
+        self.correlation_windows = [5, 10, 20, 50, 100]
         self.regime_detection_window = 100
         self.sector_correlation_threshold = 0.7
         
@@ -426,19 +426,10 @@ class UniversalFeatureEngineering(FeatureEngineering):
                             rs_values = rs_pair_data[symbol1] / denominator
                             cross_features[rs_col] = rs_values.reindex(price_df.index)
                             
-                            # Rolling relative strength momentum
-                            for window in [5, 10, 20]:
-                                rs_mom_col = f'rs_momentum_{symbol1}_{symbol2}_{window}'
-                                if len(rs_pair_data) >= window:
-                                    momentum = rs_values.pct_change(window)
-                                    cross_features[rs_mom_col] = momentum.reindex(price_df.index)
-                                else:
-                                    cross_features[rs_mom_col] = np.nan
+                            # Note: rs_momentum features removed to match expected feature count
                         else:
                             cross_features[rs_col] = np.nan
-                            for window in [5, 10, 20]:
-                                rs_mom_col = f'rs_momentum_{symbol1}_{symbol2}_{window}'
-                                cross_features[rs_mom_col] = np.nan
+                            # Note: rs_momentum features removed to match expected feature count
             
             # Market dispersion (volatility of cross-symbol returns)
             returns_df = price_df.pct_change()
