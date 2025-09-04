@@ -29,7 +29,7 @@ class FeatureSet:
 class FeatureEngineering:
     """Advanced feature engineering for algorithmic trading"""
     
-    def __init__(self, supabase_client=None):
+    def __init__(self, supabase_client=None, data_pipeline=None):
         # Use Supabase client instead of SQLAlchemy
         if supabase_client:
             self.supabase = supabase_client
@@ -38,6 +38,9 @@ class FeatureEngineering:
             self.supabase = db_manager.get_supabase_client()
             if not self.supabase:
                 raise Exception("Supabase client not available")
+        
+        # Store data pipeline for SPY fallback functionality
+        self.data_pipeline = data_pipeline
         
         # Feature engineering parameters
         self.lookback_periods = [5, 10, 20, 50, 100, 200]
@@ -202,6 +205,10 @@ class FeatureEngineering:
     async def _get_market_data(self, symbol: str, start_date: datetime, end_date: datetime) -> Optional[pd.DataFrame]:
         """Get market data for feature engineering using Supabase client with pagination"""
         try:
+            # Special handling for SPY - ensure data is available before querying
+            if symbol == 'SPY':
+                await self.data_pipeline.ensure_spy_data_available(start_date, end_date)
+            
             all_data = []
             page_size = 1000  # Supabase hard limit
             
@@ -657,8 +664,15 @@ class FeatureEngineering:
         try:
             features = pd.DataFrame(index=data.index)
             
+            # Ensure SPY data is available before attempting to get it
+            start_date = data.index[0]
+            end_date = data.index[-1]
+            
+            # Check and download SPY data if missing
+            await self.data_pipeline.ensure_spy_data_available(start_date, end_date)
+            
             # Get SPY data for market correlation
-            spy_data = await self._get_market_data('SPY', data.index[0], data.index[-1])
+            spy_data = await self._get_market_data('SPY', start_date, end_date)
             
             if spy_data is not None and len(spy_data) > 0:
                 # Align data

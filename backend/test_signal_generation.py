@@ -39,7 +39,9 @@ async def test_signal_generation():
         universal_trainer = UniversalTrainer(data_pipeline, universal_feature_engineering)
         
         # Initialize signal generator
-        signal_generator = SignalGenerator(model_trainer=model_trainer)
+        from database import db_manager
+        supabase_client = db_manager.get_supabase_client()
+        signal_generator = SignalGenerator(model_trainer=model_trainer, supabase_client=supabase_client, data_pipeline=data_pipeline)
         
         print("Components initialized successfully")
         

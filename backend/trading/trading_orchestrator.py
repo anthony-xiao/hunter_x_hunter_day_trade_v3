@@ -180,9 +180,9 @@ class TradingOrchestrator:
         try:
             # Step 1: Try to bootstrap existing features from database first
             logger.info(f"Attempting to bootstrap existing features for {symbol} from database")
-            bootstrap_count = await self.data_pipeline.bootstrap_feature_cache(symbol, minutes=240)  # 8 hours lookback for sufficient data
+            bootstrap_count = await self.data_pipeline.bootstrap_feature_cache(symbol, minutes=600)  # 10 hours lookback for sufficient data (100+ points for rolling calculations)
             
-            if bootstrap_count > 60:  # Sufficient features available
+            if bootstrap_count >= 100:  # Sufficient features available for 100-point rolling windows
                 logger.info(f"Successfully bootstrapped {bootstrap_count} existing features for {symbol} from database")
                 return
             

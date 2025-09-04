@@ -243,7 +243,9 @@ class UniversalSystemTester:
         
         try:
             # Test 5.1: Signal generator initialization
-            signal_generator = SignalGenerator()
+            from database import db_manager
+            supabase_client = db_manager.get_supabase_client()
+            signal_generator = SignalGenerator(supabase_client=supabase_client, data_pipeline=None)
             self.log_test("signal_generation", "initialization", "PASS", "SignalGenerator initialized")
             
             # Test 5.2: Universal model support

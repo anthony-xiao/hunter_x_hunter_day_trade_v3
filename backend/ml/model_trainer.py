@@ -2172,7 +2172,8 @@ class ModelTrainer:
             )
             
             self.universal_feature_engineering = UniversalFeatureEngineering(
-                supabase_client=supabase_client
+                supabase_client=supabase_client,
+                data_pipeline=self.data_pipeline
             )
             
             # Create universal training configuration

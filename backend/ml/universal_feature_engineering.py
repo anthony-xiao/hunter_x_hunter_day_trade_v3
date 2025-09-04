@@ -31,8 +31,8 @@ class UniversalFeatureSet:
 class UniversalFeatureEngineering(FeatureEngineering):
     """Advanced universal feature engineering for multi-symbol algorithmic trading"""
     
-    def __init__(self, supabase_client=None):
-        super().__init__(supabase_client)
+    def __init__(self, supabase_client=None, data_pipeline=None):
+        super().__init__(supabase_client, data_pipeline)
         
         # Universal feature engineering parameters
         self.correlation_windows = [5, 10, 20, 50, 100]
@@ -348,14 +348,18 @@ class UniversalFeatureEngineering(FeatureEngineering):
                             # Create a subset with only these two symbols and drop rows where both are NaN
                             pair_data = price_df[[symbol1, symbol2]].dropna(how='all')
                             
+                            # Count valid pairs (where both symbols have data)
+                            valid_pairs = len(pair_data.dropna())
+                            
                             logger.info(f"Correlation calculation for {symbol1}-{symbol2}:")
                             logger.info(f"  Original data: {len(price_df)} rows")
                             logger.info(f"  Pair data after dropping rows with both NaN: {len(pair_data)} rows")
+                            logger.info(f"  Valid pairs (both symbols have data): {valid_pairs} rows")
                             logger.info(f"  Window size: {window}")
                             
                             if len(pair_data) >= window:
-                                # Calculate correlation on the pair data
-                                correlation = pair_data[symbol1].rolling(window, min_periods=window//2).corr(
+                                # Calculate correlation on the pair data with more lenient min_periods
+                                correlation = pair_data[symbol1].rolling(window, min_periods=min(max(window//3, 1), window)).corr(
                                     pair_data[symbol2]
                                 )
                                 # Reindex to match the original price_df index
@@ -363,7 +367,8 @@ class UniversalFeatureEngineering(FeatureEngineering):
                                 logger.info(f"  Generated {correlation.notna().sum()} valid correlation values")
                             else:
                                 logger.warning(f"  Insufficient overlapping data between {symbol1} and {symbol2} for rolling correlation calculations")
-                                logger.warning(f"  Need at least {window} rows, but only have {len(pair_data)} rows")
+                                logger.warning(f"  Need at least {window} data points for rolling window calculation, but only have {len(pair_data)} overlapping data points")
+                                logger.warning(f"  This requires at least {window} minutes of market data. Consider increasing the bootstrap lookback period in trading orchestrator.")
                                 cross_features[corr_col] = np.nan
             
             # Market beta calculations (proper beta formula: covariance/variance)
@@ -381,17 +386,29 @@ class UniversalFeatureEngineering(FeatureEngineering):
                     beta_data = pd.DataFrame({
                         'symbol': symbol_returns,
                         'market': market_returns
-                    }).dropna()
+                    })
                     
-                    logger.info(f"Beta calculation for {symbol}: {len(beta_data)} aligned return pairs")
+                    # Log data before alignment
+                    logger.info(f"Beta calculation for {symbol}: {len(beta_data)} total data points before alignment")
+                    
+                    # Only drop rows where BOTH symbol and market returns are NaN
+                    beta_data = beta_data.dropna(how='all')
+                    
+                    logger.info(f"Beta calculation for {symbol}: {len(beta_data)} aligned return pairs after dropna(how='all')")
+                    logger.info(f"Beta calculation for {symbol}: symbol NaN count: {beta_data['symbol'].isna().sum()}, market NaN count: {beta_data['market'].isna().sum()}")
                     
                     for window in self.correlation_windows:
                         beta_col = f'beta_{symbol}_market_{window}'
                         
+                        # Use more lenient data requirement - need at least window//3 valid pairs
+                        valid_pairs = len(beta_data.dropna())
+                        logger.info(f"  {beta_col}: {valid_pairs} valid (non-NaN) pairs available for rolling calculation")
+                        
                         if len(beta_data) >= window:
                             # Calculate proper beta: covariance(symbol, market) / variance(market)
-                            covariance = beta_data['symbol'].rolling(window, min_periods=window//2).cov(beta_data['market'])
-                            market_variance = beta_data['market'].rolling(window, min_periods=window//2).var()
+                            # Use min_periods=window//3 to be more lenient with sparse data
+                            covariance = beta_data['symbol'].rolling(window, min_periods=min(max(window//3, 1), window)).cov(beta_data['market'])
+                            market_variance = beta_data['market'].rolling(window, min_periods=min(max(window//3, 1), window)).var()
                             
                             # Avoid division by zero and handle edge cases
                             beta_values = np.where(
@@ -406,7 +423,8 @@ class UniversalFeatureEngineering(FeatureEngineering):
                             
                             logger.info(f"  {beta_col}: {pd.Series(beta_values).notna().sum()} valid beta values")
                         else:
-                            logger.warning(f"  Insufficient data for {beta_col}: need {window}, have {len(beta_data)}")
+                            logger.warning(f"  Insufficient data for {beta_col}: need {window} data points for rolling window calculation, but only have {len(beta_data)} aligned return pairs")
+                            logger.warning(f"  This requires at least {window} minutes of market data. Consider increasing the bootstrap lookback period in trading orchestrator.")
                             cross_features[beta_col] = np.nan
             
             # Relative strength between symbols

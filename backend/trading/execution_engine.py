@@ -194,8 +194,8 @@ class ExecutionEngine:
         self.confidence_multiplier = 2.0   # Confidence scaling factor
         
         # Stop loss and take profit
-        self.default_stop_loss = 0.02      # 2% stop loss
-        self.default_take_profit = 0.04    # 4% take profit (2:1 ratio)
+        self.default_stop_loss = 0.002     # 0.2% stop loss
+        self.default_take_profit = 0.003   # 0.3% take profit
         self.trailing_stop_distance = 0.015  # 1.5% trailing stop
         
         # Market data cache
@@ -939,10 +939,12 @@ class ExecutionEngine:
             return 100000.0  # Fallback value
     
     async def _load_positions(self) -> None:
-        """Load current positions from Alpaca"""
+        """Load current positions from Alpaca and detect closed positions"""
         try:
             alpaca_positions = self.trading_client.get_all_positions()
             
+            # Store previous positions for comparison
+            previous_positions = self.positions.copy()
             self.positions.clear()
             
             for pos in alpaca_positions:
@@ -965,16 +967,30 @@ class ExecutionEngine:
                 
                 self.positions[pos.symbol] = position
             
+            # Check for positions that were closed (no longer in current positions)
+            for symbol, prev_position in previous_positions.items():
+                if symbol not in self.positions:
+                    logger.info(f"Detected closed position: {symbol} - {prev_position.side} {prev_position.quantity}")
+                    
+                    # Save completed trade to database for position closure
+                    await self._save_completed_trade_to_db(
+                        symbol=symbol,
+                        exit_position=prev_position,
+                        trade_type="position_close"
+                    )
+            
             logger.info(f"Loaded {len(self.positions)} positions")
             
         except Exception as e:
             logger.error(f"Error loading positions: {e}")
     
     async def _load_orders(self) -> None:
-        """Load current orders from Alpaca"""
+        """Load current orders from Alpaca and detect filled orders"""
         try:
             alpaca_orders = self.trading_client.get_orders()
             
+            # Store previous order statuses for comparison
+            previous_orders = self.orders.copy()
             self.orders.clear()
             
             for alpaca_order in alpaca_orders:
@@ -989,17 +1005,84 @@ class ExecutionEngine:
                     filled_quantity=float(alpaca_order.filled_qty) if alpaca_order.filled_qty is not None else 0,
                     limit_price=float(alpaca_order.limit_price) if alpaca_order.limit_price is not None else None,
                     stop_price=float(alpaca_order.stop_price) if alpaca_order.stop_price is not None else None,
-                    trail_amount=float(getattr(alpaca_order, 'trail_price', None) or getattr(alpaca_order, 'trail_percent', None)) if hasattr(alpaca_order, 'trail_price') or hasattr(alpaca_order, 'trail_percent') else None,
+                    trail_amount=float(trail_value) if (trail_value := getattr(alpaca_order, 'trail_price', None) or getattr(alpaca_order, 'trail_percent', None)) is not None else None,
                     timestamp=alpaca_order.created_at,
                     updated_at=alpaca_order.updated_at
                 )
                 
+                # Check if this order was just filled
+                previous_order = previous_orders.get(order.id)
+                if previous_order and self._is_order_newly_filled(previous_order, order):
+                    logger.info(f"Detected filled order: {order.symbol} - {order.side} {order.filled_quantity} @ {order.filled_price}")
+                    
+                    # Save completed trade to database
+                    await self._save_completed_trade_to_db(
+                        symbol=order.symbol,
+                        entry_order=order,
+                        trade_type="order_fill"
+                    )
+                
                 self.orders[order.id] = order
+            
+            # Check for orders that are no longer in the list (might be filled and removed)
+            for prev_order_id, prev_order in previous_orders.items():
+                if prev_order_id not in self.orders:
+                    # Order is no longer in the list, might be filled
+                    if prev_order.status in [OrderStatus.PENDING, OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED]:
+                        logger.info(f"Order {prev_order.symbol} ({prev_order_id}) removed from list - likely filled")
+                        
+                        # Try to get the final order status from Alpaca
+                        try:
+                            final_order = self.trading_client.get_order_by_id(prev_order_id)
+                            if final_order and final_order.status.value in ['filled']:
+                                filled_order = Order(
+                                    id=str(final_order.id),
+                                    symbol=final_order.symbol,
+                                    quantity=float(final_order.qty),
+                                    side=final_order.side.value,
+                                    order_type=OrderType(final_order.order_type.value),
+                                    status=OrderStatus.FILLED,
+                                    filled_price=float(final_order.filled_avg_price) if final_order.filled_avg_price else None,
+                                    filled_quantity=float(final_order.filled_qty) if final_order.filled_qty else 0,
+                                    limit_price=float(final_order.limit_price) if final_order.limit_price else None,
+                                    stop_price=float(final_order.stop_price) if final_order.stop_price else None,
+                                    trail_amount=None,
+                                    timestamp=final_order.created_at,
+                                    updated_at=final_order.updated_at
+                                )
+                                
+                                # Save completed trade to database
+                                await self._save_completed_trade_to_db(
+                                    symbol=filled_order.symbol,
+                                    entry_order=filled_order,
+                                    trade_type="order_fill"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Could not get final status for order {prev_order_id}: {e}")
             
             logger.info(f"Loaded {len(self.orders)} orders")
             
         except Exception as e:
             logger.error(f"Error loading orders: {e}")
+    
+    def _is_order_newly_filled(self, previous_order: Order, current_order: Order) -> bool:
+        """Check if an order was newly filled"""
+        try:
+            # Check if status changed to filled
+            if (previous_order.status != OrderStatus.FILLED and 
+                current_order.status == OrderStatus.FILLED):
+                return True
+            
+            # Check if filled quantity increased significantly
+            if (current_order.filled_quantity > previous_order.filled_quantity and
+                current_order.filled_quantity >= current_order.quantity * 0.95):  # 95% filled threshold
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking if order newly filled: {e}")
+            return False
     
     async def _initialize_risk_monitoring(self) -> None:
         """Initialize risk monitoring systems"""
@@ -1132,6 +1215,104 @@ class ExecutionEngine:
             
         except Exception as e:
             logger.error(f"Error logging trade: {e}")
+    
+    async def _save_completed_trade_to_db(self, symbol: str, entry_order: Order = None, exit_order: Order = None, 
+                                         position: Position = None, trade_type: str = "position_close") -> None:
+        """Save completed trade to Supabase trades table"""
+        try:
+            if not self.db_manager:
+                logger.error("Database manager not initialized")
+                return
+            
+            supabase = self.db_manager.get_supabase_client()
+            if not supabase:
+                logger.error("Supabase client not available")
+                return
+            
+            # Determine trade details based on available information
+            trade_data = {
+                'symbol': symbol,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'status': 'completed'
+            }
+            
+            # Handle different trade completion scenarios
+            if trade_type == "order_fill" and entry_order:
+                # Order fill scenario
+                trade_data.update({
+                    'entry_time': entry_order.created_at.isoformat() if entry_order.created_at else datetime.now(timezone.utc).isoformat(),
+                    'entry_price': float(entry_order.filled_avg_price) if entry_order.filled_avg_price else float(entry_order.limit_price or 0),
+                    'side': entry_order.side.value,
+                    'quantity': float(entry_order.filled_qty) if entry_order.filled_qty else float(entry_order.qty),
+                    'order_id': entry_order.id,
+                    'price': float(entry_order.filled_avg_price) if entry_order.filled_avg_price else float(entry_order.limit_price or 0)
+                })
+                
+            elif trade_type == "position_close" and position:
+                # Position close scenario - calculate P&L
+                current_price = await self._get_current_price(symbol)
+                if current_price is None:
+                    logger.warning(f"Could not get current price for {symbol}, skipping trade save")
+                    return
+                
+                # Calculate P&L
+                if position.side == 'long':
+                    pnl = (current_price - position.avg_entry_price) * abs(position.qty)
+                else:  # short position
+                    pnl = (position.avg_entry_price - current_price) * abs(position.qty)
+                
+                trade_data.update({
+                    'entry_time': datetime.now(timezone.utc).isoformat(),  # We don't have exact entry time from position
+                    'exit_time': datetime.now(timezone.utc).isoformat(),
+                    'entry_price': float(position.avg_entry_price),
+                    'exit_price': float(current_price),
+                    'side': position.side,
+                    'quantity': float(abs(position.qty)),
+                    'price': float(current_price),
+                    'pnl': float(pnl)
+                })
+                
+            elif entry_order and exit_order:
+                # Complete trade with both entry and exit
+                entry_price = float(entry_order.filled_avg_price) if entry_order.filled_avg_price else float(entry_order.limit_price or 0)
+                exit_price = float(exit_order.filled_avg_price) if exit_order.filled_avg_price else float(exit_order.limit_price or 0)
+                quantity = float(entry_order.filled_qty) if entry_order.filled_qty else float(entry_order.qty)
+                
+                # Calculate P&L
+                if entry_order.side.value == 'buy':
+                    pnl = (exit_price - entry_price) * quantity
+                else:  # sell (short)
+                    pnl = (entry_price - exit_price) * quantity
+                
+                trade_data.update({
+                    'entry_time': entry_order.created_at.isoformat() if entry_order.created_at else datetime.now(timezone.utc).isoformat(),
+                    'exit_time': exit_order.created_at.isoformat() if exit_order.created_at else datetime.now(timezone.utc).isoformat(),
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'side': entry_order.side.value,
+                    'quantity': quantity,
+                    'price': exit_price,
+                    'order_id': entry_order.id,
+                    'pnl': float(pnl)
+                })
+            
+            # Add strategy information if available
+            if hasattr(self, 'current_strategy'):
+                trade_data['strategy'] = self.current_strategy
+            else:
+                trade_data['strategy'] = 'ml_strategy'
+            
+            # Insert into Supabase
+            result = supabase.table('trades').insert(trade_data).execute()
+            
+            if result.data:
+                logger.info(f"Successfully saved completed trade to database: {symbol} - P&L: {trade_data.get('pnl', 'N/A')}")
+            else:
+                logger.error(f"Failed to save trade to database: {result}")
+                
+        except Exception as e:
+            logger.error(f"Error saving completed trade to database: {e}")
+            logger.error(f"Trade data: {trade_data if 'trade_data' in locals() else 'N/A'}")
     
     async def update_positions(self) -> None:
         """Update position information and P&L"""

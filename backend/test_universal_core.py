@@ -117,7 +117,9 @@ class UniversalCoreSystemTester:
         
         # Test 3: Signal Generator Universal Capabilities
         try:
-            signal_generator = SignalGenerator()
+            from database import db_manager
+            supabase_client = db_manager.get_supabase_client()
+            signal_generator = SignalGenerator(supabase_client=supabase_client, data_pipeline=None)
             self.log_test("core_components", "signal_generator_init", "PASS", "SignalGenerator initialized")
             
             # Check for universal signal methods
