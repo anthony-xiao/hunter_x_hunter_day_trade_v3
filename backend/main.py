@@ -132,7 +132,9 @@ async def initialize_trading_system():
         
         # Initialize signal generator
         logger.info("Initializing signal generator...")
-        signal_generator = SignalGenerator(model_trainer=model_trainer)
+        from database import db_manager
+        supabase_client = db_manager.get_supabase_client()
+        signal_generator = SignalGenerator(model_trainer=model_trainer, supabase_client=supabase_client, data_pipeline=data_pipeline)
         
         # Get trading universe (this is not actually async)
         trading_symbols = data_pipeline.get_ticker_universe()
@@ -367,8 +369,8 @@ async def trading_loop():
                                 predicted_return = signal_data.get('predicted_return', 0)
                                 
                                 # Calculate actual return from order data
-                                filled_price = order_data.get('filled_price', 0)
-                                quantity = order_data.get('filled_quantity', 0)
+                                filled_price = order_data.get('filled_price') or 0
+                                quantity = order_data.get('filled_quantity') or 0
                                 
                                 if symbol and filled_price > 0:
                                     await signal_generator.update_model_performance(

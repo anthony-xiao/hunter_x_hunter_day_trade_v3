@@ -94,12 +94,27 @@ class MarketRegime:
     timestamp: datetime
 
 class SignalGenerator:
-    def __init__(self, model_trainer: Optional[ModelTrainer] = None):
+    def __init__(self, model_trainer: Optional[ModelTrainer] = None, supabase_client=None, data_pipeline=None):
         self.models: Dict[str, Dict[ModelType, Any]] = {}  # symbol -> model_type -> model
         self.scalers: Dict[str, StandardScaler] = {}  # symbol -> scaler
         
         # Store ModelTrainer instance for universal model loading
         self.model_trainer = model_trainer
+        
+        # Store Supabase client for database operations
+        if supabase_client:
+            self.supabase_client = supabase_client
+        else:
+            from database import db_manager
+            self.supabase_client = db_manager.get_supabase_client()
+        
+        # Store data pipeline for feature engineering
+        if data_pipeline:
+            self.data_pipeline = data_pipeline
+        elif model_trainer and hasattr(model_trainer, 'data_pipeline'):
+            self.data_pipeline = model_trainer.data_pipeline
+        else:
+            self.data_pipeline = None
         
         # Initialize ensemble weights - will be loaded from optimization results
         self.ensemble_weights: Dict[str, Dict[ModelType, float]] = {}  # symbol -> model_type -> weight
@@ -1779,6 +1794,28 @@ class SignalGenerator:
         # This could be called periodically or triggered by external events
         pass
     
+    def _serialize_for_json(self, obj) -> dict:
+        """Custom serialization function that handles ModelType enums and other complex objects"""
+        if hasattr(obj, '__dict__'):
+            # Handle dataclass objects
+            result = {}
+            for key, value in obj.__dict__.items():
+                if isinstance(value, ModelType):
+                    result[key] = value.value
+                elif isinstance(value, datetime):
+                    result[key] = value.isoformat()
+                elif isinstance(value, list):
+                    result[key] = [self._serialize_for_json(item) if hasattr(item, '__dict__') else item for item in value]
+                elif isinstance(value, dict):
+                    result[key] = {k: (v.value if isinstance(v, ModelType) else v) for k, v in value.items()}
+                elif hasattr(value, '__dict__'):
+                    result[key] = self._serialize_for_json(value)
+                else:
+                    result[key] = value
+            return result
+        else:
+            return obj
+    
     async def _log_signal(self, signal: TradeSignal, ensemble_pred: EnsemblePrediction) -> None:
         """Log signal details"""
         try:
@@ -1788,9 +1825,9 @@ class SignalGenerator:
             
             signal_log = {
                 'timestamp': datetime.now(timezone.utc).isoformat(),
-                'signal': asdict(signal),
-                'ensemble_prediction': asdict(ensemble_pred),
-                'market_regime': asdict(self.current_market_regime) if self.current_market_regime else None,
+                'signal': self._serialize_for_json(signal),
+                'ensemble_prediction': self._serialize_for_json(ensemble_pred),
+                'market_regime': self._serialize_for_json(self.current_market_regime) if self.current_market_regime else None,
                 'ensemble_weights': serializable_weights
             }
             
@@ -1914,7 +1951,7 @@ class SignalGenerator:
             
             # Initialize universal components
             data_pipeline = self.model_trainer.data_pipeline
-            feature_engineering = UniversalFeatureEngineering()
+            feature_engineering = UniversalFeatureEngineering(self.supabase_client, data_pipeline)
             
             # Set symbol mappings for embedding lookup
             if symbols:
@@ -2030,7 +2067,7 @@ class SignalGenerator:
             
             # Step 1: Engineer individual symbol features
             # Create FeatureEngineering instance for individual symbol features
-            feature_engineering = FeatureEngineering()
+            feature_engineering = FeatureEngineering(self.supabase_client, self.data_pipeline)
             
             # Use training_mode=True to ensure consistent feature generation with training
             feature_set = await feature_engineering.engineer_features(

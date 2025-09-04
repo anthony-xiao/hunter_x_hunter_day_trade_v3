@@ -64,7 +64,8 @@ class MockTradingSystem:
                 universal_dir = Path("/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal")
                 await model_trainer.load_universal_models(universal_dir)
                 
-                self.signal_generator = SignalGenerator(model_trainer=model_trainer)
+                supabase_client = self.db_manager.get_supabase_client()
+                self.signal_generator = SignalGenerator(model_trainer=model_trainer, supabase_client=supabase_client, data_pipeline=self.data_pipeline)
                 
                 # Initialize models for the trading symbols
                 symbols = ['TSLA', 'AAPL']

@@ -58,7 +58,7 @@ class DataPipeline:
         
         # Hybrid Feature Storage Strategy
         self.feature_cache: Dict[str, Dict[datetime, Dict]] = {}  # In-memory cache for recent features
-        self.cache_duration_hours = 4  # Cache last 4 hours of features (240 minutes to match bootstrap)
+        self.cache_duration_hours = 12  # Cache last 12 hours of features (720 minutes to support 10-hour bootstrap)
         self.cache_max_size = 10000  # Maximum cached feature records per symbol
         
         # Universal training cache for batch processing
@@ -69,13 +69,13 @@ class DataPipeline:
         self.trading_universe = [
             'AAPL','TSLA'
             # Technology
-            # 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META',
+            # 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META'
             # Biotechnology
             # 'MRNA', 'GILD', 'BIIB', 'VRTX',
             # Energy
             # 'XOM', 'CVX', 'SLB', 'HAL',
             # Crypto-Related
-            # 'MARA', 'COIN', 'RIOT',
+            # 'MARA', 'COIN', 'RIOT'
             # Consumer Discretionary
             # 'AMZN', 'NFLX', 'DIS'
         ]
@@ -124,32 +124,43 @@ class DataPipeline:
         try:
             logger.info(f"Starting download of historical data for {symbol} from {start_date.strftime('%Y-%m-%d %H:%M:%S')} to {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
             
-            # First, try to load existing data from database (same logic as train_symbol_models)
-            existing_data = await self.load_market_data(
-                symbol=symbol,
-                start_date=start_date,
-                end_date=end_date
-            )
+            # Check for existing data with direct database query to avoid circular dependency
+            # Convert datetime to ISO format for database query
+            start_date_iso = start_date.isoformat() if start_date.tzinfo else start_date.replace(tzinfo=timezone.utc).isoformat()
+            end_date_iso = end_date.isoformat() if end_date.tzinfo else end_date.replace(tzinfo=timezone.utc).isoformat()
+            
+            # Query count of existing records
+            count_response = self.supabase.table('market_data').select(
+                '*', count='exact'
+            ).eq('symbol', symbol).gte(
+                'timestamp', start_date_iso
+            ).lte(
+                'timestamp', end_date_iso
+            ).execute()
+            
+            existing_count = count_response.count if count_response.count else 0
             
             # Check if we have sufficient existing data
-            if existing_data is not None and len(existing_data) >= 100:
+            if existing_count >= 100:
                 # Calculate expected data points (approximately 390 minutes per trading day)
                 expected_days = (end_date - start_date).days
                 expected_data_points = expected_days * 390  # Rough estimate
-                coverage_percentage = (len(existing_data) / expected_data_points * 100) if expected_data_points > 0 else 0
+                coverage_percentage = (existing_count / expected_data_points * 100) if expected_data_points > 0 else 0
                 
-                logger.info(f"Found {len(existing_data)} existing data points for {symbol} (estimated {coverage_percentage:.1f}% coverage)")
+                logger.info(f"Found {existing_count} existing data points for {symbol} (estimated {coverage_percentage:.1f}% coverage)")
                 
-                # If we have good coverage (>90%), return existing data
+                # If we have good coverage (>90%), load and return existing data
                 if coverage_percentage > 90.0:
                     logger.info(f"Using existing data for {symbol} - sufficient coverage ({coverage_percentage:.1f}%)")
+                    # Load the actual data using the chunked method directly
+                    existing_data = await self._load_market_data_chunk(symbol, start_date, end_date)
                     # Cache the data
                     self.data_cache[symbol] = existing_data
                     return existing_data
                 else:
                     logger.info(f"Existing data coverage insufficient ({coverage_percentage:.1f}%), downloading fresh data...")
             else:
-                logger.info(f"No existing data or insufficient data for {symbol} (found {len(existing_data) if existing_data is not None else 0} points), downloading...")
+                logger.info(f"No existing data or insufficient data for {symbol} (found {existing_count} points), downloading...")
             
             # Get minute bars from Polygon using date range with pagination
             bars = []
@@ -472,6 +483,128 @@ class DataPipeline:
             logger.error(f"Failed to load market data for {symbol}: {e}")
             return pd.DataFrame()
     
+    async def check_spy_data_availability(self, start_date: datetime, end_date: datetime) -> bool:
+        """Check if SPY data exists for the given time range
+        
+        Args:
+            start_date: Start of the time range to check
+            end_date: End of the time range to check
+            
+        Returns:
+            bool: True if sufficient SPY data exists, False otherwise
+        """
+        try:
+            # Ensure timezone-aware UTC for consistent comparisons
+            if start_date.tzinfo is None:
+                start_date = start_date.replace(tzinfo=timezone.utc)
+            else:
+                start_date = start_date.astimezone(timezone.utc)
+                
+            if end_date.tzinfo is None:
+                end_date = end_date.replace(tzinfo=timezone.utc)
+            else:
+                end_date = end_date.astimezone(timezone.utc)
+            
+            # Convert to ISO format for database query
+            start_date_iso = start_date.isoformat()
+            end_date_iso = end_date.isoformat()
+            
+            # Query count of existing SPY records
+            count_response = self.supabase.table('market_data').select(
+                '*', count='exact'
+            ).eq('symbol', 'SPY').gte(
+                'timestamp', start_date_iso
+            ).lte(
+                'timestamp', end_date_iso
+            ).execute()
+            
+            existing_count = count_response.count if count_response.count else 0
+            
+            # Calculate expected data points (approximately 390 minutes per trading day)
+            expected_days = max(1, (end_date - start_date).days)
+            expected_data_points = expected_days * 390  # Rough estimate for trading hours
+            
+            # Consider data sufficient if we have at least 50% coverage or minimum 10 data points
+            coverage_percentage = (existing_count / expected_data_points * 100) if expected_data_points > 0 else 0
+            is_sufficient = existing_count >= 10 and coverage_percentage >= 50.0
+            
+            logger.debug(
+                f"SPY data availability check: {existing_count} records found "
+                f"({coverage_percentage:.1f}% coverage) for {start_date.date()} to {end_date.date()}"
+            )
+            
+            return is_sufficient
+            
+        except Exception as e:
+            logger.error(f"Failed to check SPY data availability: {e}")
+            return False
+    
+    async def ensure_spy_data_available(self, start_date: datetime, end_date: datetime) -> bool:
+        """Ensure SPY data is available for the given time range, downloading if necessary
+        
+        This method is specifically designed for SPY data which is crucial for feature engineering
+        even though we don't trade SPY directly.
+        
+        Args:
+            start_date: Start of the time range needed
+            end_date: End of the time range needed
+            
+        Returns:
+            bool: True if SPY data is now available, False if download failed
+        """
+        try:
+            # First check if SPY data already exists
+            if await self.check_spy_data_availability(start_date, end_date):
+                logger.debug(f"SPY data already available for {start_date.date()} to {end_date.date()}")
+                return True
+            
+            logger.info(
+                f"SPY data missing for {start_date.date()} to {end_date.date()}, "
+                f"downloading from Polygon API..."
+            )
+            
+            # Download SPY data from Polygon with comprehensive error handling
+            try:
+                spy_data = await self.download_historical_data(
+                    symbol='SPY',
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                
+                if spy_data.empty:
+                    logger.error(f"Failed to download SPY data for {start_date.date()} to {end_date.date()}: No data returned from Polygon API")
+                    return False
+                    
+            except Exception as polygon_error:
+                logger.error(
+                    f"Polygon API error while downloading SPY data for {start_date.date()} to {end_date.date()}: {polygon_error}"
+                )
+                # Check if it's a rate limit error
+                if "rate limit" in str(polygon_error).lower() or "429" in str(polygon_error):
+                    logger.warning("Rate limit encountered. SPY data download will be retried later.")
+                # Check if it's an authentication error
+                elif "auth" in str(polygon_error).lower() or "401" in str(polygon_error):
+                    logger.error("Authentication error with Polygon API. Check API key configuration.")
+                # Check if it's a network error
+                elif "network" in str(polygon_error).lower() or "connection" in str(polygon_error).lower():
+                    logger.warning("Network error encountered. SPY data download will be retried later.")
+                return False
+            
+            # Verify the data was successfully stored and is now available
+            if await self.check_spy_data_availability(start_date, end_date):
+                logger.info(
+                    f"Successfully downloaded and stored {len(spy_data)} SPY data points "
+                    f"for {start_date.date()} to {end_date.date()}"
+                )
+                return True
+            else:
+                logger.error(f"SPY data download completed but verification failed")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to ensure SPY data availability: {e}")
+            return False
+    
     async def _load_market_data_chunk(self, symbol: str, 
                                     start_date: datetime, 
                                     end_date: datetime) -> pd.DataFrame:
@@ -532,7 +665,7 @@ class DataPipeline:
                 current_start = last_dt + timedelta(seconds=1)
                 
                 # Safety limit to prevent infinite loops
-                if page_count > 100:
+                if page_count > 1000:
                     logger.warning(f"Reached safety limit of 100 pages for {symbol} chunk")
                     break
                 
@@ -546,15 +679,7 @@ class DataPipeline:
             df = pd.DataFrame(all_data)
             
             # Convert timestamp column to datetime and set as index
-            # Use robust parsing to handle varying microsecond precision
-            try:
-                # First try ISO8601 format for optimal performance
-                df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601')
-            except (ValueError, TypeError) as e:
-                # Fallback to flexible parsing for inconsistent microsecond precision
-                logger.debug(f"ISO8601 parsing failed for {symbol}, using flexible parsing: {e}")
-                df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
-            
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
             # Ensure timezone-naive timestamps for consistency
             if df['timestamp'].dt.tz is not None:
                 df['timestamp'] = df['timestamp'].dt.tz_localize(None)
@@ -937,7 +1062,7 @@ class DataPipeline:
             features_df = await self.load_features_from_db(symbol, start_time, end_time)
             
             loaded_count = 0
-            min_required_features = 10  # Minimum features needed for models
+            min_required_features = 100 if not training_mode else 10  # 100 features needed for rolling calculations in live trading, 10 for training
             
             if features_df is not None and len(features_df) >= min_required_features:
                 # Sufficient features found in database
@@ -957,8 +1082,8 @@ class DataPipeline:
                 logger.warning(f"Training mode: Insufficient features in database for {symbol} ({len(features_df) if features_df is not None else 0} found, {min_required_features} required). Cannot fallback to Polygon in training mode.")
                 return 0
             
-            logger.warning(f"Insufficient features in database for {symbol} ({len(features_df) if features_df is not None else 0} found, {min_required_features} required)")
-            logger.info(f"Attempting to download recent data from Polygon API for {symbol}")
+            logger.warning(f"Insufficient features in database for {symbol} ({len(features_df) if features_df is not None else 0} found, {min_required_features} required for rolling calculations)")
+            logger.info(f"Attempting to download recent data from Polygon API for {symbol} to meet 100-point rolling window requirements")
             
             try:
                 # Download recent market data from Polygon (extend time range for better coverage)
@@ -974,7 +1099,7 @@ class DataPipeline:
                 # Generate features from the downloaded market data
                 from ..ml.ml_feature_engineering import FeatureEngineering
                 from ..database import db_manager
-                feature_engineer = FeatureEngineering(supabase_client=db_manager.get_supabase_client())
+                feature_engineer = FeatureEngineering(supabase_client=db_manager.get_supabase_client(), data_pipeline=self)
                 
                 # Engineer features from market data
                 start_date = market_data.index.min()
@@ -1295,26 +1420,31 @@ class DataPipeline:
                 logger.info(f"Training mode: Found {len(recent_features)} features for {symbol} in training range {training_start_date} to {training_end_date}")
                 return recent_features
             
-            # Strategy 1: Try to get last N minutes from most recent timestamp (regular mode)
-            cutoff_time = most_recent_timestamp - timedelta(minutes=minutes)
-            recent_features = {
-                ts: features for ts, features in self.feature_cache[symbol].items()
-                if ts >= cutoff_time
-            }
-            
-            # Debug logging for time window search
-            logger.debug(f"Time window search for {symbol}: cutoff={cutoff_time}, found={len(recent_features)} features in {minutes}-minute window")
-            
-            # Check if we have sufficient features (minimum 60 for signal generation)
+            # Progressive buffer strategy: Try multiple time windows before fallback
             min_required_features = 60
+            time_windows = [minutes, int(minutes * 1.5), minutes * 2]  # 60, 90, 120 minutes
             
-            if len(recent_features) >= min_required_features:
-                logger.debug(f"Sufficient features found for {symbol}: {len(recent_features)} >= {min_required_features}")
-                return recent_features
+            recent_features = {}
+            for window_minutes in time_windows:
+                cutoff_time = most_recent_timestamp - timedelta(minutes=window_minutes)
+                recent_features = {
+                    ts: features for ts, features in self.feature_cache[symbol].items()
+                    if ts >= cutoff_time
+                }
+                
+                # Debug logging for time window search
+                logger.debug(f"Time window search for {symbol}: cutoff={cutoff_time}, found={len(recent_features)} features in {window_minutes}-minute window")
+                
+                # Check if we have sufficient features
+                if len(recent_features) >= min_required_features:
+                    logger.debug(f"Sufficient features found for {symbol}: {len(recent_features)} >= {min_required_features} in {window_minutes}-minute window")
+                    return recent_features
+                
+                logger.debug(f"Insufficient features in {window_minutes}-minute window for {symbol}: {len(recent_features)} < {min_required_features}")
             
-            # Strategy 2: If insufficient, get the most recent N features regardless of time gap
+            # Strategy 2: If all time windows insufficient, get the most recent N features regardless of time gap
             # This handles market gaps (overnight, weekends, holidays)
-            logger.debug(f"Insufficient features in time window for {symbol}: {len(recent_features)} < {min_required_features}, trying fallback strategy")
+            logger.debug(f"All time windows insufficient for {symbol}, trying fallback strategy")
             
             if len(cached_timestamps) >= min_required_features:
                 # Take the most recent N features

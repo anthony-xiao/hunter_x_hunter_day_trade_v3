@@ -1,0 +1,68 @@
+{
+  "total_records": 1089,
+  "problematic_count": 1,
+  "problematic_samples": [
+    {
+      "position": 657,
+      "timestamp": "2025-09-02T19:31:14.68+00:00",
+      "issues": [
+        "inconsistent_microseconds"
+      ],
+      "record": {
+        "timestamp": "2025-09-02T19:31:14.68+00:00",
+        "symbol": "TSLA",
+        "open": 250.5,
+        "high": 252.75,
+        "low": 249.25,
+        "close": 251.8,
+        "volume": 15000
+      }
+    }
+  ],
+  "position_18527_analysis": {
+    "error": "Only 1089 records found, position 18527 not available",
+    "total_records": 1089
+  },
+  "parsing_tests": [
+    {
+      "position": 657,
+      "timestamp": "2025-09-02T19:31:14.68+00:00",
+      "issues": [
+        "inconsistent_microseconds"
+      ],
+      "current_parsing": {
+        "timestamp": "2025-09-02T19:31:14.68+00:00",
+        "iso8601_success": true,
+        "fallback_success": false,
+        "iso8601_error": null,
+        "fallback_error": null,
+        "final_result": "2025-09-02 19:31:14.680000+00:00"
+      },
+      "alternative_methods": {
+        "mixed_format": {
+          "success": true,
+          "result": "2025-09-02 19:31:14.680000+00:00"
+        },
+        "infer_format": {
+          "success": true,
+          "result": "2025-09-02 19:31:14.680000+00:00"
+        },
+        "no_format": {
+          "success": true,
+          "result": "2025-09-02 19:31:14.680000+00:00"
+        },
+        "dateutil": {
+          "success": true,
+          "result": "2025-09-02 19:31:14.680000+00:00"
+        }
+      }
+    }
+  ],
+  "recommended_fix": "\n# Comprehensive timestamp parsing fix for data_pipeline.py\n# Replace the existing parsing logic around line 550\n\ndef parse_timestamps_robust(df, symbol):\n    \"\"\"Robust timestamp parsing that handles all variations\"\"\"\n    try:\n        # Method 1: Try ISO8601 format for optimal performance\n        df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601')\n        logger.debug(f\"ISO8601 parsing successful for {symbol}\")\n    except (ValueError, TypeError) as e:\n        logger.debug(f\"ISO8601 parsing failed for {symbol}: {e}\")\n        \n        try:\n            # Method 2: Try mixed format parsing\n            df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed')\n            logger.debug(f\"Mixed format parsing successful for {symbol}\")\n        except Exception as e2:\n            logger.debug(f\"Mixed format parsing failed for {symbol}: {e2}\")\n            \n            try:\n                # Method 3: Try flexible parsing with UTC\n                df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)\n                logger.debug(f\"UTC flexible parsing successful for {symbol}\")\n            except Exception as e3:\n                logger.debug(f\"UTC parsing failed for {symbol}: {e3}\")\n                \n                try:\n                    # Method 4: Try without any format specification\n                    df['timestamp'] = pd.to_datetime(df['timestamp'])\n                    logger.debug(f\"No-format parsing successful for {symbol}\")\n                except Exception as e4:\n                    logger.error(f\"All timestamp parsing methods failed for {symbol}: {e4}\")\n                    \n                    # Method 5: Manual cleanup and retry\n                    try:\n                        # Clean up problematic microsecond formatting\n                        df['timestamp'] = df['timestamp'].str.replace(\n                            r'T(\\d{2}:\\d{2}:\\d{2})\\.(\\d{1,2})\\+', \n                            r'T\\1.\\2' + '0' * (6 - len('\\2')) + '+', \n                            regex=True\n                        )\n                        df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed')\n                        logger.info(f\"Manual cleanup parsing successful for {symbol}\")\n                    except Exception as e5:\n                        logger.error(f\"Manual cleanup failed for {symbol}: {e5}\")\n                        raise e5\n    \n    return df\n",
+  "summary": {
+    "main_issues": [
+      "inconsistent_microseconds"
+    ],
+    "fix_needed": true
+  }
+}
