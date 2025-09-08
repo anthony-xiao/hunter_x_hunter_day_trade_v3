@@ -9,6 +9,7 @@ import pandas as pd
 from loguru import logger
 import json
 from pathlib import Path
+import pytz
 
 # Import our modules
 from config import settings
@@ -296,12 +297,21 @@ async def trading_loop():
     while trading_active:
         try:
             # Check if market is open
-            now = datetime.now(timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            
+            # Convert UTC to Eastern Time for market hours check
+            eastern = pytz.timezone('US/Eastern')
+            now_et = now_utc.astimezone(eastern)
+            
+            # Log timezone conversion for debugging
+            logger.debug(f"Time check - UTC: {now_utc.strftime('%H:%M:%S')}, ET: {now_et.strftime('%H:%M:%S %Z')}, Weekday: {now_et.weekday()}")
             
             # Trading hours: 9:30 AM - 4:00 PM ET (Monday-Friday)
-            if (now.weekday() < 5 and  # Monday = 0, Friday = 4
-                9 <= now.hour < 16 and
-                not (now.hour == 9 and now.minute < 30)):
+            if (now_et.weekday() < 5 and  # Monday = 0, Friday = 4
+                9 <= now_et.hour < 16 and
+                not (now_et.hour == 9 and now_et.minute < 30)):
+                
+                logger.debug(f"Market is open - proceeding with trading logic")
                 
                 # Get current market data
                 trading_symbols = data_pipeline.get_ticker_universe()
@@ -312,8 +322,8 @@ async def trading_loop():
                         # Get recent historical data for analysis
                         data = await data_pipeline.download_historical_data(
                             symbol=symbol,
-                            start_date=datetime.now(timezone.utc) - timedelta(days=30),
-            end_date=datetime.now(timezone.utc)
+                            start_date=now_utc - timedelta(days=30),
+                            end_date=now_utc
                         )
                         
                         if data is not None and len(data) >= 101:
@@ -324,35 +334,47 @@ async def trading_loop():
                 
                 # Generate trading signals
                 if signal_generator and market_data:
+                    logger.info(f"Generating signals for {len(market_data)} symbols")
                     signals = await signal_generator.generate_signals(market_data)
+                    logger.info(f"Generated {len(signals) if signals else 0} signals")
                     
                     # Execute signals
                     if execution_engine and signals:
-                        for signal in signals:
+                        logger.info(f"Processing {len(signals)} signals for execution")
+                        for i, signal in enumerate(signals):
+                            logger.info(f"Processing signal {i+1}/{len(signals)}: {signal.symbol} {signal.action} "
+                                       f"(confidence: {signal.confidence:.3f}, prediction: {getattr(signal, 'predicted_return', 'N/A')})")
                             try:
                                 # Apply risk management
                                 if risk_manager:
+                                    logger.info(f"Applying risk management for {signal.symbol} {signal.action} signal")
                                     position_size = await risk_manager.calculate_position_size(
                                         signal=signal,
                                         market_data=market_data.get(signal.symbol)
                                     )
+                                    logger.info(f"Risk management result for {signal.symbol}: position_size={position_size}")
                                     
                                     if position_size > 0:
+                                        logger.info(f"Executing {signal.action} signal for {signal.symbol} with position_size={position_size}")
                                         # Execute the trade
-                                        success = await execution_engine.execute_signal(
-                                            signal=signal,
-                                            position_size=position_size
-                                        )
+                                        success = await execution_engine.execute_signal(signal)
                                         
                                         if success:
-                                            logger.info(f"Executed {signal.action} signal for {signal.symbol}")
+                                            logger.info(f"✅ Successfully executed {signal.action} signal for {signal.symbol}")
                                         else:
-                                            logger.warning(f"Failed to execute signal for {signal.symbol}")
+                                            logger.warning(f"❌ Failed to execute {signal.action} signal for {signal.symbol}")
                                     else:
-                                        logger.info(f"Signal for {signal.symbol} rejected by risk management")
+                                        logger.info(f"🚫 Signal for {signal.symbol} rejected by risk management (position_size={position_size})")
+                                else:
+                                    logger.warning(f"No risk manager available for signal {signal.symbol}")
                                 
                             except Exception as e:
                                 logger.error(f"Error executing signal for {signal.symbol}: {e}")
+                    else:
+                        if not execution_engine:
+                            logger.warning("No execution engine available")
+                        elif not signals:
+                            logger.info("No signals generated to execute")
                 
                 # Update model performance based on recent trades
                 if execution_engine and signal_generator:
@@ -381,6 +403,16 @@ async def trading_loop():
                                     )
                         except Exception as e:
                             logger.error(f"Error updating model performance for trade: {e}")
+            else:
+                # Market is closed - log the reason
+                if now_et.weekday() >= 5:
+                    logger.debug(f"Market closed - Weekend (weekday: {now_et.weekday()})")
+                elif now_et.hour < 9:
+                    logger.debug(f"Market closed - Before open (current ET: {now_et.strftime('%H:%M:%S')})")
+                elif now_et.hour >= 16:
+                    logger.debug(f"Market closed - After close (current ET: {now_et.strftime('%H:%M:%S')})")
+                elif now_et.hour == 9 and now_et.minute < 30:
+                    logger.debug(f"Market closed - Pre-market (current ET: {now_et.strftime('%H:%M:%S')})")
             
             # Sleep for 30 seconds before next iteration
             await asyncio.sleep(30)

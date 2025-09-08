@@ -297,7 +297,7 @@ class FeatureEngineering:
                 
                 # Create minimal config for dual exit target generation
                 config = UniversalTrainingConfig(
-                    prediction_window=15,  # 15-minute prediction window
+                    prediction_window=30,  # 15-minute prediction window
                     take_profit_pct=0.003,  # 0.3% take profit
                     stop_loss_pct=0.002    # 0.2% stop loss
                 )
@@ -637,15 +637,27 @@ class FeatureEngineering:
             features = pd.DataFrame(index=data.index)
             
             # Time-based features
-            features['hour'] = data.index.hour
-            features['day_of_week'] = data.index.dayofweek
-            features['month'] = data.index.month
-            features['quarter'] = data.index.quarter
+            # Convert UTC to Eastern Time for market session features
+            import pytz
+            eastern = pytz.timezone('US/Eastern')
             
-            # Market session features
-            features['is_market_open'] = ((data.index.hour >= 9) & (data.index.hour < 16)).astype(int)
-            features['is_pre_market'] = ((data.index.hour >= 4) & (data.index.hour < 9)).astype(int)
-            features['is_after_hours'] = ((data.index.hour >= 16) | (data.index.hour < 4)).astype(int)
+            # Convert index to Eastern Time
+            if data.index.tz is None:
+                # Assume UTC if no timezone info
+                data_et_index = data.index.tz_localize('UTC').tz_convert(eastern)
+            else:
+                data_et_index = data.index.tz_convert(eastern)
+            
+            # Use Eastern Time for all time-based features
+            features['hour'] = data_et_index.hour
+            features['day_of_week'] = data_et_index.dayofweek
+            features['month'] = data_et_index.month
+            features['quarter'] = data_et_index.quarter
+            
+            # Market session features (using Eastern Time)
+            features['is_market_open'] = ((features['hour'] >= 9) & (features['hour'] < 16)).astype(int)
+            features['is_pre_market'] = ((features['hour'] >= 4) & (features['hour'] < 9)).astype(int)
+            features['is_after_hours'] = ((features['hour'] >= 16) | (features['hour'] < 4)).astype(int)
             
             # Seasonal patterns
             features['is_monday'] = (data.index.dayofweek == 0).astype(int)

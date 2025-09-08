@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MockConfig:
     """Mock configuration for testing."""
-    prediction_window: int = 15
+    prediction_window: int = 30
     take_profit_pct: float = 0.003  # 0.3%
     stop_loss_pct: float = 0.002   # 0.2%
 
@@ -126,7 +126,7 @@ async def test_dual_exit_targets():
     
     # Create configuration with dual exit parameters
     config = MockConfig(
-        prediction_window=15,
+        prediction_window=30,
         take_profit_pct=0.003,  # 0.3%
         stop_loss_pct=0.002     # 0.2%
     )
