@@ -13,8 +13,7 @@ import pytz
 # Alpaca API (for trading only)
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
-    MarketOrderRequest, LimitOrderRequest, StopOrderRequest, 
-    StopLimitOrderRequest, TrailingStopOrderRequest,
+    MarketOrderRequest, LimitOrderRequest,
     TakeProfitRequest, StopLossRequest
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
@@ -31,9 +30,6 @@ from data.polygon_websocket import websocket_manager, start_real_time_data, get_
 class OrderType(Enum):
     MARKET = "market"
     LIMIT = "limit"
-    STOP = "stop"
-    STOP_LIMIT = "stop_limit"
-    TRAILING_STOP = "trailing_stop"
 
 class OrderStatus(Enum):
     NEW = "new"
@@ -196,7 +192,7 @@ class ExecutionEngine:
         # Stop loss and take profit
         self.default_stop_loss = 0.002     # 0.2% stop loss
         self.default_take_profit = 0.003   # 0.3% take profit
-        self.trailing_stop_distance = 0.015  # 1.5% trailing stop
+        # Removed trailing_stop_distance - only using bracket orders
         
         # Market data cache
         self.price_cache: Dict[str, Dict] = {}
@@ -530,7 +526,7 @@ class ExecutionEngine:
                 filled_price=None,
                 filled_quantity=0,
                 limit_price=None,
-                stop_price=stop_loss,
+                stop_price=None,
                 trail_amount=None,
                 timestamp=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
@@ -614,7 +610,7 @@ class ExecutionEngine:
                 filled_price=None,
                 filled_quantity=0,
                 limit_price=None,
-                stop_price=stop_loss,
+                stop_price=None,
                 trail_amount=None,
                 timestamp=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc)
@@ -681,11 +677,13 @@ class ExecutionEngine:
             logger.error(f"Error executing close signal: {e}")
             return None
     
-    # NOTE: These methods are no longer used as we now use bracket orders
-    # to avoid wash trade detection issues
+    # NOTE: These methods are DEPRECATED and no longer used.
+    # We now use bracket orders with stop_loss/take_profit parameters directly
+    # to avoid wash trade detection issues and field confusion.
+    # DO NOT use limit_price/stop_price field assignments - use bracket order parameters instead.
     
     # async def _submit_stop_loss_order(self, symbol: str, quantity: float, stop_price: float) -> None:
-    #     """Submit stop loss order - DEPRECATED: Use bracket orders instead"""
+    #     """Submit stop loss order - DEPRECATED: Use bracket orders with stop_loss parameter instead"""
     #     try:
     #         side = OrderSide.SELL if quantity > 0 else OrderSide.BUY
     #         
@@ -707,7 +705,7 @@ class ExecutionEngine:
     #         logger.error(f"Error submitting stop loss for {symbol}: {e}")
     # 
     # async def _submit_take_profit_order(self, symbol: str, quantity: float, limit_price: float) -> None:
-    #     """Submit take profit order - DEPRECATED: Use bracket orders instead"""
+    #     """Submit take profit order - DEPRECATED: Use bracket orders with take_profit parameter instead"""
     #     try:
     #         side = OrderSide.SELL if quantity > 0 else OrderSide.BUY
     #         
