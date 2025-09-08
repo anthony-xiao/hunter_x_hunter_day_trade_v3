@@ -1,23 +1,37 @@
 {
   "symbol_mappings": {
     "symbol_to_id": {
-      "AAPL": 0,
-      "TSLA": 1
+      "NVDA": 0,
+      "TSLA": 1,
+      "AAPL": 2,
+      "MSFT": 3,
+      "META": 4,
+      "MRNA": 5,
+      "GILD": 6,
+      "BIIB": 7,
+      "VRTX": 8
     },
     "id_to_symbol": {
-      "0": "AAPL",
-      "1": "TSLA"
+      "0": "NVDA",
+      "1": "TSLA",
+      "2": "AAPL",
+      "3": "MSFT",
+      "4": "META",
+      "5": "MRNA",
+      "6": "GILD",
+      "7": "BIIB",
+      "8": "VRTX"
     }
   },
   "ensemble_weights": {
-    "lstm": 0.3362898067801342,
-    "cnn": 0.33925689634830436,
-    "transformer": 0.32445329687156144
+    "lstm": 0.3306374038527613,
+    "cnn": 0.3347655689287155,
+    "transformer": 0.3345970272185233
   },
   "config": {
     "symbol_embedding_dim": 32,
     "base_epochs": 50,
     "finetune_epochs": 30
   },
-  "training_timestamp": "2025-08-31T04:37:03.021022"
+  "training_timestamp": "2025-09-08T16:01:44.366093"
 }

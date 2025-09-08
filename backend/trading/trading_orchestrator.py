@@ -865,15 +865,22 @@ class TradingOrchestrator:
         
         while self.is_running:
             try:
-                # Check if market is open
-                now = datetime.now(timezone.utc)
+                # Check if market is open - convert UTC to Eastern Time
+                now_utc = datetime.now(timezone.utc)
+                eastern = pytz.timezone('US/Eastern')
+                now_et = now_utc.astimezone(eastern)
                 
-                if (now.weekday() < 5 and  # Monday = 0, Friday = 4
-                    9 <= now.hour < 16 and
-                    not (now.hour == 9 and now.minute < 30)):
+                logger.debug(f"Time check - UTC: {now_utc.strftime('%H:%M:%S')}, ET: {now_et.strftime('%H:%M:%S')}")
+                
+                if (now_et.weekday() < 5 and  # Monday = 0, Friday = 4
+                    9 <= now_et.hour < 16 and
+                    not (now_et.hour == 9 and now_et.minute < 30)):
                     
+                    logger.debug(f"Market is open - processing stale symbols")
                     # Process symbols that haven't been updated recently via events
                     await self._process_stale_symbols()
+                else:
+                    logger.debug(f"Market is closed - ET time: {now_et.strftime('%H:%M:%S')} on {now_et.strftime('%A')}")
                 
                 await asyncio.sleep(self.polling_interval)
                 

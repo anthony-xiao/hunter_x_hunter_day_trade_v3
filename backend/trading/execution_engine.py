@@ -489,19 +489,33 @@ class ExecutionEngine:
             stop_loss = self._round_price(stop_loss)
             take_profit = self._round_price(take_profit)
             
-            # Create bracket order with stop loss and take profit
-            stop_loss_request = StopLossRequest(stop_price=stop_loss)
-            take_profit_request = TakeProfitRequest(limit_price=take_profit)
+            # Check if position already exists for this symbol
+            has_existing_position = signal.symbol in self.positions
             
-            request = MarketOrderRequest(
-                symbol=signal.symbol,
-                qty=quantity,
-                side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY,
-                order_class=OrderClass.BRACKET,
-                stop_loss=stop_loss_request,
-                take_profit=take_profit_request
-            )
+            if has_existing_position:
+                # Use regular market order when position exists (bracket orders are only for entry)
+                logger.info(f"Existing position found for {signal.symbol}, using regular market order instead of bracket order")
+                request = MarketOrderRequest(
+                    symbol=signal.symbol,
+                    qty=quantity,
+                    side=OrderSide.BUY,
+                    time_in_force=TimeInForce.DAY
+                )
+            else:
+                # Use bracket order for new positions (entry orders)
+                logger.info(f"No existing position for {signal.symbol}, using bracket order")
+                stop_loss_request = StopLossRequest(stop_price=stop_loss)
+                take_profit_request = TakeProfitRequest(limit_price=take_profit)
+                
+                request = MarketOrderRequest(
+                    symbol=signal.symbol,
+                    qty=quantity,
+                    side=OrderSide.BUY,
+                    time_in_force=TimeInForce.DAY,
+                    order_class=OrderClass.BRACKET,
+                    stop_loss=stop_loss_request,
+                    take_profit=take_profit_request
+                )
             
             alpaca_order = self.trading_client.submit_order(request)
             
@@ -522,7 +536,10 @@ class ExecutionEngine:
             updated_at=datetime.now(timezone.utc)
             )
             
-            logger.info(f"Bracket buy order submitted for {signal.symbol}: qty={quantity}, stop_loss=${stop_loss:.2f}, take_profit=${take_profit:.2f}")
+            if has_existing_position:
+                logger.info(f"Regular buy order submitted for {signal.symbol}: qty={quantity} (adding to existing position)")
+            else:
+                logger.info(f"Bracket buy order submitted for {signal.symbol}: qty={quantity}, stop_loss=${stop_loss:.2f}, take_profit=${take_profit:.2f}")
             
             return order
             
@@ -557,19 +574,33 @@ class ExecutionEngine:
             stop_loss = self._round_price(stop_loss)
             take_profit = self._round_price(take_profit)
             
-            # Create bracket order with stop loss and take profit for short position
-            stop_loss_request = StopLossRequest(stop_price=stop_loss)
-            take_profit_request = TakeProfitRequest(limit_price=take_profit)
+            # Check if position already exists for this symbol
+            has_existing_position = signal.symbol in self.positions
             
-            request = MarketOrderRequest(
-                symbol=signal.symbol,
-                qty=quantity,
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.DAY,
-                order_class=OrderClass.BRACKET,
-                stop_loss=stop_loss_request,
-                take_profit=take_profit_request
-            )
+            if has_existing_position:
+                # Use regular market order when position exists (bracket orders are only for entry)
+                logger.info(f"Existing position found for {signal.symbol}, using regular market order instead of bracket order")
+                request = MarketOrderRequest(
+                    symbol=signal.symbol,
+                    qty=quantity,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.DAY
+                )
+            else:
+                # Use bracket order for new positions (entry orders)
+                logger.info(f"No existing position for {signal.symbol}, using bracket order for short")
+                stop_loss_request = StopLossRequest(stop_price=stop_loss)
+                take_profit_request = TakeProfitRequest(limit_price=take_profit)
+                
+                request = MarketOrderRequest(
+                    symbol=signal.symbol,
+                    qty=quantity,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.DAY,
+                    order_class=OrderClass.BRACKET,
+                    stop_loss=stop_loss_request,
+                    take_profit=take_profit_request
+                )
             
             alpaca_order = self.trading_client.submit_order(request)
             
@@ -589,7 +620,10 @@ class ExecutionEngine:
             updated_at=datetime.now(timezone.utc)
             )
             
-            logger.info(f"Bracket sell order submitted for {signal.symbol}: qty={quantity}, stop_loss=${stop_loss:.2f}, take_profit=${take_profit:.2f}")
+            if has_existing_position:
+                logger.info(f"Regular sell order submitted for {signal.symbol}: qty={quantity} (adding to existing position)")
+            else:
+                logger.info(f"Bracket sell order submitted for {signal.symbol}: qty={quantity}, stop_loss=${stop_loss:.2f}, take_profit=${take_profit:.2f}")
             
             return order
             

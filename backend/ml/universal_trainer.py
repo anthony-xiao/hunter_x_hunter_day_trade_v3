@@ -41,6 +41,7 @@ from data.data_pipeline import DataPipeline
 from .universal_feature_engineering import UniversalFeatureEngineering
 from .universal_model_architectures import UniversalModelArchitectures
 from .universal_feature_engineering import UniversalFeatureSet
+from .class_imbalance_mitigation import ClassImbalanceMitigator, ImbalanceConfig, ImbalanceMetrics
 
 @dataclass
 class ModelConfig:
@@ -93,9 +94,13 @@ class UniversalTrainingConfig:
     ensemble_rebalance_frequency: int = 5
     
     # Dual Exit Target Configuration
-    prediction_window: int = 15  # Maximum prediction window in minutes (periods)
+    prediction_window: int = 30  # Maximum prediction window in minutes (periods)
     take_profit_pct: float = 0.003  # Take profit threshold (0.3%)
     stop_loss_pct: float = 0.002   # Stop loss threshold (0.2%)
+    
+    # Class Imbalance Mitigation Configuration
+    enable_imbalance_mitigation: bool = True
+    imbalance_config: ImbalanceConfig = None
     
     # General settings
     symbol_embedding_dim: int = 32
@@ -136,6 +141,12 @@ class UniversalTrainer:
         self.feature_engineering = feature_engineering
         self.config = config or UniversalTrainingConfig()
         
+        # Initialize class imbalance mitigation
+        if self.config.imbalance_config is None:
+            self.config.imbalance_config = ImbalanceConfig()
+        
+        self.imbalance_mitigator = ClassImbalanceMitigator(self.config.imbalance_config) if self.config.enable_imbalance_mitigation else None
+        
         # Initialize components
         self.symbol_to_id = {}
         self.id_to_symbol = {}
@@ -146,6 +157,7 @@ class UniversalTrainer:
         self.symbol_models = {}
         self.ensemble_weights = {}
         self.training_history = []
+        self.imbalance_metrics = []
         
         # Default model configurations (feature_count will be updated dynamically)
         self.model_configs = {
@@ -1011,6 +1023,79 @@ class UniversalTrainer:
         logger.info(f"  - Features per sample: {X_train_features.shape[2] if len(X_train_features.shape) > 2 else 'N/A'}")
         logger.info(f"  - Timesteps per sample: {X_train_features.shape[1] if len(X_train_features.shape) > 1 else 'N/A'}")
         
+        # Apply class imbalance mitigation if enabled
+        if self.config.enable_imbalance_mitigation and self.imbalance_mitigator:
+            logger.info("Step 6 - Applying class imbalance mitigation")
+            
+            # Analyze original class distribution
+            original_metrics = self.imbalance_mitigator.analyze_class_distribution(y_train)
+            logger.info(f"Original class distribution: positive={original_metrics.get('positive_ratio', 0):.3f}, negative={original_metrics.get('negative_ratio', 0):.3f}")
+            
+            # Store original sample count for symbol replication
+            original_sample_count = len(X_train_features)
+            logger.info(f"Original sample count: {original_sample_count}")
+            
+            # Apply comprehensive balancing (SMOTE + class weights)
+            X_train_balanced, y_train_balanced, imbalance_metrics = self.imbalance_mitigator.apply_comprehensive_balancing(
+                X_train_features, y_train, apply_to_validation=False
+            )
+            
+            # Update training data with balanced data
+            X_train_features = X_train_balanced
+            y_train = y_train_balanced
+            
+            # Handle symbol data replication if SMOTE was applied
+            if imbalance_metrics.smote_applied and len(X_train_features) > original_sample_count:
+                new_sample_count = len(X_train_features)
+                synthetic_samples_added = new_sample_count - original_sample_count
+                
+                logger.info(f"SMOTE increased samples from {original_sample_count} to {new_sample_count}")
+                logger.info(f"Replicating symbol data for {synthetic_samples_added} synthetic samples")
+                
+                # Replicate symbol data to match SMOTE-enhanced feature data
+                # For synthetic samples, we'll replicate symbols from the original samples
+                # This is a reasonable approach since SMOTE creates synthetic samples by interpolating
+                # between existing samples, so we can use the symbols from the original data
+                
+                # Create indices for replication - repeat original symbols cyclically
+                original_indices = np.arange(original_sample_count)
+                synthetic_indices = np.tile(original_indices, (synthetic_samples_added // original_sample_count) + 1)[:synthetic_samples_added]
+                
+                # Combine original and synthetic indices
+                all_indices = np.concatenate([original_indices, synthetic_indices])
+                
+                # Replicate symbol data using the indices
+                X_train_symbols_replicated = X_train_symbols[all_indices]
+                X_train_symbols = X_train_symbols_replicated
+                
+                logger.info(f"Symbol data replicated: original shape {X_train_symbols.shape} -> new shape {X_train_symbols_replicated.shape}")
+                
+                # Validate data consistency
+                if len(X_train_features) != len(X_train_symbols):
+                    logger.error(f"Data cardinality mismatch after symbol replication: features={len(X_train_features)}, symbols={len(X_train_symbols)}")
+                    raise ValueError(f"Sample count mismatch: features={len(X_train_features)}, symbols={len(X_train_symbols)}")
+                else:
+                    logger.info(f"Data cardinality validation passed: both features and symbols have {len(X_train_features)} samples")
+            
+            # Store class weights and metrics for later use in model training
+            self.class_weights_keras = imbalance_metrics.class_weights
+            self.class_weights_sklearn = self.imbalance_mitigator.get_sklearn_sample_weights(y_train)
+            
+            # Initialize imbalance_metrics list if it doesn't exist
+            if not hasattr(self, 'imbalance_metrics'):
+                self.imbalance_metrics = []
+            self.imbalance_metrics.append(imbalance_metrics)
+            
+            logger.info(f"Applied SMOTE: {imbalance_metrics.smote_applied}")
+            logger.info(f"New training samples: {len(X_train_features)}")
+            logger.info(f"Final positive ratio: {imbalance_metrics.final_positive_ratio:.3f}")
+            logger.info(f"Synthetic samples added: {imbalance_metrics.synthetic_samples_added}")
+            logger.info(f"Class weights (Keras): {self.class_weights_keras}")
+        else:
+            # No imbalance mitigation - set default class weights
+            self.class_weights_keras = None
+            self.class_weights_sklearn = None
+        
         return [X_train_features, X_train_symbols], y_train, [X_val_features, X_val_symbols], y_val
     
     async def phase1_train_base_models(
@@ -1117,16 +1202,23 @@ class UniversalTrainer:
                     NaNDetectionCallback()
                 ]
                 
-                # Train model
-                history = model.fit(
-                    X_train,
-                    y_train,
-                    validation_data=(X_val, y_val),
-                    epochs=self.config.base_epochs,
-                    batch_size=self.config.base_batch_size,
-                    callbacks=callbacks,
-                    verbose=1
-                )
+                # Train model with class weights if available
+                fit_kwargs = {
+                    'x': X_train,
+                    'y': y_train,
+                    'validation_data': (X_val, y_val),
+                    'epochs': self.config.base_epochs,
+                    'batch_size': self.config.base_batch_size,
+                    'callbacks': callbacks,
+                    'verbose': 1
+                }
+                
+                # Add class weights if imbalance mitigation is enabled
+                if hasattr(self, 'class_weights_keras') and self.class_weights_keras is not None:
+                    fit_kwargs['class_weight'] = self.class_weights_keras
+                    logger.info(f"Training {model_type} with class weights: {self.class_weights_keras}")
+                
+                history = model.fit(**fit_kwargs)
                 
                 # Evaluate model
                 val_loss, val_accuracy = model.evaluate(X_val, y_val, verbose=0)
@@ -1150,6 +1242,32 @@ class UniversalTrainer:
                 # Calculate training time
                 training_time = (datetime.now() - start_time).total_seconds()
                 
+                # Prepare metadata with training history and imbalance metrics
+                metadata = {
+                    'model_summary': self.universal_architectures.get_model_summary(model),
+                    'training_history': {
+                        'loss': [float(x) for x in history.history['loss']],
+                        'val_loss': [float(x) for x in history.history['val_loss']],
+                        'accuracy': [float(x) for x in history.history['accuracy']],
+                        'val_accuracy': [float(x) for x in history.history['val_accuracy']]
+                    }
+                }
+                
+                # Add imbalance mitigation metrics if available
+                if hasattr(self, 'imbalance_metrics') and self.imbalance_metrics:
+                    latest_metrics = self.imbalance_metrics[-1]
+                    metadata['imbalance_mitigation'] = {
+                        'original_positive_ratio': latest_metrics.original_positive_ratio,
+                        'final_positive_ratio': latest_metrics.final_positive_ratio,
+                        'improvement_ratio': latest_metrics.improvement_ratio,
+                        'smote_applied': latest_metrics.smote_applied,
+                        'synthetic_samples_added': latest_metrics.synthetic_samples_added,
+                        'class_weights_applied': latest_metrics.class_weights_applied,
+                        'class_weights': latest_metrics.class_weights,
+                        'class_weights_keras': self.class_weights_keras,
+                        'class_weights_sklearn': self.class_weights_sklearn
+                    }
+                
                 # Create result
                 result = UniversalTrainingResult(
                     phase="phase1_base_training",
@@ -1165,15 +1283,7 @@ class UniversalTrainer:
                     training_time=training_time,
                     total_samples=len(X_train[0]) if isinstance(X_train, list) else len(X_train),
                     validation_accuracy=float(val_accuracy),
-                    metadata={
-                        'model_summary': self.universal_architectures.get_model_summary(model),
-                        'training_history': {
-                            'loss': [float(x) for x in history.history['loss']],
-                            'val_loss': [float(x) for x in history.history['val_loss']],
-                            'accuracy': [float(x) for x in history.history['accuracy']],
-                            'val_accuracy': [float(x) for x in history.history['val_accuracy']]
-                        }
-                    }
+                    metadata=metadata
                 )
                 
                 results[model_type] = result
@@ -1183,8 +1293,34 @@ class UniversalTrainer:
                 logger.error(f"Failed to train {model_type} base model: {e}")
                 continue
         
+        # Log imbalance mitigation summary if applied
+        if self.config.enable_imbalance_mitigation and self.imbalance_metrics:
+            self._log_imbalance_summary()
+        
         logger.info(f"Phase 1 completed: {len(results)} base models trained")
         return results
+    
+    def _log_imbalance_summary(self):
+        """Log summary of class imbalance mitigation effects"""
+        if not self.imbalance_metrics:
+            return
+        
+        latest_metrics = self.imbalance_metrics[-1]
+        
+        logger.info("=== Class Imbalance Mitigation Summary ===")
+        logger.info(f"Original positive ratio: {latest_metrics.original_positive_ratio:.3f}")
+        logger.info(f"Final positive ratio: {latest_metrics.final_positive_ratio:.3f}")
+        logger.info(f"Improvement ratio: {latest_metrics.improvement_ratio:.2f}x")
+        logger.info(f"SMOTE applied: {latest_metrics.smote_applied}")
+        logger.info(f"Synthetic samples added: {latest_metrics.synthetic_samples_added}")
+        logger.info(f"Class weights applied: {latest_metrics.class_weights_applied}")
+        if latest_metrics.class_weights:
+            logger.info(f"Class weights: {latest_metrics.class_weights}")
+        logger.info("============================================")
+    
+    def get_imbalance_metrics(self) -> List[ImbalanceMetrics]:
+        """Get all imbalance mitigation metrics from training"""
+        return self.imbalance_metrics.copy() if hasattr(self, 'imbalance_metrics') else []
     
     async def phase2_symbol_specific_finetuning(
         self,

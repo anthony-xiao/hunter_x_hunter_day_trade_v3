@@ -429,16 +429,28 @@ class FeatureEngineer:
     def _add_time_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add time-based features"""
         if df.index.dtype.kind == 'M':  # datetime index
-            df['hour'] = df.index.hour
-            df['minute'] = df.index.minute
-            df['day_of_week'] = df.index.dayofweek
+            # Convert UTC to Eastern Time for market session features
+            import pytz
+            eastern = pytz.timezone('US/Eastern')
             
-            # Market session features
+            # Convert index to Eastern Time
+            if df.index.tz is None:
+                # Assume UTC if no timezone info
+                df_et_index = df.index.tz_localize('UTC').tz_convert(eastern)
+            else:
+                df_et_index = df.index.tz_convert(eastern)
+            
+            # Use Eastern Time for all time-based features
+            df['hour'] = df_et_index.hour
+            df['minute'] = df_et_index.minute
+            df['day_of_week'] = df_et_index.dayofweek
+            
+            # Market session features (using Eastern Time)
             df['is_market_open'] = ((df['hour'] >= 9) & (df['hour'] < 16)).astype(int)
             df['is_pre_market'] = ((df['hour'] >= 4) & (df['hour'] < 9)).astype(int)
             df['is_after_hours'] = ((df['hour'] >= 16) | (df['hour'] < 4)).astype(int)
             
-            # Time since market open
+            # Time since market open (using Eastern Time)
             market_open_minutes = (df['hour'] - 9) * 60 + df['minute'] - 30
             df['minutes_since_open'] = np.where(df['is_market_open'], market_open_minutes, 0)
         

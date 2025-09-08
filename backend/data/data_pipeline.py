@@ -67,11 +67,11 @@ class DataPipeline:
         
         # Trading universe
         self.trading_universe = [
-            'AAPL','TSLA'
+            # 'AAPL','TSLA'
             # Technology
-            # 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META'
+            'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META',
             # Biotechnology
-            # 'MRNA', 'GILD', 'BIIB', 'VRTX',
+            'MRNA', 'GILD', 'BIIB', 'VRTX'
             # Energy
             # 'XOM', 'CVX', 'SLB', 'HAL',
             # Crypto-Related

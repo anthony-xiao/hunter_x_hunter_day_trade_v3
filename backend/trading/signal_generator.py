@@ -93,6 +93,48 @@ class MarketRegime:
     market_stress: float
     timestamp: datetime
 
+@dataclass
+class DirectionalConfidence:
+    """Separate confidence metrics for buy vs. sell predictions"""
+    buy_confidence: float
+    sell_confidence: float
+    direction_clarity: float
+    prediction_strength: float
+    model_uncertainty: float
+    
+    @classmethod
+    def calculate(cls, prediction: float, base_confidence: float, model_variance: float = 0.0) -> 'DirectionalConfidence':
+        """Calculate directional confidence metrics"""
+        # Direction clarity - how clear the directional signal is
+        direction_clarity = abs(prediction)
+        
+        # Prediction strength without absolute value bias
+        prediction_strength = prediction * prediction
+        
+        # Model uncertainty from variance
+        model_uncertainty = min(0.5, model_variance * 2.0)
+        
+        # Calculate buy vs sell confidence based on prediction direction
+        if prediction > 0:  # Buy signal
+            buy_confidence = min(0.95, base_confidence + (direction_clarity * 0.2))
+            sell_confidence = max(0.05, base_confidence - (direction_clarity * 0.3))
+        else:  # Sell signal
+            sell_confidence = min(0.95, base_confidence + (direction_clarity * 0.2))
+            buy_confidence = max(0.05, base_confidence - (direction_clarity * 0.3))
+        
+        # Adjust for model uncertainty
+        uncertainty_penalty = model_uncertainty * 0.1
+        buy_confidence = max(0.05, buy_confidence - uncertainty_penalty)
+        sell_confidence = max(0.05, sell_confidence - uncertainty_penalty)
+        
+        return cls(
+            buy_confidence=buy_confidence,
+            sell_confidence=sell_confidence,
+            direction_clarity=direction_clarity,
+            prediction_strength=prediction_strength,
+            model_uncertainty=model_uncertainty
+        )
+
 class SignalGenerator:
     def __init__(self, model_trainer: Optional[ModelTrainer] = None, supabase_client=None, data_pipeline=None):
         self.models: Dict[str, Dict[ModelType, Any]] = {}  # symbol -> model_type -> model
@@ -139,7 +181,7 @@ class SignalGenerator:
         
         # Risk management
         self.risk_filters = {
-            'min_confidence': 0.6,
+            'min_confidence': 0.4,
             'max_risk_score': 0.7,
             'min_liquidity': 1000000,
             'max_correlation': 0.8,
@@ -888,9 +930,13 @@ class SignalGenerator:
                 # Pass both inputs to the universal model
                 prediction = model.predict([feature_input, symbol_input], verbose=0)[0][0]
                 
-                # Enhanced confidence for universal models
-                base_confidence = 0.6 + abs(prediction) * 0.3  # Higher base for universal models
-                confidence = min(0.9, max(0.4, base_confidence))
+                # Enhanced confidence for universal models - directional approach
+                # Use prediction strength without absolute value bias
+                prediction_strength = prediction * prediction  # Squared for magnitude without sign bias
+                base_confidence = 0.6 + prediction_strength * 0.3  # Higher base for universal models
+                # Apply directional adjustment - stronger confidence for clear directional signals
+                directional_bonus = 0.1 if abs(prediction) > 0.5 else 0.0
+                confidence = min(0.9, max(0.4, base_confidence + directional_bonus))
                 
             elif model_type == ModelType.CNN:
                 # Regular CNN model - expects 4D input (batch_size, height, width, channels) for 2D CNN
@@ -941,12 +987,26 @@ class SignalGenerator:
                 logger.debug(f"CNN model input shape (4D for Conv2D): {model_input.shape}")
                 prediction = model.predict(model_input, verbose=0)[0][0]
                 
-                # Enhanced confidence calculation for CNN
-                base_confidence = 0.5 + abs(prediction) * 0.4
-                # Add model-specific variance based on prediction strength and input complexity
-                model_variance = np.random.normal(0, 0.05)  # Small random component
-                input_complexity = np.std(model_input.flatten()) * 0.1  # Input data complexity
-                confidence = min(0.9, max(0.3, base_confidence + model_variance + input_complexity))
+                # Enhanced confidence calculation for CNN - directional approach
+                # Remove absolute value dependency, use squared prediction for magnitude
+                prediction_magnitude = prediction * prediction
+                base_confidence = 0.5 + prediction_magnitude * 0.4
+                
+                # Calculate model variance based on input complexity
+                input_complexity = np.std(model_input.flatten())
+                model_variance = input_complexity * 0.1 + abs(np.random.normal(0, 0.05))
+                
+                # Calculate directional confidence
+                directional_conf = DirectionalConfidence.calculate(prediction, base_confidence, model_variance)
+                
+                # Use the appropriate directional confidence based on prediction direction
+                if prediction > 0:
+                    confidence = directional_conf.buy_confidence
+                else:
+                    confidence = directional_conf.sell_confidence
+                
+                # Add small model-specific adjustment
+                confidence = min(0.9, max(0.2, confidence + input_complexity * 0.05))
                 
             elif model_type in [ModelType.LSTM, ModelType.TRANSFORMER]:
                 # Regular LSTM/Transformer models - expect 3D input (batch_size, time_steps, features)
@@ -963,13 +1023,28 @@ class SignalGenerator:
                 logger.debug(f"Model input shape for {model_type.value}: {model_input.shape}")
                 prediction = model.predict(model_input, verbose=0)[0][0]
                 
-                # Enhanced confidence calculation for LSTM/Transformer
-                base_confidence = 0.5 + abs(prediction) * 0.4
-                # Add model-specific factors
-                model_variance = np.random.normal(0, 0.03)  # Smaller variance for sequence models
-                sequence_stability = 1.0 - np.std(model_input.flatten()) * 0.05  # Reward stable sequences
-                model_type_bonus = 0.02 if model_type == ModelType.TRANSFORMER else 0.01  # Transformer slight bonus
-                confidence = min(0.9, max(0.3, base_confidence + model_variance + sequence_stability + model_type_bonus))
+                # Enhanced confidence calculation for LSTM/Transformer - directional approach
+                # Remove absolute value dependency, use squared prediction for magnitude
+                prediction_magnitude = prediction * prediction
+                base_confidence = 0.5 + prediction_magnitude * 0.4
+                
+                # Calculate model variance and sequence stability
+                sequence_stability = np.std(model_input.flatten())
+                model_variance = sequence_stability * 0.05 + abs(np.random.normal(0, 0.03))
+                
+                # Calculate directional confidence
+                directional_conf = DirectionalConfidence.calculate(prediction, base_confidence, model_variance)
+                
+                # Use the appropriate directional confidence based on prediction direction
+                if prediction > 0:
+                    confidence = directional_conf.buy_confidence
+                else:
+                    confidence = directional_conf.sell_confidence
+                
+                # Add model-specific bonuses
+                sequence_bonus = max(0, 0.05 - sequence_stability * 0.05)  # Reward stable sequences
+                model_type_bonus = 0.02 if model_type == ModelType.TRANSFORMER else 0.01
+                confidence = min(0.9, max(0.2, confidence + sequence_bonus + model_type_bonus))
                 
 
             
@@ -1515,24 +1590,36 @@ class SignalGenerator:
                 logger.info(f"Forced sell signal for {symbol}: {force_sell_reason}")
             else:
                 # Normal prediction-based signal generation with enhanced thresholds
+                logger.info(f"Threshold checking for {symbol}: prediction={prediction:.4f}, "
+                           f"buy_threshold={self.signal_thresholds['buy_threshold']}, "
+                           f"sell_threshold={self.signal_thresholds['sell_threshold']}, "
+                           f"strong_buy_threshold={self.signal_thresholds['strong_buy_threshold']}, "
+                           f"strong_sell_threshold={self.signal_thresholds['strong_sell_threshold']}")
+                
                 if prediction >= self.signal_thresholds['strong_buy_threshold']:
                     action = SignalType.BUY.value
                     signal_strength = "strong"
+                    logger.info(f"Signal decision for {symbol}: STRONG BUY (prediction {prediction:.4f} >= {self.signal_thresholds['strong_buy_threshold']})")
                 elif prediction >= self.signal_thresholds['buy_threshold']:
                     action = SignalType.BUY.value
                     signal_strength = "moderate"
+                    logger.info(f"Signal decision for {symbol}: MODERATE BUY (prediction {prediction:.4f} >= {self.signal_thresholds['buy_threshold']})")
                 elif prediction <= self.signal_thresholds['strong_sell_threshold']:
                     action = SignalType.SELL.value
                     signal_strength = "strong"
+                    logger.info(f"Signal decision for {symbol}: STRONG SELL (prediction {prediction:.4f} <= {self.signal_thresholds['strong_sell_threshold']})")
                 elif prediction <= self.signal_thresholds['sell_threshold']:
                     action = SignalType.SELL.value
                     signal_strength = "moderate"
+                    logger.info(f"Signal decision for {symbol}: MODERATE SELL (prediction {prediction:.4f} <= {self.signal_thresholds['sell_threshold']})")
                 else:
                     action = SignalType.HOLD.value
                     signal_strength = "weak"
+                    logger.info(f"Signal decision for {symbol}: HOLD (prediction {prediction:.4f} between thresholds)")
                 
                 # Skip weak signals
                 if action == SignalType.HOLD.value:
+                    logger.info(f"Skipping HOLD signal for {symbol} (weak signal filtered out)")
                     return None
                 
                 # Calculate predicted return
@@ -1578,19 +1665,24 @@ class SignalGenerator:
     async def _apply_risk_filters(self, ensemble_pred: EnsemblePrediction) -> bool:
         """Apply risk filters to ensemble prediction"""
         try:
+            logger.info(f"Applying risk filters for {ensemble_pred.symbol}: "
+                       f"confidence={ensemble_pred.confidence:.3f}, "
+                       f"risk_score={ensemble_pred.risk_score:.3f}, "
+                       f"prediction={ensemble_pred.final_prediction:.4f}")
+            
             # Minimum confidence filter
             if ensemble_pred.confidence < self.risk_filters['min_confidence']:
-                logger.debug(f"Signal filtered: low confidence {ensemble_pred.confidence:.3f} for {ensemble_pred.symbol}")
+                logger.info(f"❌ Signal filtered: low confidence {ensemble_pred.confidence:.3f} < {self.risk_filters['min_confidence']} for {ensemble_pred.symbol}")
                 return False
             
             # Maximum risk score filter
             if ensemble_pred.risk_score > self.risk_filters['max_risk_score']:
-                logger.debug(f"Signal filtered: high risk {ensemble_pred.risk_score:.3f} for {ensemble_pred.symbol}")
+                logger.info(f"❌ Signal filtered: high risk {ensemble_pred.risk_score:.3f} > {self.risk_filters['max_risk_score']} for {ensemble_pred.symbol}")
                 return False
             
             # Market regime filter
             if self.current_market_regime and self.current_market_regime.market_stress > 0.8:
-                logger.debug(f"Signal filtered: high market stress for {ensemble_pred.symbol}")
+                logger.info(f"❌ Signal filtered: high market stress {self.current_market_regime.market_stress:.2f} for {ensemble_pred.symbol}")
                 return False
             
             # Model agreement filter (check if models agree)
@@ -1598,9 +1690,10 @@ class SignalGenerator:
             if len(predictions) > 1:
                 prediction_std = np.std(predictions)
                 if prediction_std > 0.5:  # High disagreement
-                    logger.debug(f"Signal filtered: model disagreement for {ensemble_pred.symbol}")
+                    logger.info(f"❌ Signal filtered: model disagreement (std={prediction_std:.3f}) for {ensemble_pred.symbol}")
                     return False
             
+            logger.info(f"✅ Risk filters passed for {ensemble_pred.symbol}")
             return True
             
         except Exception as e:
@@ -1807,7 +1900,9 @@ class SignalGenerator:
                 elif isinstance(value, list):
                     result[key] = [self._serialize_for_json(item) if hasattr(item, '__dict__') else item for item in value]
                 elif isinstance(value, dict):
-                    result[key] = {k: (v.value if isinstance(v, ModelType) else v) for k, v in value.items()}
+                    # Convert both keys and values if they are ModelType enums
+                    # Also handle nested dictionaries recursively
+                    result[key] = self._serialize_dict(value)
                 elif hasattr(value, '__dict__'):
                     result[key] = self._serialize_for_json(value)
                 else:
@@ -1815,6 +1910,26 @@ class SignalGenerator:
             return result
         else:
             return obj
+    
+    def _serialize_dict(self, d: dict) -> dict:
+        """Recursively serialize dictionary with ModelType enum handling"""
+        result = {}
+        for k, v in d.items():
+            # Convert ModelType keys to strings
+            key = k.value if isinstance(k, ModelType) else k
+            
+            # Handle different value types
+            if isinstance(v, ModelType):
+                result[key] = v.value
+            elif isinstance(v, dict):
+                result[key] = self._serialize_dict(v)
+            elif isinstance(v, list):
+                result[key] = [self._serialize_for_json(item) if hasattr(item, '__dict__') else item for item in v]
+            elif hasattr(v, '__dict__'):
+                result[key] = self._serialize_for_json(v)
+            else:
+                result[key] = v
+        return result
     
     async def _log_signal(self, signal: TradeSignal, ensemble_pred: EnsemblePrediction) -> None:
         """Log signal details"""
@@ -1855,10 +1970,14 @@ class SignalGenerator:
                     'last_updated': perf['last_updated'].isoformat()
                 }
             
+            # Convert ModelType keys to strings for JSON serialization
+            ensemble_weights = self.ensemble_weights.get(symbol, {})
+            serializable_weights = {model_type.value: weight for model_type, weight in ensemble_weights.items()}
+            
             return {
                 'symbol': symbol,
                 'models': performance_data,
-                'ensemble_weights': self.ensemble_weights.get(symbol, {}),
+                'ensemble_weights': serializable_weights,
                 'recent_signals': len(self.signal_history.get(symbol, [])),
                 'recent_predictions': len(self.prediction_history.get(symbol, []))
             }
@@ -2269,13 +2388,27 @@ class SignalGenerator:
                         # Pass both inputs to the model
                         prediction = model.predict([feature_input, symbol_input], verbose=0)[0]
                         
-                        # Extract prediction and confidence
+                        # Extract prediction and calculate directional confidence
                         if len(prediction) >= 2:
                             pred_value = float(prediction[0])
-                            confidence = float(prediction[1]) if len(prediction) > 1 else 0.5
+                            base_confidence = float(prediction[1]) if len(prediction) > 1 else 0.5
                         else:
                             pred_value = float(prediction[0])
-                            confidence = 0.5
+                            # Calculate base confidence using directional approach
+                            prediction_magnitude = pred_value * pred_value
+                            base_confidence = 0.5 + prediction_magnitude * 0.4
+                        
+                        # Calculate model variance from feature input complexity
+                        input_variance = np.std(feature_input.flatten()) * 0.1
+                        
+                        # Calculate directional confidence
+                        directional_conf = DirectionalConfidence.calculate(pred_value, base_confidence, input_variance)
+                        
+                        # Use appropriate directional confidence
+                        if pred_value > 0:
+                            confidence = directional_conf.buy_confidence
+                        else:
+                            confidence = directional_conf.sell_confidence
                             
                     else:
                         # Traditional ML models (Random Forest, XGBoost)
@@ -2357,16 +2490,21 @@ class SignalGenerator:
             return None
     
     def _calculate_risk_score(self, prediction: float, prediction_variance: float) -> float:
-        """Calculate risk score based on prediction and variance"""
+        """Calculate risk score based on prediction and variance - directional approach"""
         try:
-            # Base risk from prediction magnitude
-            prediction_risk = min(1.0, abs(prediction) * 0.5)
+            # Base risk from prediction strength (squared to avoid abs bias)
+            prediction_strength = prediction * prediction
+            prediction_risk = min(1.0, prediction_strength * 0.5)
             
             # Variance risk (higher variance = higher risk)
             variance_risk = min(1.0, prediction_variance * 2.0)
             
-            # Combined risk score (weighted average)
-            risk_score = (prediction_risk * 0.7) + (variance_risk * 0.3)
+            # Direction clarity bonus - clearer direction = lower risk
+            direction_clarity = abs(prediction)
+            clarity_bonus = 0.1 if direction_clarity > 0.6 else 0.05 if direction_clarity > 0.3 else 0.0
+            
+            # Combined risk score (weighted average with clarity adjustment)
+            risk_score = (prediction_risk * 0.7) + (variance_risk * 0.3) - clarity_bonus
             
             return min(1.0, max(0.0, risk_score))
             
@@ -2375,13 +2513,20 @@ class SignalGenerator:
             return 0.5  # Default moderate risk
     
     def _calculate_signal_strength(self, prediction: float, confidence: float) -> float:
-        """Calculate signal strength based on prediction and confidence"""
+        """Calculate signal strength based on prediction and confidence - directional approach"""
         try:
-            # Signal strength is combination of prediction magnitude and confidence
-            prediction_strength = abs(prediction)
+            # Signal strength using directional approach - avoid abs bias
+            prediction_magnitude = prediction * prediction  # Squared for strength without sign bias
+            direction_clarity = abs(prediction)  # How clear the direction is
             
-            # Combine prediction strength with confidence
-            signal_strength = prediction_strength * confidence
+            # Base strength from prediction magnitude
+            base_strength = prediction_magnitude * 0.8
+            
+            # Directional bonus for clear signals
+            directional_bonus = 0.2 if direction_clarity > 0.7 else 0.1 if direction_clarity > 0.4 else 0.0
+            
+            # Combine with confidence
+            signal_strength = (base_strength + directional_bonus) * confidence
             
             return min(1.0, max(0.0, signal_strength))
             
