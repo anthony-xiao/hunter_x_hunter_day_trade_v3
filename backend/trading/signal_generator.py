@@ -876,8 +876,9 @@ class SignalGenerator:
                 logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} input features shape: {features.shape}")
                 
                 # Expected dimensions from model architecture
+                # Updated to 446 features for 9 symbols (cross-symbol features)
                 expected_sequence_length = 30
-                expected_feature_dim = 187
+                expected_feature_dim = 446
                 
                 if len(features.shape) == 2:
                     # Features are in (time_steps, features) format
@@ -1561,7 +1562,7 @@ class SignalGenerator:
             logger.error(f"Error updating market regime: {e}")
     
     async def _prediction_to_signal(self, ensemble_pred: EnsemblePrediction, market_data: pd.DataFrame = None, current_positions: Dict = None) -> Optional[TradeSignal]:
-        """Convert ensemble prediction to trading signal with enhanced sell logic"""
+        """Convert ensemble prediction to trading signal - sell signals only for closing existing long positions"""
         try:
             # Apply risk filters
             if not await self._apply_risk_filters(ensemble_pred):
@@ -1571,11 +1572,18 @@ class SignalGenerator:
             confidence = ensemble_pred.confidence
             symbol = ensemble_pred.symbol
             
+            # Check if we have an existing long position for this symbol
+            has_long_position = False
+            if current_positions and symbol in current_positions:
+                position = current_positions[symbol]
+                has_long_position = hasattr(position, 'quantity') and position.quantity > 0
+            
             # Check for forced sell conditions first (market-based and time-based)
+            # Only check if we have a long position to close
             force_sell = False
             force_sell_reason = ""
             
-            if market_data is not None:
+            if has_long_position and market_data is not None:
                 force_sell, force_sell_reason = await self._should_force_sell_signal(
                     symbol, market_data, current_positions
                 )
@@ -1604,14 +1612,18 @@ class SignalGenerator:
                     action = SignalType.BUY.value
                     signal_strength = "moderate"
                     logger.info(f"Signal decision for {symbol}: MODERATE BUY (prediction {prediction:.4f} >= {self.signal_thresholds['buy_threshold']})")
-                elif prediction <= self.signal_thresholds['strong_sell_threshold']:
+                elif prediction <= self.signal_thresholds['strong_sell_threshold'] and has_long_position:
                     action = SignalType.SELL.value
                     signal_strength = "strong"
-                    logger.info(f"Signal decision for {symbol}: STRONG SELL (prediction {prediction:.4f} <= {self.signal_thresholds['strong_sell_threshold']})")
-                elif prediction <= self.signal_thresholds['sell_threshold']:
+                    logger.info(f"Signal decision for {symbol}: STRONG SELL (prediction {prediction:.4f} <= {self.signal_thresholds['strong_sell_threshold']}) - closing long position")
+                elif prediction <= self.signal_thresholds['sell_threshold'] and has_long_position:
                     action = SignalType.SELL.value
                     signal_strength = "moderate"
-                    logger.info(f"Signal decision for {symbol}: MODERATE SELL (prediction {prediction:.4f} <= {self.signal_thresholds['sell_threshold']})")
+                    logger.info(f"Signal decision for {symbol}: MODERATE SELL (prediction {prediction:.4f} <= {self.signal_thresholds['sell_threshold']}) - closing long position")
+                elif (prediction <= self.signal_thresholds['strong_sell_threshold'] or prediction <= self.signal_thresholds['sell_threshold']) and not has_long_position:
+                    # Would be a sell signal but no position to close
+                    logger.info(f"Skipping SELL signal for {symbol} - no existing long position to close (prediction {prediction:.4f})")
+                    return None
                 else:
                     action = SignalType.HOLD.value
                     signal_strength = "weak"
@@ -2179,7 +2191,7 @@ class SignalGenerator:
         
         This method follows the same universal feature engineering process as
         _prepare_universal_features_for_symbol in universal_trainer.py to ensure
-        consistent feature dimensions (187 features) between training and live trading.
+        consistent feature dimensions (446 features for 9 symbols) between training and live trading.
         """
         try:
             logger.info(f"Preparing universal features for {symbol} in live trading")
@@ -2244,14 +2256,23 @@ class SignalGenerator:
             total_individual_features = sum(feature_counts.values())
             logger.info(f"[{symbol}] Combined individual features: {total_individual_features} columns")
             
-            # Step 3: Add universal features (cross-symbol, regime, sector)
+            # Step 3: Get universal features using the same approach as training
             try:
-                # Get all symbols for universal feature engineering
-                all_symbols = list(self.universal_feature_engineering._symbol_mappings.keys()) if hasattr(self.universal_feature_engineering, '_symbol_mappings') else [symbol]
+                # Get all trading symbols from data pipeline (the 9 symbols we're trading)
+                # This ensures we generate features for all symbols, matching the training data
+                if self.data_pipeline:
+                    all_symbols = self.data_pipeline.get_ticker_universe()
+                elif hasattr(self.universal_feature_engineering, '_symbol_mappings'):
+                    all_symbols = list(self.universal_feature_engineering._symbol_mappings.keys())
+                else:
+                    # Fallback to current symbol only (this will cause feature mismatch)
+                    all_symbols = [symbol]
+                    logger.warning(f"Using fallback single symbol {symbol} - this may cause feature dimension mismatch")
                 
-                # Engineer universal features for the current time period
+                logger.info(f"[{symbol}] Using {len(all_symbols)} symbols for universal features: {all_symbols}")
+                
+                # Engineer universal features for all symbols (same as training)
                 # Use training_mode=True to ensure sufficient historical data for all features
-                # including sma_100, sma_200, and other long-period indicators
                 universal_features = await self.universal_feature_engineering.engineer_universal_features(
                     symbols=all_symbols,
                     start_date=market_data.index[0].to_pydatetime(),
@@ -2259,62 +2280,150 @@ class SignalGenerator:
                     training_mode=True  # Use training mode to ensure full feature generation
                 )
                 
-                # Add cross-symbol features if available
-                cross_symbol_count = 0
-                if hasattr(universal_features, 'cross_symbol_features') and not universal_features.cross_symbol_features.empty:
-                    aligned_cross = universal_features.cross_symbol_features.reindex(symbol_df.index)
-                    symbol_df = pd.concat([symbol_df, aligned_cross], axis=1)
-                    cross_symbol_count = len(universal_features.cross_symbol_features.columns)
-                    logger.info(f"[{symbol}] Added {cross_symbol_count} cross-symbol features")
+                # Get the individual symbol's features from universal features
+                if symbol not in universal_features.symbol_features:
+                    logger.error(f"Symbol {symbol} not found in universal features")
+                    raise ValueError(f"Symbol {symbol} not in universal features")
                 
-                # Add regime features if available
-                regime_count = 0
-                if hasattr(universal_features, 'market_regime_features') and not universal_features.market_regime_features.empty:
-                    aligned_regime = universal_features.market_regime_features.reindex(symbol_df.index)
-                    symbol_df = pd.concat([symbol_df, aligned_regime], axis=1)
-                    regime_count = len(universal_features.market_regime_features.columns)
-                    logger.info(f"[{symbol}] Added {regime_count} market regime features")
+                # Get individual symbol features
+                symbol_feature_set = universal_features.symbol_features[symbol]
                 
-                # Add sector features if available
-                sector_count = 0
-                if hasattr(universal_features, 'sector_features') and not universal_features.sector_features.empty:
-                    aligned_sector = universal_features.sector_features.reindex(symbol_df.index)
-                    symbol_df = pd.concat([symbol_df, aligned_sector], axis=1)
-                    sector_count = len(universal_features.sector_features.columns)
-                    logger.info(f"[{symbol}] Added {sector_count} sector features")
+                # Combine individual symbol features (same as training)
+                individual_feature_dfs = []
+                individual_feature_counts = {}
                 
-                total_features = total_individual_features + cross_symbol_count + regime_count + sector_count
-                logger.info(f"[{symbol}] Total universal features before filtering: {total_features}")
+                # Add technical features
+                if hasattr(symbol_feature_set, 'technical_features') and symbol_feature_set.technical_features is not None and not symbol_feature_set.technical_features.empty:
+                    individual_feature_dfs.append(symbol_feature_set.technical_features)
+                    individual_feature_counts['technical'] = len(symbol_feature_set.technical_features.columns)
+                
+                # Add market microstructure features
+                if hasattr(symbol_feature_set, 'market_microstructure') and symbol_feature_set.market_microstructure is not None and not symbol_feature_set.market_microstructure.empty:
+                    individual_feature_dfs.append(symbol_feature_set.market_microstructure)
+                    individual_feature_counts['market_microstructure'] = len(symbol_feature_set.market_microstructure.columns)
+                
+                # Add sentiment features
+                if hasattr(symbol_feature_set, 'sentiment_features') and symbol_feature_set.sentiment_features is not None and not symbol_feature_set.sentiment_features.empty:
+                    individual_feature_dfs.append(symbol_feature_set.sentiment_features)
+                    individual_feature_counts['sentiment'] = len(symbol_feature_set.sentiment_features.columns)
+                
+                # Add macro features
+                if hasattr(symbol_feature_set, 'macro_features') and symbol_feature_set.macro_features is not None and not symbol_feature_set.macro_features.empty:
+                    individual_feature_dfs.append(symbol_feature_set.macro_features)
+                    individual_feature_counts['macro'] = len(symbol_feature_set.macro_features.columns)
+                
+                # Add cross-asset features
+                if hasattr(symbol_feature_set, 'cross_asset_features') and symbol_feature_set.cross_asset_features is not None and not symbol_feature_set.cross_asset_features.empty:
+                    individual_feature_dfs.append(symbol_feature_set.cross_asset_features)
+                    individual_feature_counts['cross_asset'] = len(symbol_feature_set.cross_asset_features.columns)
+                
+                # Add engineered features
+                if hasattr(symbol_feature_set, 'engineered_features') and symbol_feature_set.engineered_features is not None and not symbol_feature_set.engineered_features.empty:
+                    individual_feature_dfs.append(symbol_feature_set.engineered_features)
+                    individual_feature_counts['engineered'] = len(symbol_feature_set.engineered_features.columns)
+                
+                if not individual_feature_dfs:
+                    logger.error(f"No valid individual feature DataFrames found for symbol {symbol}")
+                    raise ValueError(f"No individual features for {symbol}")
+                
+                # Combine individual features
+                individual_df = pd.concat(individual_feature_dfs, axis=1)
+                total_individual_features = sum(individual_feature_counts.values())
+                logger.info(f"[{symbol}] Individual features: {total_individual_features} columns")
+                
+                # Add cross-symbol features
+                cross_symbol_df = universal_features.cross_symbol_features
+                if not cross_symbol_df.empty:
+                    # Align cross-symbol features with individual features by index
+                    aligned_cross_symbol = cross_symbol_df.reindex(individual_df.index)
+                    individual_df = pd.concat([individual_df, aligned_cross_symbol], axis=1)
+                    logger.info(f"[{symbol}] Added {len(cross_symbol_df.columns)} cross-symbol features")
+                
+                # Add market regime features
+                regime_df = universal_features.market_regime_features
+                if not regime_df.empty:
+                    # Align regime features with individual features by index
+                    aligned_regime = regime_df.reindex(individual_df.index)
+                    individual_df = pd.concat([individual_df, aligned_regime], axis=1)
+                    logger.info(f"[{symbol}] Added {len(regime_df.columns)} market regime features")
+                
+                # Add sector features
+                sector_df = universal_features.sector_features
+                if not sector_df.empty:
+                    # Align sector features with individual features by index
+                    aligned_sector = sector_df.reindex(individual_df.index)
+                    individual_df = pd.concat([individual_df, aligned_sector], axis=1)
+                    logger.info(f"[{symbol}] Added {len(sector_df.columns)} sector features")
+                
+                # Add universal embeddings
+                embeddings_df = universal_features.universal_embeddings
+                if not embeddings_df.empty:
+                    # Align embeddings with individual features by index
+                    aligned_embeddings = embeddings_df.reindex(individual_df.index)
+                    individual_df = pd.concat([individual_df, aligned_embeddings], axis=1)
+                    logger.info(f"[{symbol}] Added {len(embeddings_df.columns)} universal embedding features")
+                
+                # Add symbol_id for the current symbol
+                symbol_mappings = universal_features.symbol_mappings
+                if symbol in symbol_mappings:
+                    symbol_id = symbol_mappings[symbol]
+                    individual_df['symbol_id'] = symbol_id
+                    logger.info(f"[{symbol}] Added symbol_id={symbol_id}")
+                
+                # Remove symbol embedding columns (same as training)
+                symbol_embedding_cols = [col for col in individual_df.columns if (
+                    col == 'symbol_id' or (
+                        col.startswith('symbol_') and not any([
+                            col.startswith('corr_'),
+                            col.startswith('beta_'),
+                            col.startswith('relative_strength_'),
+                            col.startswith('market_dispersion_'),
+                            col.startswith('market_volatility'),
+                            col.startswith('vol_regime_'),
+                            col.startswith('vol_trend'),
+                            col.startswith('vol_correlation')
+                        ])
+                    )
+                )]
+                
+                # Keep all features except symbol embedding columns and target
+                feature_columns = [col for col in individual_df.columns if col not in symbol_embedding_cols and col != 'target']
+                symbol_df = individual_df[feature_columns]
+                
+                logger.info(f"[{symbol}] Excluded symbol embedding columns ({len(symbol_embedding_cols)}): {symbol_embedding_cols}")
+                logger.info(f"[{symbol}] Final universal feature columns: {len(feature_columns)}")
                 
             except Exception as e:
-                logger.warning(f"Failed to add universal features for {symbol}: {e}")
+                logger.warning(f"Failed to get universal features for {symbol}: {e}")
                 logger.warning(f"Proceeding with individual features only for {symbol}")
+                # Fall back to the original individual features approach
+                pass
             
-            # Step 4: Filter out symbol embedding columns (same as training)
-            # Define actual symbol embedding columns to exclude (not cross-symbol or market regime features)
-            symbol_embedding_cols = [col for col in symbol_df.columns if (
-                col == 'symbol_id' or (
-                    col.startswith('symbol_') and not any([
-                        col.startswith('corr_'),
-                        col.startswith('beta_'),
-                        col.startswith('relative_strength_'),
-                        col.startswith('market_dispersion_'),
-                        col.startswith('market_volatility'),
-                        col.startswith('vol_regime_'),
-                        col.startswith('vol_trend'),
-                        col.startswith('vol_correlation')
-                    ])
-                )
-            )]
-            
-            # Keep all features except actual symbol embedding columns and target
-            feature_columns = [col for col in symbol_df.columns if col not in symbol_embedding_cols and col != 'target']
-            
-            logger.info(f"[{symbol}] Excluded symbol embedding columns ({len(symbol_embedding_cols)}): {symbol_embedding_cols}")
-            logger.info(f"[{symbol}] Final feature columns kept: {len(feature_columns)}")
-            
-            # Filter to keep only non-symbol-embedding features
-            symbol_df = symbol_df[feature_columns]
+            # Step 4: Handle NaN and infinite values (universal features already filtered above)
+            # If we're using individual features (fallback), apply the same filtering as training
+            if 'symbol_id' in symbol_df.columns:
+                # This means we're using individual features, apply same filtering as training
+                symbol_embedding_cols = [col for col in symbol_df.columns if (
+                    col == 'symbol_id' or (
+                        col.startswith('symbol_') and not any([
+                            col.startswith('corr_'),
+                            col.startswith('beta_'),
+                            col.startswith('relative_strength_'),
+                            col.startswith('market_dispersion_'),
+                            col.startswith('market_volatility'),
+                            col.startswith('vol_regime_'),
+                            col.startswith('vol_trend'),
+                            col.startswith('vol_correlation')
+                        ])
+                    )
+                )]
+                
+                # Keep all features except symbol embedding columns and target
+                feature_columns = [col for col in symbol_df.columns if col not in symbol_embedding_cols and col != 'target']
+                symbol_df = symbol_df[feature_columns]
+                
+                logger.info(f"[{symbol}] Fallback: Excluded symbol embedding columns ({len(symbol_embedding_cols)}): {symbol_embedding_cols}")
+                logger.info(f"[{symbol}] Fallback: Final feature columns kept: {len(feature_columns)}")
             
             # Step 5: Handle NaN and infinite values
             symbol_df = symbol_df.fillna(method='ffill').fillna(method='bfill').fillna(0)
@@ -2366,8 +2475,8 @@ class SignalGenerator:
             
             logger.info(f"[{symbol}] Created feature sequence with shape: {feature_input.shape}")
             
-            # Verify the shape is correct for universal models
-            expected_shape = (1, 30, 187)
+            # Verify the shape is correct for universal models (446 features for 9 symbols)
+            expected_shape = (1, 30, 446)
             if feature_input.shape != expected_shape:
                 logger.warning(f"[{symbol}] Feature input shape {feature_input.shape} does not match expected {expected_shape}")
             

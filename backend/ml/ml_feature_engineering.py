@@ -298,8 +298,10 @@ class FeatureEngineering:
                 # Create minimal config for dual exit target generation
                 config = UniversalTrainingConfig(
                     prediction_window=30,  # 15-minute prediction window
-                    take_profit_pct=0.003,  # 0.3% take profit
-                    stop_loss_pct=0.002    # 0.2% stop loss
+                    # take_profit_pct=0.003,  # 0.3% take profit
+                    take_profit_pct= 0.00197,  # 0.197% take profit
+                    # stop_loss_pct=0.002    # 0.2% stop loss
+                    stop_loss_pct= 0.00099    # 0.099% stop loss
                 )
                 
                 # Create a minimal UniversalTrainer instance for target generation

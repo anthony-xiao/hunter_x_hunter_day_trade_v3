@@ -95,8 +95,10 @@ class UniversalTrainingConfig:
     
     # Dual Exit Target Configuration
     prediction_window: int = 30  # Maximum prediction window in minutes (periods)
-    take_profit_pct: float = 0.003  # Take profit threshold (0.3%)
-    stop_loss_pct: float = 0.002   # Stop loss threshold (0.2%)
+    # take_profit_pct: float = 0.003  # Take profit threshold (0.3%)
+    # stop_loss_pct: float = 0.002   # Stop loss threshold (0.2%)
+    take_profit_pct: float = 0.00197  # Take profit threshold (0.197%)
+    stop_loss_pct: float =  0.00099   # Stop loss threshold (0.099%)
     
     # Class Imbalance Mitigation Configuration
     enable_imbalance_mitigation: bool = True

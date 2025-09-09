@@ -190,8 +190,10 @@ class ExecutionEngine:
         self.confidence_multiplier = 2.0   # Confidence scaling factor
         
         # Stop loss and take profit
-        self.default_stop_loss = 0.002     # 0.2% stop loss
-        self.default_take_profit = 0.003   # 0.3% take profit
+        # self.default_stop_loss = 0.002     # 0.2% stop loss
+        # self.default_take_profit = 0.003   # 0.3% take profit
+        self.default_stop_loss =  0.00099     # 0.099% stop loss
+        self.default_take_profit = 0.00197   # 0.197% take profit
         # Removed trailing_stop_distance - only using bracket orders
         
         # Market data cache
@@ -345,6 +347,17 @@ class ExecutionEngine:
             # Basic validation
             if not signal.symbol or signal.confidence <= 0:
                 return False
+            
+            # Validate sell signals - only allow if we have an existing long position
+            if signal.action == "sell":
+                if signal.symbol not in self.positions:
+                    logger.warning(f"Sell signal rejected for {signal.symbol}: no existing position to close")
+                    return False
+                
+                position = self.positions[signal.symbol]
+                if position.quantity <= 0:
+                    logger.warning(f"Sell signal rejected for {signal.symbol}: no long position to close (quantity: {position.quantity})")
+                    return False
             
             # Check if symbol is tradeable
             try:
@@ -547,56 +560,30 @@ class ExecutionEngine:
             return None
     
     async def _execute_sell_signal(self, signal: TradeSignal, sizing: PositionSizing) -> Optional[Order]:
-        """Execute sell signal (short position) with bracket order"""
+        """Execute sell signal to close existing long position only"""
         try:
-            current_price = await self._get_current_price(signal.symbol)
-            quantity = int(sizing.final_size)
-            
-            # Check if shorting is allowed
-            try:
-                asset = self.trading_client.get_asset(signal.symbol)
-                if not asset.shortable:
-                    logger.warning(f"{signal.symbol} is not shortable")
-                    return None
-            except:
-                logger.warning(f"Could not verify shortability of {signal.symbol}")
+            # Check if we have an existing long position to close
+            if signal.symbol not in self.positions:
+                logger.warning(f"No existing position to close for {signal.symbol}, skipping sell signal")
                 return None
             
-            # Calculate stop loss and take profit for short with proper rounding
-            stop_loss = signal.stop_loss or (current_price * (1 + self.default_stop_loss))
-            take_profit = signal.take_profit or (current_price * (1 - self.default_take_profit))
+            position = self.positions[signal.symbol]
             
-            # Round prices to nearest penny
-            stop_loss = self._round_price(stop_loss)
-            take_profit = self._round_price(take_profit)
+            # Only allow selling if we have a long position (positive quantity)
+            if position.quantity <= 0:
+                logger.warning(f"No long position to close for {signal.symbol} (current quantity: {position.quantity})")
+                return None
             
-            # Check if position already exists for this symbol
-            has_existing_position = signal.symbol in self.positions
+            # Use the actual position quantity or the signal sizing, whichever is smaller
+            quantity = min(abs(position.quantity), int(sizing.final_size))
             
-            if has_existing_position:
-                # Use regular market order when position exists (bracket orders are only for entry)
-                logger.info(f"Existing position found for {signal.symbol}, using regular market order instead of bracket order")
-                request = MarketOrderRequest(
-                    symbol=signal.symbol,
-                    qty=quantity,
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY
-                )
-            else:
-                # Use bracket order for new positions (entry orders)
-                logger.info(f"No existing position for {signal.symbol}, using bracket order for short")
-                stop_loss_request = StopLossRequest(stop_price=stop_loss)
-                take_profit_request = TakeProfitRequest(limit_price=take_profit)
-                
-                request = MarketOrderRequest(
-                    symbol=signal.symbol,
-                    qty=quantity,
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY,
-                    order_class=OrderClass.BRACKET,
-                    stop_loss=stop_loss_request,
-                    take_profit=take_profit_request
-                )
+            # Create simple market sell order to close position
+            request = MarketOrderRequest(
+                symbol=signal.symbol,
+                qty=quantity,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY
+            )
             
             alpaca_order = self.trading_client.submit_order(request)
             
@@ -613,18 +600,15 @@ class ExecutionEngine:
                 stop_price=None,
                 trail_amount=None,
                 timestamp=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
+                updated_at=datetime.now(timezone.utc)
             )
             
-            if has_existing_position:
-                logger.info(f"Regular sell order submitted for {signal.symbol}: qty={quantity} (adding to existing position)")
-            else:
-                logger.info(f"Bracket sell order submitted for {signal.symbol}: qty={quantity}, stop_loss=${stop_loss:.2f}, take_profit=${take_profit:.2f}")
+            logger.info(f"Sell order submitted to close long position for {signal.symbol}: qty={quantity}")
             
             return order
             
         except APIError as e:
-            logger.error(f"Alpaca API error placing bracket sell order for {signal.symbol}: {e}")
+            logger.error(f"Alpaca API error placing sell order for {signal.symbol}: {e}")
             return None
         except Exception as e:
             logger.error(f"Error executing sell signal: {e}")
