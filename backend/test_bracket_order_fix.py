@@ -109,36 +109,52 @@ async def test_bracket_order_fix():
     except Exception as e:
         print(f"❌ FAILED: {e}")
     
-    print("\n3. Testing sell signal with NO existing position (should use bracket order):")
+    print("\n3. Testing sell signal with NO existing position (should be rejected):")
     try:
         # Clear positions
         execution_engine.positions = {}
         test_signal.action = "sell"
         
         order = await execution_engine._execute_sell_signal(test_signal, test_sizing)
-        if order:
-            print(f"✅ SUCCESS: Order placed successfully - {order.symbol}")
-            print(f"   Order ID: {order.id}")
+        if order is None:
+            print(f"✅ SUCCESS: Sell signal correctly rejected - no existing position")
         else:
-            print("❌ FAILED: No order returned")
+            print(f"❌ FAILED: Order should not have been placed - {order.symbol}")
     except Exception as e:
         print(f"❌ FAILED: {e}")
     
-    print("\n4. Testing sell signal WITH existing position (should use regular order):")
+    print("\n4. Testing sell signal WITH existing LONG position (should close position):")
     try:
-        # Add existing position
-        execution_engine.positions = {"TSLA": {"qty": -5, "side": "short"}}
+        # Add existing LONG position (positive quantity)
+        class MockPosition:
+            def __init__(self, qty):
+                self.quantity = qty
+        
+        execution_engine.positions = {"TSLA": MockPosition(5)}
         
         order = await execution_engine._execute_sell_signal(test_signal, test_sizing)
         if order:
-            print(f"✅ SUCCESS: Order placed successfully - {order.symbol}")
+            print(f"✅ SUCCESS: Order placed successfully to close long position - {order.symbol}")
             print(f"   Order ID: {order.id}")
         else:
             print("❌ FAILED: No order returned")
     except Exception as e:
         print(f"❌ FAILED: {e}")
+        
+    print("\n5. Testing sell signal WITH existing SHORT position (should be rejected):")
+    try:
+        # Add existing SHORT position (negative quantity)
+        execution_engine.positions = {"TSLA": MockPosition(-5)}
+        
+        order = await execution_engine._execute_sell_signal(test_signal, test_sizing)
+        if order is None:
+            print(f"✅ SUCCESS: Sell signal correctly rejected - cannot sell short position")
+        else:
+            print(f"❌ FAILED: Order should not have been placed for short position")
+    except Exception as e:
+        print(f"❌ FAILED: {e}")
     
-    print("\n5. Simulating the original error scenario:")
+    print("\n6. Simulating the original error scenario:")
     try:
         # Set up mock to fail bracket orders (simulating the original error)
         execution_engine.trading_client.should_fail_bracket = True
