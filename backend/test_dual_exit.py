@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 class MockConfig:
     """Mock configuration for testing."""
     prediction_window: int = 30
-    take_profit_pct: float = 0.003  # 0.3%
-    stop_loss_pct: float = 0.002   # 0.2%
+    take_profit_pct: float = 0.00197  # 0.197% - standardized
+    stop_loss_pct: float = 0.00099    # 0.099% - standardized
 
 class MockTrainer:
     """Mock trainer class with just the dual exit method."""
@@ -127,8 +127,8 @@ async def test_dual_exit_targets():
     # Create configuration with dual exit parameters
     config = MockConfig(
         prediction_window=30,
-        take_profit_pct=0.003,  # 0.3%
-        stop_loss_pct=0.002     # 0.2%
+        take_profit_pct=0.00197,  # 0.197% - standardized
+        stop_loss_pct=0.00099     # 0.099% - standardized
     )
     
     # Initialize mock trainer

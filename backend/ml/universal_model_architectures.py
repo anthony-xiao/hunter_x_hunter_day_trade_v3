@@ -52,6 +52,13 @@ class UniversalModelArchitectures:
         l2_reg = config.get('l2_reg', 0.01)
         learning_rate = config.get('learning_rate', 0.001)
         
+        # Handle both list and single integer units configuration
+        if isinstance(units, list):
+            units_list = units
+        else:
+            # Backward compatibility: convert single integer to list
+            units_list = [units, units//2]
+        
         # Input layers
         feature_input = Input(shape=(sequence_length, feature_dim), name='feature_input')
         symbol_input = Input(shape=(), dtype=tf.int32, name='symbol_input')
@@ -63,27 +70,24 @@ class UniversalModelArchitectures:
             name='symbol_embedding'
         )(symbol_input)
         
-        # LSTM layers for feature processing
-        lstm1 = LSTM(
-            units=units,
-            return_sequences=True,
-            dropout=dropout,
-            recurrent_dropout=dropout,
-            kernel_regularizer=l2(l2_reg),
-            name='lstm_1'
-        )(feature_input)
+        # LSTM layers for feature processing - dynamically create based on units_list
+        x = feature_input
+        for i, layer_units in enumerate(units_list):
+            return_sequences = (i < len(units_list) - 1)  # Return sequences for all but last layer
+            x = LSTM(
+                units=layer_units,
+                return_sequences=return_sequences,
+                dropout=dropout,
+                recurrent_dropout=dropout,
+                kernel_regularizer=l2(l2_reg),
+                name=f'lstm_{i+1}'
+            )(x)
         
-        lstm2 = LSTM(
-            units=units//2,
-            return_sequences=False,
-            dropout=dropout,
-            recurrent_dropout=dropout,
-            kernel_regularizer=l2(l2_reg),
-            name='lstm_2'
-        )(lstm1)
+        # x now contains the output from the final LSTM layer
+        lstm_output = x
         
         # Combine LSTM output with symbol embedding
-        combined = Concatenate(name='feature_symbol_concat')([lstm2, symbol_embedding])
+        combined = Concatenate(name='feature_symbol_concat')([lstm_output, symbol_embedding])
         
         # Dense layers for final processing
         dense1 = Dense(
@@ -159,6 +163,13 @@ class UniversalModelArchitectures:
         l2_reg = config.get('l2_reg', 0.01)
         learning_rate = config.get('learning_rate', 0.0005)
         
+        # Handle both list and single integer filters configuration
+        if isinstance(filters, list):
+            filters_list = filters
+        else:
+            # Backward compatibility: convert single integer to list
+            filters_list = [filters, filters*2]
+        
         # Input layers
         feature_input = Input(shape=(sequence_length, feature_dim), name='feature_input')
         symbol_input = Input(shape=(), dtype=tf.int32, name='symbol_input')
@@ -173,27 +184,31 @@ class UniversalModelArchitectures:
         # Reshape for CNN processing (add channel dimension)
         reshaped_input = Reshape((sequence_length, feature_dim, 1), name='reshape_for_cnn')(feature_input)
         
-        # CNN layers for feature processing
-        conv1 = Conv2D(
-            filters=filters,
-            kernel_size=(3, 2),  # Adjusted kernel size for small input
-            activation='relu',
-            kernel_regularizer=l2(l2_reg),
-            name='conv2d_1'
-        )(reshaped_input)
-        pool1 = MaxPooling2D(pool_size=(2, 1), name='max_pooling2d_1')(conv1)  # Adjusted pooling
+        # CNN layers for feature processing - dynamically create based on filters_list
+        x = reshaped_input
+        for i, layer_filters in enumerate(filters_list):
+            # Adjust kernel size based on layer depth
+            if i == 0:
+                kernel = (3, 2)  # First layer kernel
+                pool_size = (2, 1)
+            else:
+                kernel = (2, 2)  # Subsequent layers kernel
+                pool_size = (2, 1)
+            
+            x = Conv2D(
+                filters=layer_filters,
+                kernel_size=kernel,
+                activation='relu',
+                kernel_regularizer=l2(l2_reg),
+                name=f'conv2d_{i+1}'
+            )(x)
+            x = MaxPooling2D(pool_size=pool_size, name=f'max_pooling2d_{i+1}')(x)
         
-        conv2 = Conv2D(
-            filters=filters*2,
-            kernel_size=(2, 2),  # Smaller kernel for second layer
-            activation='relu',
-            kernel_regularizer=l2(l2_reg),
-            name='conv2d_2'
-        )(pool1)
-        pool2 = MaxPooling2D(pool_size=(2, 1), name='max_pooling2d_2')(conv2)  # Adjusted pooling
+        # x now contains the output from the final CNN layer
+        cnn_output = x
         
         # Flatten CNN output
-        flattened = Flatten(name='flatten')(pool2)
+        flattened = Flatten(name='flatten')(cnn_output)
         
         # Combine CNN output with symbol embedding
         combined = Concatenate(name='feature_symbol_concat')([flattened, symbol_embedding])

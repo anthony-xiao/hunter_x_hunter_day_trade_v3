@@ -278,12 +278,12 @@ class SignalGenerator:
         
         # Signal generation parameters - Enhanced with lower thresholds
         self.signal_thresholds = {
-            'buy_threshold': 0.4,
-            'sell_threshold': -0.4,
-            'strong_buy_threshold': 0.6,
-            'strong_sell_threshold': -0.6
+            'buy_threshold': 0.6,           # Increased from 0.4
+            'sell_threshold': 0.45,         # More conservative
+            'strong_buy_threshold': 0.75,    # Increased from 0.6
+            'strong_sell_threshold': 0.25   # More conservative
         }
-        
+                
         # Market-based sell signal parameters
         self.market_sell_conditions = {
             'rsi_overbought': 70,
@@ -520,7 +520,7 @@ class SignalGenerator:
             feature_count = 150
             
         model = tf.keras.Sequential([
-            tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(60, feature_count)),
+            tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(15, feature_count)),
             tf.keras.layers.Dropout(0.2),
             tf.keras.layers.LSTM(64, return_sequences=True),
             tf.keras.layers.Dropout(0.2),
@@ -547,7 +547,7 @@ class SignalGenerator:
         # Create 1D CNN architecture that works better with time series data
         # Input shape: (time_steps, features) = (60, 153)
         model = tf.keras.Sequential([
-            tf.keras.layers.Conv1D(32, 3, activation='relu', input_shape=(60, feature_count)),
+            tf.keras.layers.Conv1D(32, 3, activation='relu', input_shape=(15, feature_count)),
             tf.keras.layers.MaxPooling1D(2),
             tf.keras.layers.Conv1D(64, 3, activation='relu'),
             tf.keras.layers.MaxPooling1D(2),
@@ -572,7 +572,7 @@ class SignalGenerator:
             feature_count = 150
             
         # Create the same architecture as in model_trainer.py for consistency
-        input_layer = tf.keras.layers.Input(shape=(60, feature_count), name='input_layer')
+        input_layer = tf.keras.layers.Input(shape=(15, feature_count), name='input_layer')
         
         # Multi-head attention (2 heads, key_dim=32 to match model_trainer.py)
         attention = tf.keras.layers.MultiHeadAttention(
@@ -876,9 +876,9 @@ class SignalGenerator:
                 logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} input features shape: {features.shape}")
                 
                 # Expected dimensions from model architecture
-                # Updated to 446 features for 9 symbols (cross-symbol features)
-                expected_sequence_length = 30
-                expected_feature_dim = 446
+                # Updated to 574 features to match training dimensions
+                expected_sequence_length = 15
+                expected_feature_dim = 574
                 
                 if len(features.shape) == 2:
                     # Features are in (time_steps, features) format
@@ -952,12 +952,12 @@ class SignalGenerator:
                 # CNN architecture: Conv2D(32,(3,3)) -> MaxPool(2,2) -> Conv2D(64,(3,3)) -> MaxPool(2,2) -> Flatten()
                 # 
                 # Input dimensions are dynamically determined from actual feature count
-                # Input: (30, actual_feature_count, 1)
+                # Input: (15, actual_feature_count, 1)
                 # Dense layer input size is calculated based on actual feature dimensions
                 # after convolution and pooling operations
                 #
                 # Use actual feature dimensions from data (no hardcoded filtering)
-                required_height = 30   # Match actual training lookback_window
+                required_height = 15   # Match actual training lookback_window
                 required_width = actual_feature_count   # Use actual feature count from data
                 
                 if len(features.shape) == 2:
@@ -2080,8 +2080,15 @@ class SignalGenerator:
                 logger.warning("ModelTrainer not available, cannot initialize universal models")
                 return False
             
-            # Initialize universal components
-            data_pipeline = self.model_trainer.data_pipeline
+            # Initialize universal components - ensure consistent data_pipeline usage
+            # Use the same data_pipeline reference as the rest of the SignalGenerator
+            data_pipeline = self.data_pipeline or (self.model_trainer.data_pipeline if self.model_trainer else None)
+            
+            if not data_pipeline:
+                logger.error("No data pipeline available for universal feature engineering")
+                return False
+                
+            logger.info(f"Using data_pipeline for universal features: {type(data_pipeline).__name__}")
             feature_engineering = UniversalFeatureEngineering(self.supabase_client, data_pipeline)
             
             # Set symbol mappings for embedding lookup
@@ -2198,7 +2205,16 @@ class SignalGenerator:
             
             # Step 1: Engineer individual symbol features
             # Create FeatureEngineering instance for individual symbol features
-            feature_engineering = FeatureEngineering(self.supabase_client, self.data_pipeline)
+            # Ensure consistent data_pipeline usage with universal feature engineering
+            data_pipeline_to_use = self.data_pipeline or (self.model_trainer.data_pipeline if self.model_trainer else None)
+            
+            if not data_pipeline_to_use:
+                logger.warning(f"No data pipeline available for individual feature engineering for {symbol}")
+                logger.warning("Cross-asset features will be skipped for this symbol")
+            else:
+                logger.debug(f"Using data_pipeline for individual features ({symbol}): {type(data_pipeline_to_use).__name__}")
+                
+            feature_engineering = FeatureEngineering(self.supabase_client, data_pipeline_to_use)
             
             # Use training_mode=True to ensure consistent feature generation with training
             feature_set = await feature_engineering.engineer_features(
@@ -2431,13 +2447,13 @@ class SignalGenerator:
             
             logger.info(f"[{symbol}] Final feature shape: {symbol_df.shape}")
             
-            # Return the last 30 rows of features for sequence creation (or all available if less than 30)
+            # Return the last 15 rows of features for sequence creation (or all available if less than 15)
             if len(symbol_df) > 0:
-                lookback_window = 30
+                lookback_window = 15
                 if len(symbol_df) >= lookback_window:
                     return symbol_df.iloc[-lookback_window:].values
                 else:
-                    # If we have less than 30 rows, pad with the first row repeated
+                    # If we have less than 15 rows, pad with the first row repeated
                     available_data = symbol_df.values
                     padding_needed = lookback_window - len(available_data)
                     if padding_needed > 0:
@@ -2475,10 +2491,35 @@ class SignalGenerator:
             
             logger.info(f"[{symbol}] Created feature sequence with shape: {feature_input.shape}")
             
-            # Verify the shape is correct for universal models (446 features for 9 symbols)
-            expected_shape = (1, 30, 446)
+            # Verify the shape is correct for universal models (262 features to match training)
+            expected_shape = (1, 15, 262)
             if feature_input.shape != expected_shape:
-                logger.warning(f"[{symbol}] Feature input shape {feature_input.shape} does not match expected {expected_shape}")
+                logger.error(f"[{symbol}] Feature input shape {feature_input.shape} does not match expected {expected_shape}")
+                logger.error(f"[{symbol}] Shape mismatch: got sequence_length={feature_input.shape[1]}, expected=15; got features={feature_input.shape[2]}, expected=262")
+                # Try to handle the mismatch gracefully
+                if feature_input.shape[1] != 15 or feature_input.shape[2] != 262:
+                    logger.warning(f"[{symbol}] Attempting to reshape features to match expected dimensions")
+                    try:
+                        # Pad or truncate sequence length to 15
+                        if feature_input.shape[1] < 15:
+                            padding_needed = 15 - feature_input.shape[1]
+                            padding = np.zeros((1, padding_needed, feature_input.shape[2]))
+                            feature_input = np.concatenate([padding, feature_input], axis=1)
+                        elif feature_input.shape[1] > 15:
+                            feature_input = feature_input[:, -15:, :]
+                        
+                        # Pad or truncate feature dimension to 262
+                        if feature_input.shape[2] < 262:
+                            padding_needed = 262 - feature_input.shape[2]
+                            padding = np.zeros((1, 15, padding_needed))
+                            feature_input = np.concatenate([feature_input, padding], axis=2)
+                        elif feature_input.shape[2] > 262:
+                            feature_input = feature_input[:, :, :262]
+                        
+                        logger.info(f"[{symbol}] Reshaped feature input to: {feature_input.shape}")
+                    except Exception as reshape_error:
+                        logger.error(f"[{symbol}] Failed to reshape features: {reshape_error}")
+                        return None
             
             model_predictions = {}
             model_confidences = {}

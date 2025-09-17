@@ -26,7 +26,7 @@ async def test_data_loading():
     
     # Test individual feature engineering first
     print("\n=== Testing Individual Feature Engineering ===")
-    ufe = UniversalFeatureEngineering(dp.supabase, dp)
+    ufe = UniversalFeatureEngineering(data_pipeline=dp, supabase_client=dp.supabase)
     
     for symbol in symbols:
         print(f"\nTesting feature engineering for {symbol}...")
@@ -80,7 +80,7 @@ async def test_data_loading():
     
     # Test universal feature engineering
     print("\n=== Testing Universal Feature Engineering ===")
-    ufe = UniversalFeatureEngineering(dp.supabase, dp)
+    ufe = UniversalFeatureEngineering(data_pipeline=dp, supabase_client=dp.supabase)
     
     # Test individual feature engineering first
     print("\n=== Testing Individual Feature Engineering ===")

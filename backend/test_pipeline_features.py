@@ -21,7 +21,7 @@ async def test_pipeline_vs_ml_features():
     
     # Initialize components
     data_pipeline = DataPipeline()
-    feature_engineer = FeatureEngineering(supabase_client=db_manager.get_supabase_client())
+    feature_engineer = FeatureEngineering(data_pipeline=data_pipeline, supabase_client=db_manager.get_supabase_client())
     
     # Test date range with good data (timezone-aware)
     start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
@@ -98,7 +98,7 @@ async def test_pipeline_vs_ml_features():
     # Simulate the exact pipeline process from data_pipeline.py lines 670-700
     try:
         # This is the exact code from data_pipeline.py
-        feature_engineer_pipeline = FeatureEngineering(supabase_client=db_manager.get_supabase_client())
+        feature_engineer_pipeline = FeatureEngineering(data_pipeline=data_pipeline, supabase_client=db_manager.get_supabase_client())
         
         # Engineer features from market data
         start_date_pipeline = market_data.index.min()

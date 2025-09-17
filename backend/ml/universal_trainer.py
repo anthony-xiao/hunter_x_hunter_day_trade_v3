@@ -78,10 +78,10 @@ class UniversalTrainingConfig:
     """Configuration for universal training phases"""
     # Phase 1: Universal Base Model
     base_epochs: int = 100
-    base_batch_size: int = 256
+    base_batch_size: int = 128
     base_learning_rate: float = 0.001
     base_validation_split: float = 0.2
-    base_lookback_window: int = 30
+    base_lookback_window: int = 15
     
     # Phase 2: Symbol-Specific Fine-tuning
     finetune_epochs: int = 50
@@ -94,11 +94,11 @@ class UniversalTrainingConfig:
     ensemble_rebalance_frequency: int = 5
     
     # Dual Exit Target Configuration
-    prediction_window: int = 30  # Maximum prediction window in minutes (periods)
+    prediction_window: int = 15  # Maximum prediction window in minutes (periods)
     # take_profit_pct: float = 0.003  # Take profit threshold (0.3%)
     # stop_loss_pct: float = 0.002   # Stop loss threshold (0.2%)
-    take_profit_pct: float = 0.00197  # Take profit threshold (0.197%)
-    stop_loss_pct: float =  0.00099   # Stop loss threshold (0.099%)
+    take_profit_pct: float = 0.0024  # Take profit threshold (0.24%)
+    stop_loss_pct: float =  0.0012   # Stop loss threshold (0.12%)
     
     # Class Imbalance Mitigation Configuration
     enable_imbalance_mitigation: bool = True
@@ -162,39 +162,101 @@ class UniversalTrainer:
         self.imbalance_metrics = []
         
         # Default model configurations (feature_count will be updated dynamically)
+        # self.model_configs = {
+        #     'lstm': ModelConfig(
+        #         name='universal_lstm',
+        #         model_type='lstm',
+        #         parameters={'units': 32, 'dropout': 0.35},
+        #         training_window=252,
+        #         validation_window=63,
+        #         lookback_window=15,
+        #         feature_count=None,  # Will be set dynamically
+        #         learning_rate=0.0003
+        #     ),
+        #     'cnn': ModelConfig(
+        #         name='universal_cnn',
+        #         model_type='cnn',
+        #         parameters={'filters': 32, 'kernel_size': 3},
+        #         training_window=252,
+        #         validation_window=63,
+        #         lookback_window=15,
+        #         feature_count=None,  # Will be set dynamically
+        #         learning_rate=0.0005
+        #     ),
+        #     'transformer': ModelConfig(
+        #         name='universal_transformer',
+        #         model_type='transformer',
+        #         parameters={'num_heads': 6, 'd_model': 48},
+        #         training_window=252,
+        #         validation_window=63,
+        #         lookback_window=15,
+        #         feature_count=None,  # Will be set dynamically
+        #         learning_rate=0.0003
+        #     )
+        # }
+        
         self.model_configs = {
             'lstm': ModelConfig(
-                name='universal_lstm',
-                model_type='lstm',
-                parameters={'units': 50, 'dropout': 0.2},
-                training_window=252,
-                validation_window=63,
-                lookback_window=30,
-                feature_count=None,  # Will be set dynamically
-                learning_rate=0.001
+                name='lstm',
+                model_type='neural_network',
+                parameters={
+                    'units': [64, 32, 16],  # Reduced from [128, 64, 32] for less overfitting
+                    'dropout': 0.3,  # Increased from 0.2 for better regularization
+                    'epochs': 100,  # Keep same but with reduced early stopping patience
+                    'batch_size': 128,  # Reduced from 256 for better gradient updates
+                    'learning_rate': 0.0005,  # Reduced from 0.001 for stability
+                    'optimizer': 'adam',
+                    'loss': 'binary_crossentropy'
+                },
+                training_window=12,  # Reduced from 18 months for faster adaptation
+                validation_window=3,  # Reduced from 6 months for current market relevance
+                lookback_window=15,  # Reduced from 60 minutes for noise reduction
+                feature_count=None,
+                learning_rate=0.0005,
+                prediction_threshold=0.45  # Increased from 0.35 for better signal quality
             ),
             'cnn': ModelConfig(
-                name='universal_cnn',
-                model_type='cnn',
-                parameters={'filters': 64, 'kernel_size': 3},
-                training_window=252,
-                validation_window=63,
-                lookback_window=30,
-                feature_count=None,  # Will be set dynamically
-                learning_rate=0.001
+                name='cnn',
+                model_type='neural_network',
+                parameters={
+                    'filters': [16, 32],  # Reduced from [32, 64] to prevent overfitting
+                    'kernel_size': (3, 3),
+                    'dropout': 0.4,  # Increased from 0.3 for better noise reduction
+                    'l2_reg': 0.01,  # Keep same L2 regularization
+                    'epochs': 80,  # Keep same but with reduced early stopping patience
+                    'batch_size': 64,  # Reduced from 128 for better gradient updates
+                    'learning_rate': 0.0003,  # Reduced from 0.0005 for stability
+                    'optimizer': 'rmsprop'
+                },
+                training_window=12,  # Reduced from 18 months
+                validation_window=3,  # Reduced from 6 months
+                lookback_window=15,  # Uniform 15 minutes (was 30)
+                feature_count=None,
+                learning_rate=0.0003,
+                prediction_threshold=0.45  # Increased from 0.35 for better signal quality
             ),
             'transformer': ModelConfig(
-                name='universal_transformer',
-                model_type='transformer',
-                parameters={'num_heads': 8, 'd_model': 64},
-                training_window=252,
-                validation_window=63,
-                lookback_window=30,
-                feature_count=None,  # Will be set dynamically
-                learning_rate=0.001
+                name='transformer',
+                model_type='neural_network',
+                parameters={
+                    'num_heads': 4,  # Increased from 2 for better attention
+                    'num_layers': 3,  # Increased from 2 for more complexity
+                    'dropout': 0.7,   # Critical: Very high dropout
+                    'epochs': 40,  # Keep same but with reduced early stopping patience
+                    'batch_size': 8,  # Increased from 4 for better training stability
+                    'learning_rate': 0.0001,     # Much lower learning rate  
+                    'warmup_steps': 100
+                },
+                training_window=12,  # Reduced from 18 months
+                validation_window=3,  # Reduced from 6 months
+                lookback_window=15,  # Uniform 15 minutes (was 60)
+                feature_count=None,
+                learning_rate=0.0003,
+                prediction_threshold=0.7  # Increased from 0.3 for better signal quality
             )
         }
-        
+
+
         logger.info("Initialized UniversalTrainer with 3-phase training strategy")
     
     async def initialize_symbol_mappings(self, symbols: List[str]) -> None:
@@ -1124,6 +1186,18 @@ class UniversalTrainer:
         
         logger.info(f"Phase 1: Training universal base models for {model_types}")
         
+        # Log training configurations for quick reference
+        logger.info("=== Universal Training Configurations ===")
+        for model_type in model_types:
+            if model_type in self.model_configs:
+                config = self.model_configs[model_type]
+                params = config.parameters
+                logger.info(f"{model_type.upper()} Config: units/filters={params.get('units', params.get('filters', 'N/A'))}, "
+                           f"dropout={params.get('dropout', 'N/A')}, epochs={params.get('epochs', 'N/A')}, "
+                           f"batch_size={params.get('batch_size', 'N/A')}, lr={params.get('learning_rate', config.learning_rate)}, "
+                           f"lookback={config.lookback_window}min, threshold={config.prediction_threshold}")
+        logger.info("=============================================")
+        
         # Initialize symbol mappings
         await self.initialize_symbol_mappings(symbols)
         
@@ -1205,12 +1279,16 @@ class UniversalTrainer:
                 ]
                 
                 # Train model with class weights if available
+                # Use model-specific training parameters with base config as fallback
+                model_epochs = config.parameters.get('epochs', self.config.base_epochs)
+                model_batch_size = config.parameters.get('batch_size', self.config.base_batch_size)
+                
                 fit_kwargs = {
                     'x': X_train,
                     'y': y_train,
                     'validation_data': (X_val, y_val),
-                    'epochs': self.config.base_epochs,
-                    'batch_size': self.config.base_batch_size,
+                    'epochs': model_epochs,
+                    'batch_size': model_batch_size,
                     'callbacks': callbacks,
                     'verbose': 1
                 }

@@ -3,35 +3,27 @@
     "symbol_to_id": {
       "NVDA": 0,
       "TSLA": 1,
-      "AAPL": 2,
-      "MSFT": 3,
-      "META": 4,
-      "MRNA": 5,
-      "GILD": 6,
-      "BIIB": 7,
-      "VRTX": 8
+      "PLTR": 2,
+      "GOOGL": 3,
+      "QQQ": 4
     },
     "id_to_symbol": {
       "0": "NVDA",
       "1": "TSLA",
-      "2": "AAPL",
-      "3": "MSFT",
-      "4": "META",
-      "5": "MRNA",
-      "6": "GILD",
-      "7": "BIIB",
-      "8": "VRTX"
+      "2": "PLTR",
+      "3": "GOOGL",
+      "4": "QQQ"
     }
   },
   "ensemble_weights": {
-    "lstm": 0.3306374038527613,
-    "cnn": 0.3347655689287155,
-    "transformer": 0.3345970272185233
+    "lstm": 0.32809221349054396,
+    "cnn": 0.3359338660266092,
+    "transformer": 0.3359739204828469
   },
   "config": {
     "symbol_embedding_dim": 32,
-    "base_epochs": 50,
+    "base_epochs": 100,
     "finetune_epochs": 30
   },
-  "training_timestamp": "2025-09-08T16:01:44.366093"
+  "training_timestamp": "2025-09-16T18:46:03.808672"
 }

@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 class TestConfig:
     """Configuration for testing different threshold scenarios."""
     prediction_window: int = 30
-    take_profit_pct: float = 0.005
-    stop_loss_pct: float = 0.003
+    take_profit_pct: float = 0.00197  # 0.197% - standardized
+    stop_loss_pct: float = 0.00099    # 0.099% - standardized
 
 class ThresholdTester:
     """Tester class to compare different threshold configurations."""
@@ -162,8 +162,8 @@ async def test_threshold_comparison():
     
     new_config = TestConfig(
         prediction_window=30,
-        take_profit_pct=0.003,  # 0.3%
-        stop_loss_pct=0.002     # 0.2%
+        take_profit_pct=0.00197,  # 0.197% - standardized
+        stop_loss_pct=0.00099     # 0.099% - standardized
     )
     
     # Test both configurations

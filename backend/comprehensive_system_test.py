@@ -51,7 +51,7 @@ class UniversalSystemTester:
         start_time = time.time()
         try:
             dp = DataPipeline()
-            fe = FeatureEngineering(supabase_client=None)
+            fe = FeatureEngineering(data_pipeline=dp, supabase_client=None)
             trainer = UniversalTrainer(dp, fe)
             duration = time.time() - start_time
             self.log_test("Universal Trainer", "PASSED", 
