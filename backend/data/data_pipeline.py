@@ -69,13 +69,13 @@ class DataPipeline:
         self.trading_universe = [
             "NVDA",  # 416M daily volume, AI leader, perfect for neural networks
             "TSLA",  # 115M daily volume, high volatility, excellent predictable patterns
-            # "AAPL",  # 56M daily volume, tightest spreads, most cost-efficient
-            # "META",  # 45M daily volume, good volatility, responsive to technical analysis
-            # "AMD",  # 48M daily volume, semiconductor momentum, breakout specialist
+            "AAPL",  # 56M daily volume, tightest spreads, most cost-efficient
+            "META",  # 45M daily volume, good volatility, responsive to technical analysis
+            "AMD",  # 48M daily volume, semiconductor momentum, breakout specialist
             "PLTR",  # 85M daily volume, 2025's top performer (+107%), AI exposure
-            # "AMZN",  # 41M daily volume, second-best spread efficiency, reliable patterns
+            "AMZN",  # 41M daily volume, second-best spread efficiency, reliable patterns
             "GOOGL",  # 42M daily volume, stable tech patterns, good institutional flow
-            # "MSFT",  # 35M daily volume, excellent for range trading, conservative plays
+            "MSFT",  # 35M daily volume, excellent for range trading, conservative plays
             "QQQ"  # 39M daily volume, ETF diversification, market hedge
             # "SPY"  # 45M daily volume, tightest spreads, risk management
             # "SMCI",  # 40M daily volume, AI infrastructure, high dollar movements
