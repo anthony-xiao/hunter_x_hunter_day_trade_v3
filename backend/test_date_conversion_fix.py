@@ -26,7 +26,9 @@ async def test_date_conversion_fix():
     try:
         # Initialize components
         data_pipeline = DataPipeline()
-        feature_engineering = UniversalFeatureEngineering()
+        from database import db_manager
+        supabase_client = db_manager.get_supabase_client()
+        feature_engineering = UniversalFeatureEngineering(data_pipeline=data_pipeline, supabase_client=supabase_client)
         config = UniversalTrainingConfig()
         
         trainer = UniversalTrainer(

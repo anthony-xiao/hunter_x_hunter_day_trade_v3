@@ -111,7 +111,7 @@ class ModelTrainer:
                 },
                 training_window=18,  # 18 months
                 validation_window=6,  # 6 months
-                lookback_window=60,  # 60-minute lookback as per requirements
+                lookback_window=15,  # 60-minute lookback as per requirements
                 feature_count=feature_count,
                 learning_rate=0.001,
                 prediction_threshold=0.35
@@ -151,7 +151,7 @@ class ModelTrainer:
                 },
                 training_window=18,
                 validation_window=6,
-                lookback_window=60,  # As per requirements: 120-minute sequence
+                lookback_window=15,  # As per requirements: 120-minute sequence
                 feature_count=feature_count,
                 learning_rate=0.001,
                 prediction_threshold=0.3
@@ -2178,17 +2178,17 @@ class ModelTrainer:
             
             # Create universal training configuration
             universal_config = UniversalTrainingConfig(
-                base_epochs=50,
+                base_epochs=100,
                 # base_epochs=2,
-                base_batch_size=256,
+                base_batch_size=128,
                 # base_batch_size=64,
-                base_learning_rate=0.001,
+                base_learning_rate=0.0005,
                 base_validation_split=0.2,
                 finetune_epochs=30,
                 # finetune_epochs=2,
-                finetune_batch_size=128,
+                finetune_batch_size=64,
                 # finetune_batch_size=32,
-                finetune_learning_rate=0.0001,
+                finetune_learning_rate=0.0003,
                 layers_to_unfreeze=3,
                 ensemble_validation_periods=10,
                 # ensemble_validation_periods=3,

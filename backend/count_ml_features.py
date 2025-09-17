@@ -7,6 +7,7 @@ import asyncio
 import pandas as pd
 from datetime import datetime, timedelta
 from ml.ml_feature_engineering import FeatureEngineering
+from data_pipeline import DataPipeline
 from config import settings
 import logging
 
@@ -20,7 +21,8 @@ async def count_features():
         # Initialize feature engineering
         from database import db_manager
         supabase_client = db_manager.get_supabase_client()
-        feature_engineer = FeatureEngineering(supabase_client=supabase_client)
+        data_pipeline = DataPipeline()
+        feature_engineer = FeatureEngineering(data_pipeline=data_pipeline, supabase_client=supabase_client)
         
         # Use recent date range
         end_date = datetime.now()

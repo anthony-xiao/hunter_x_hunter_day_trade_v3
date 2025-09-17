@@ -40,7 +40,16 @@ class FeatureEngineering:
                 raise Exception("Supabase client not available")
         
         # Store data pipeline for SPY fallback functionality
-        self.data_pipeline = data_pipeline
+        # If no data_pipeline provided, try to get it from global sources
+        if data_pipeline:
+            self.data_pipeline = data_pipeline
+        else:
+            # Try to get data_pipeline from global sources as fallback
+            self.data_pipeline = self._get_fallback_data_pipeline()
+            if self.data_pipeline:
+                logger.info("Using fallback data_pipeline for FeatureEngineering")
+            else:
+                logger.warning("No data_pipeline available - cross-asset features will be limited")
         
         # Feature engineering parameters
         self.lookback_periods = [5, 10, 20, 50, 100, 200]
@@ -57,6 +66,25 @@ class FeatureEngineering:
         self.pca = PCA(n_components=0.95)  # Keep 95% variance
         
         logger.info("Feature Engineering initialized with Supabase client")
+    
+    def _get_fallback_data_pipeline(self):
+        """Try to get data_pipeline from global sources as fallback"""
+        try:
+            # First try to get from global registry
+            from data.data_pipeline_registry import get_data_pipeline
+            data_pipeline = get_data_pipeline()
+            if data_pipeline:
+                logger.info("Retrieved data_pipeline from global registry")
+                return data_pipeline
+            
+            # If registry doesn't have it, try to create a new instance
+            from data.data_pipeline import DataPipeline
+            new_pipeline = DataPipeline()
+            logger.info("Created new DataPipeline instance as fallback")
+            return new_pipeline
+        except Exception as e:
+            logger.debug(f"Could not create fallback DataPipeline: {e}")
+            return None
     
     def calculate_required_lookback(self) -> int:
         """
@@ -297,11 +325,11 @@ class FeatureEngineering:
                 
                 # Create minimal config for dual exit target generation
                 config = UniversalTrainingConfig(
-                    prediction_window=30,  # 15-minute prediction window
+                    prediction_window=15,  # 15-minute prediction window
                     # take_profit_pct=0.003,  # 0.3% take profit
-                    take_profit_pct= 0.00197,  # 0.197% take profit
+                    take_profit_pct= 0.0024,  # 0.24% take profit
                     # stop_loss_pct=0.002    # 0.2% stop loss
-                    stop_loss_pct= 0.00099    # 0.099% stop loss
+                    stop_loss_pct= 0.0012    # 0.12% stop loss
                 )
                 
                 # Create a minimal UniversalTrainer instance for target generation
@@ -678,19 +706,40 @@ class FeatureEngineering:
         try:
             features = pd.DataFrame(index=data.index)
             
+            # Try to get data_pipeline from instance or global registry
+            data_pipeline = self.data_pipeline
+            if data_pipeline is None:
+                try:
+                    from data.data_pipeline_registry import get_data_pipeline
+                    data_pipeline = get_data_pipeline()
+                    if data_pipeline:
+                        logger.info(f"Retrieved data_pipeline from global registry for cross-asset features for {symbol}")
+                        # Update instance for future use
+                        self.data_pipeline = data_pipeline
+                except Exception as e:
+                    logger.warning(f"Could not get data_pipeline from registry for {symbol}: {e}")
+            
+            # Check if data_pipeline is available
+            if data_pipeline is None:
+                logger.warning(f"Data pipeline not available for cross-asset features for {symbol}, skipping cross-asset feature engineering")
+                return features
+            
             # Ensure SPY data is available before attempting to get it
             start_date = data.index[0]
             end_date = data.index[-1]
             
             # Check and download SPY data if missing
-            await self.data_pipeline.ensure_spy_data_available(start_date, end_date)
+            await data_pipeline.ensure_spy_data_available(start_date, end_date)
             
             # Get SPY data for market correlation
             spy_data = await self._get_market_data('SPY', start_date, end_date)
             
             if spy_data is not None and len(spy_data) > 0:
-                # Align data
-                aligned_data = pd.concat([data['close'], spy_data['close']], axis=1, keys=[symbol, 'SPY'])
+                # Align data - create DataFrame with explicit unique column names
+                aligned_data = pd.DataFrame({
+                    symbol: data['close'],
+                    'SPY': spy_data['close']
+                })
                 aligned_data = aligned_data.ffill().dropna()
                 
                 if len(aligned_data) > 20:

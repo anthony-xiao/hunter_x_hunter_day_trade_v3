@@ -184,6 +184,7 @@ async def main():
         # Initialize data pipeline and feature engineer
         data_pipeline = DataPipeline()
         feature_engineer = FeatureEngineering(
+            data_pipeline=data_pipeline,
             supabase_client=db_manager.get_supabase_client()
         )
         

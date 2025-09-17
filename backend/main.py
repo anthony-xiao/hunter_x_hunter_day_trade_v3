@@ -119,6 +119,9 @@ async def initialize_trading_system():
         # Initialize data pipeline
         logger.info("Initializing data pipeline...")
         data_pipeline = DataPipeline()
+        # Register data pipeline globally for consistent access
+        from data.data_pipeline_registry import register_data_pipeline
+        register_data_pipeline(data_pipeline)
         # Database initialization will be done in background
         asyncio.create_task(data_pipeline.initialize_database())
         

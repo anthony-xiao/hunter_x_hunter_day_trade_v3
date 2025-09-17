@@ -37,7 +37,7 @@ class FeatureAnalyzer:
     def __init__(self):
         self.supabase = supabase
         self.data_pipeline = DataPipeline()
-        self.feature_engineer = FeatureEngineering()
+        self.feature_engineer = FeatureEngineering(data_pipeline=self.data_pipeline, supabase_client=self.supabase)
         self.analysis_results = {}
         
     async def analyze_features_comprehensive(self, symbol: str = "AAPL", 

@@ -35,7 +35,9 @@ async def test_signal_generation():
         
         # Initialize universal feature engineering
         from ml.universal_feature_engineering import UniversalFeatureEngineering
-        universal_feature_engineering = UniversalFeatureEngineering()
+        from database import db_manager
+        supabase_client = db_manager.get_supabase_client()
+        universal_feature_engineering = UniversalFeatureEngineering(data_pipeline=data_pipeline, supabase_client=supabase_client)
         universal_trainer = UniversalTrainer(data_pipeline, universal_feature_engineering)
         
         # Initialize signal generator

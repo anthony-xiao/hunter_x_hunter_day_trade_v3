@@ -67,17 +67,21 @@ class DataPipeline:
         
         # Trading universe
         self.trading_universe = [
-            'AAPL','TSLA','NVDA','COIN','META'
-            # Technology
-            # 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META',
-            # Biotechnology
-            # 'MRNA', 'GILD', 'BIIB', 'VRTX'
-            # Energy
-            # 'XOM', 'CVX', 'SLB', 'HAL',
-            # Crypto-Related
-            # 'MARA', 'COIN', 'RIOT'
-            # Consumer Discretionary
-            # 'AMZN', 'NFLX', 'DIS'
+            "NVDA",  # 416M daily volume, AI leader, perfect for neural networks
+            "TSLA",  # 115M daily volume, high volatility, excellent predictable patterns
+            # "AAPL",  # 56M daily volume, tightest spreads, most cost-efficient
+            # "META",  # 45M daily volume, good volatility, responsive to technical analysis
+            # "AMD",  # 48M daily volume, semiconductor momentum, breakout specialist
+            "PLTR",  # 85M daily volume, 2025's top performer (+107%), AI exposure
+            # "AMZN",  # 41M daily volume, second-best spread efficiency, reliable patterns
+            "GOOGL",  # 42M daily volume, stable tech patterns, good institutional flow
+            # "MSFT",  # 35M daily volume, excellent for range trading, conservative plays
+            "QQQ"  # 39M daily volume, ETF diversification, market hedge
+            # "SPY"  # 45M daily volume, tightest spreads, risk management
+            # "SMCI",  # 40M daily volume, AI infrastructure, high dollar movements
+            # "NFLX",  # 12M daily volume, pattern trading specialist
+            # "COIN",  # 25M daily volume, crypto exposure (reduced position size)
+            # "MARA"  # 46M daily volume, extreme volatility plays (reduced position size)
         ]
     
     def get_ticker_universe(self) -> List[str]:
