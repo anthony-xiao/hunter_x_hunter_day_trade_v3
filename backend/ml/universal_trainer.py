@@ -77,11 +77,11 @@ class ModelPerformance:
 class UniversalTrainingConfig:
     """Configuration for universal training phases"""
     # Phase 1: Universal Base Model
-    base_epochs: int = 100
-    base_batch_size: int = 128
-    base_learning_rate: float = 0.001
-    base_validation_split: float = 0.2
-    base_lookback_window: int = 15
+    base_epochs=150,  # Increase from 100
+    base_batch_size=64,  # Reduce from 128 for better gradients
+    base_learning_rate=0.0003,  # Reduce from 0.001
+    base_validation_split=0.15,  # Reduce from 0.2
+    base_lookback_window=30,  # Increase from 15
     
     # Phase 2: Symbol-Specific Fine-tuning
     finetune_epochs: int = 50
@@ -95,10 +95,8 @@ class UniversalTrainingConfig:
     
     # Dual Exit Target Configuration
     prediction_window: int = 15  # Maximum prediction window in minutes (periods)
-    # take_profit_pct: float = 0.003  # Take profit threshold (0.3%)
-    # stop_loss_pct: float = 0.002   # Stop loss threshold (0.2%)
-    take_profit_pct: float = 0.0024  # Take profit threshold (0.24%)
-    stop_loss_pct: float =  0.0012   # Stop loss threshold (0.12%)
+    take_profit_pct: float = 0.003,  # Increase from 0.0024
+    stop_loss_pct: float = 0.001,  # Reduce from 0.0012
     
     # Class Imbalance Mitigation Configuration
     enable_imbalance_mitigation: bool = True
@@ -106,8 +104,8 @@ class UniversalTrainingConfig:
     
     # General settings
     symbol_embedding_dim: int = 32
-    early_stopping_patience: int = 10
-    reduce_lr_patience: int = 2  # Reduced from 5 to 2 for more responsive LR scheduling
+    early_stopping_patience: int = 20,  # Increase from 10
+    reduce_lr_patience: int = 5 
     min_samples_per_symbol: int = 1000
     max_symbols_per_batch: int = 50
 
