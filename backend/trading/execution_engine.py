@@ -190,10 +190,8 @@ class ExecutionEngine:
         self.confidence_multiplier = 2.0   # Confidence scaling factor
         
         # Stop loss and take profit
-        # self.default_stop_loss = 0.002     # 0.2% stop loss
-        # self.default_take_profit = 0.003   # 0.3% take profit
-        self.default_stop_loss =  0.0012     # 0.12% stop loss
-        self.default_take_profit = 0.0024   # 0.24% take profit
+        self.default_take_profit = 0.003   # 0.3% take profit
+        self.default_stop_loss =  0.001     # 0.1% stop loss
         # Removed trailing_stop_distance - only using bracket orders
         
         # Market data cache
