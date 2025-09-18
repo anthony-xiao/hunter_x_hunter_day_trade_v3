@@ -211,17 +211,68 @@ class SignalGenerator:
         self._load_model_configurations()
     
     def _load_optimized_ensemble_weights(self) -> None:
-        """Load optimized ensemble weights from shared configuration"""
+        """Load optimized ensemble weights from universal training metadata or shared configuration"""
         try:
-            # Load optimized weights from ensemble configuration
-            optimized_weights = self.ensemble_config.load_optimized_weights()
+            # First try to load weights from universal training metadata
+            universal_metadata_path = "/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal/universal_metadata.json"
+            optimized_weights = None
+            weights_source = None
+            training_timestamp = None
+            
+            logger.info("Loading ensemble weights...")
+            
+            if os.path.exists(universal_metadata_path):
+                try:
+                    logger.info("Attempting to load from universal training metadata...")
+                    with open(universal_metadata_path, 'r') as f:
+                        universal_data = json.load(f)
+                    
+                    if 'ensemble_weights' in universal_data:
+                        optimized_weights = universal_data['ensemble_weights']
+                        weights_source = "universal training metadata"
+                        training_timestamp = universal_data.get('training_timestamp', 'unknown')
+                        
+                        # Log detailed universal weights information
+                        logger.info("✓ Successfully loaded ensemble weights from universal training metadata")
+                        logger.info("📊 Universal ensemble weights:")
+                        for model_name, weight in optimized_weights.items():
+                            percentage = weight * 100
+                            logger.info(f"  - {model_name.upper()}: {percentage:.2f}% ({weight:.4f})")
+                        logger.info(f"🕐 Universal weights generated on: {training_timestamp}")
+                        
+                except Exception as e:
+                    logger.warning(f"Error reading universal metadata: {e}")
+            
+            # Fallback to ensemble configuration if universal weights not available
+            if optimized_weights is None:
+                logger.info("Universal weights not available, loading from ensemble configuration...")
+                optimized_weights = self.ensemble_config.load_optimized_weights()
+                weights_source = "ensemble configuration"
+                
+                # Log detailed ensemble config weights information
+                logger.info("✓ Successfully loaded ensemble weights from ensemble configuration")
+                logger.info("📊 Ensemble config weights:")
+                for model_name, weight in optimized_weights.items():
+                    percentage = weight * 100
+                    logger.info(f"  - {model_name.upper()}: {percentage:.2f}% ({weight:.4f})")
+                
+                # Get metadata about the optimization
+                metadata = self.ensemble_config.get_ensemble_metadata()
+                if metadata:
+                    optimization_timestamp = metadata.get('optimization_timestamp', 'unknown')
+                    sharpe_ratio = metadata.get('sharpe_ratio', 'unknown')
+                    logger.info(f"🕐 Ensemble optimization from: {optimization_timestamp}")
+                    logger.info(f"📈 Sharpe ratio: {sharpe_ratio}")
             
             # Convert string keys to ModelType enum for internal use
             # Filter out unsupported model types (random_forest, xgboost)
             supported_models = {'lstm', 'cnn', 'transformer'}
             converted_weights = {}
+            filtered_models = []
+            
             for model_name, weight in optimized_weights.items():
                 if model_name.lower() not in supported_models:
+                    filtered_models.append(model_name)
                     continue  # Skip unsupported models silently
                 try:
                     model_type = ModelType(model_name)
@@ -230,26 +281,27 @@ class SignalGenerator:
                     logger.warning(f"Unknown model type: {model_name}")
                     continue
             
+            if filtered_models:
+                logger.info(f"ℹ️  Filtered out unsupported models: {', '.join(filtered_models)}")
+            
             # Set default weights for all symbols (will be used until symbol-specific weights are available)
             self.default_ensemble_weights = converted_weights
             
-            logger.info(f"Loaded optimized ensemble weights: {optimized_weights}")
-            
-            # Get metadata about the optimization
-            metadata = self.ensemble_config.get_ensemble_metadata()
-            if metadata:
-                logger.info(f"Ensemble optimization from: {metadata.get('optimization_timestamp', 'unknown')}")
-                logger.info(f"Sharpe ratio: {metadata.get('sharpe_ratio', 'unknown')}")
+            logger.info(f"✅ Ensemble weights loaded successfully from {weights_source}")
                 
         except Exception as e:
-            logger.error(f"Error loading optimized ensemble weights: {e}")
+            logger.error(f"❌ Error loading optimized ensemble weights: {e}")
             # Fallback to default equal weights
             self.default_ensemble_weights = {
                 ModelType.LSTM: 0.33,
                 ModelType.CNN: 0.33,
                 ModelType.TRANSFORMER: 0.34
             }
-            logger.info("Using default equal ensemble weights as fallback")
+            logger.info("⚠️  Using default equal ensemble weights as fallback:")
+            logger.info("📊 Default ensemble weights:")
+            for model_type, weight in self.default_ensemble_weights.items():
+                percentage = weight * 100
+                logger.info(f"  - {model_type.value.upper()}: {percentage:.2f}% ({weight:.4f})")
     
     def refresh_ensemble_weights(self) -> bool:
         """Refresh ensemble weights from latest optimization results"""
@@ -520,7 +572,7 @@ class SignalGenerator:
             feature_count = 150
             
         model = tf.keras.Sequential([
-            tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(15, feature_count)),
+            tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(30, feature_count)),
             tf.keras.layers.Dropout(0.2),
             tf.keras.layers.LSTM(64, return_sequences=True),
             tf.keras.layers.Dropout(0.2),
@@ -545,9 +597,9 @@ class SignalGenerator:
             feature_count = 150
             
         # Create 1D CNN architecture that works better with time series data
-        # Input shape: (time_steps, features) = (60, 153)
+        # Input shape: (time_steps, features) = (30, 299)
         model = tf.keras.Sequential([
-            tf.keras.layers.Conv1D(32, 3, activation='relu', input_shape=(15, feature_count)),
+            tf.keras.layers.Conv1D(32, 3, activation='relu', input_shape=(30, feature_count)),
             tf.keras.layers.MaxPooling1D(2),
             tf.keras.layers.Conv1D(64, 3, activation='relu'),
             tf.keras.layers.MaxPooling1D(2),
@@ -572,7 +624,7 @@ class SignalGenerator:
             feature_count = 150
             
         # Create the same architecture as in model_trainer.py for consistency
-        input_layer = tf.keras.layers.Input(shape=(15, feature_count), name='input_layer')
+        input_layer = tf.keras.layers.Input(shape=(30, feature_count), name='input_layer')
         
         # Multi-head attention (2 heads, key_dim=32 to match model_trainer.py)
         attention = tf.keras.layers.MultiHeadAttention(
@@ -876,9 +928,9 @@ class SignalGenerator:
                 logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} input features shape: {features.shape}")
                 
                 # Expected dimensions from model architecture
-                # Updated to 574 features to match training dimensions
+                # Updated to match actual model training dimensions (30, 299)
                 expected_sequence_length = 30
-                expected_feature_dim = 574
+                expected_feature_dim = 299
                 
                 if len(features.shape) == 2:
                     # Features are in (time_steps, features) format
@@ -948,11 +1000,11 @@ class SignalGenerator:
                 
                 time_steps = features.shape[0]
                 
-                # CNN model now uses all available features (153) with dynamic input shape
+                # CNN model now uses all available features (299) with dynamic input shape
                 # CNN architecture: Conv2D(32,(3,3)) -> MaxPool(2,2) -> Conv2D(64,(3,3)) -> MaxPool(2,2) -> Flatten()
                 # 
                 # Input dimensions are dynamically determined from actual feature count
-                # Input: (15, actual_feature_count, 1)
+                # Input: (30, actual_feature_count, 1)
                 # Dense layer input size is calculated based on actual feature dimensions
                 # after convolution and pooling operations
                 #
@@ -2491,30 +2543,30 @@ class SignalGenerator:
             
             logger.info(f"[{symbol}] Created feature sequence with shape: {feature_input.shape}")
             
-            # Verify the shape is correct for universal models (262 features to match training)
-            expected_shape = (1, 15, 262)
+            # Verify the shape is correct for universal models (299 features to match training)
+            expected_shape = (1, 30, 299)
             if feature_input.shape != expected_shape:
                 logger.error(f"[{symbol}] Feature input shape {feature_input.shape} does not match expected {expected_shape}")
-                logger.error(f"[{symbol}] Shape mismatch: got sequence_length={feature_input.shape[1]}, expected=15; got features={feature_input.shape[2]}, expected=262")
+                logger.error(f"[{symbol}] Shape mismatch: got sequence_length={feature_input.shape[1]}, expected=30; got features={feature_input.shape[2]}, expected=299")
                 # Try to handle the mismatch gracefully
-                if feature_input.shape[1] != 15 or feature_input.shape[2] != 262:
+                if feature_input.shape[1] != 30 or feature_input.shape[2] != 299:
                     logger.warning(f"[{symbol}] Attempting to reshape features to match expected dimensions")
                     try:
-                        # Pad or truncate sequence length to 15
-                        if feature_input.shape[1] < 15:
-                            padding_needed = 15 - feature_input.shape[1]
+                        # Pad or truncate sequence length to 30
+                        if feature_input.shape[1] < 30:
+                            padding_needed = 30 - feature_input.shape[1]
                             padding = np.zeros((1, padding_needed, feature_input.shape[2]))
                             feature_input = np.concatenate([padding, feature_input], axis=1)
-                        elif feature_input.shape[1] > 15:
-                            feature_input = feature_input[:, -15:, :]
+                        elif feature_input.shape[1] > 30:
+                            feature_input = feature_input[:, -30:, :]
                         
-                        # Pad or truncate feature dimension to 262
-                        if feature_input.shape[2] < 262:
-                            padding_needed = 262 - feature_input.shape[2]
-                            padding = np.zeros((1, 15, padding_needed))
+                        # Pad or truncate feature dimension to 299
+                        if feature_input.shape[2] < 299:
+                            padding_needed = 299 - feature_input.shape[2]
+                            padding = np.zeros((1, 30, padding_needed))
                             feature_input = np.concatenate([feature_input, padding], axis=2)
-                        elif feature_input.shape[2] > 262:
-                            feature_input = feature_input[:, :, :262]
+                        elif feature_input.shape[2] > 299:
+                            feature_input = feature_input[:, :, :299]
                         
                         logger.info(f"[{symbol}] Reshaped feature input to: {feature_input.shape}")
                     except Exception as reshape_error:
