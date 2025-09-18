@@ -165,10 +165,10 @@ class UniversalTrainer:
                 model_type='neural_network',
                 parameters={
                     'units': [64, 32, 16],  # Reduced from [128, 64, 32] for less overfitting
-                    'dropout': 0.3,  # Increased from 0.2 for better regularization
-                    'epochs': 1,  # 100 Keep same but with reduced early stopping patience
-                    'batch_size': 128,  # Reduced from 256 for better gradient updates
-                    'learning_rate': 0.0005,  # Reduced from 0.001 for stability
+                    'dropout': 0.4,  # Increased from 0.2 for better regularization
+                    'epochs': 100,  # 100 Keep same but with reduced early stopping patience
+                    'batch_size': 64,  # Reduced from 256 for better gradient updates
+                    'learning_rate': 0.0003,  # Reduced from 0.001 for stability
                     'optimizer': 'adam',
                     'loss': 'binary_crossentropy'
                 },
@@ -177,7 +177,7 @@ class UniversalTrainer:
                 lookback_window=30,  # Reduced from 60 minutes for noise reduction
                 feature_count=None,
                 learning_rate=0.0005,
-                prediction_threshold=0.45  # Increased from 0.35 for better signal quality
+                prediction_threshold=0.55  # Reduce from 0.45
             ),
             'cnn': ModelConfig(
                 name='cnn',
@@ -187,7 +187,7 @@ class UniversalTrainer:
                     'kernel_size': (3, 3),
                     'dropout': 0.4,  # Increased from 0.3 for better noise reduction
                     'l2_reg': 0.01,  # Keep same L2 regularization
-                    'epochs': 1,  # 80 Keep same but with reduced early stopping patience
+                    'epochs': 80,  # 80 Keep same but with reduced early stopping patience
                     'batch_size': 64,  # Reduced from 128 for better gradient updates
                     'learning_rate': 0.0003,  # Reduced from 0.0005 for stability
                     'optimizer': 'rmsprop'
@@ -197,7 +197,7 @@ class UniversalTrainer:
                 lookback_window=30,  # Uniform 15 minutes (was 30)
                 feature_count=None,
                 learning_rate=0.0003,
-                prediction_threshold=0.45  # Increased from 0.35 for better signal quality
+                prediction_threshold=0.55  # Reduce from 0.45
             ),
             'transformer': ModelConfig(
                 name='transformer',
@@ -206,7 +206,7 @@ class UniversalTrainer:
                     'num_heads': 4,  # Increased from 2 for better attention
                     'num_layers': 3,  # Increased from 2 for more complexity
                     'dropout': 0.7,   # Critical: Very high dropout
-                    'epochs': 1,  #  40Keep same but with reduced early stopping patience
+                    'epochs': 40,  #  40 Keep same but with reduced early stopping patience
                     'batch_size': 8,  # Increased from 4 for better training stability
                     'learning_rate': 0.0001,     # Much lower learning rate  
                     'warmup_steps': 100
@@ -216,7 +216,7 @@ class UniversalTrainer:
                 lookback_window=30,  # Uniform 15 minutes (was 60)
                 feature_count=None,
                 learning_rate=0.0003,
-                prediction_threshold=0.7  # Increased from 0.3 for better signal quality
+                prediction_threshold=0.60  # Reduce from 0.7
             )
         }
 
