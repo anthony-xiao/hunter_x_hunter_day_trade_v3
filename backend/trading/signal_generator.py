@@ -278,10 +278,10 @@ class SignalGenerator:
         
         # Signal generation parameters - Enhanced with lower thresholds
         self.signal_thresholds = {
-            'buy_threshold': 0.6,           # Increased from 0.4
-            'sell_threshold': 0.45,         # More conservative
-            'strong_buy_threshold': 0.75,    # Increased from 0.6
-            'strong_sell_threshold': 0.25   # More conservative
+            'buy_threshold': 0.55,         # Reduce from 0.6
+            'sell_threshold': 0.45,        # Keep same
+            'strong_buy_threshold': 0.65,  # Reduce from 0.75
+            'strong_sell_threshold': 0.35 # Increase from 0.25
         }
                 
         # Market-based sell signal parameters
