@@ -77,11 +77,11 @@ class ModelPerformance:
 class UniversalTrainingConfig:
     """Configuration for universal training phases"""
     # Phase 1: Universal Base Model
-    base_epochs=150,  # Increase from 100
-    base_batch_size=64,  # Reduce from 128 for better gradients
-    base_learning_rate=0.0003,  # Reduce from 0.001
-    base_validation_split=0.15,  # Reduce from 0.2
-    base_lookback_window=30,  # Increase from 15
+    base_epochs: int = 150  # Increase from 100
+    base_batch_size: int = 64  # Reduce from 128 for better gradients
+    base_learning_rate: float = 0.0003  # Reduce from 0.001
+    base_validation_split: float = 0.15  # Reduce from 0.2
+    base_lookback_window: int = 30  # Increase from 15
     
     # Phase 2: Symbol-Specific Fine-tuning
     finetune_epochs: int = 50
@@ -95,8 +95,8 @@ class UniversalTrainingConfig:
     
     # Dual Exit Target Configuration
     prediction_window: int = 15  # Maximum prediction window in minutes (periods)
-    take_profit_pct: float = 0.003,  # Increase from 0.0024
-    stop_loss_pct: float = 0.001,  # Reduce from 0.0012
+    take_profit_pct: float = 0.003  # Increase from 0.0024
+    stop_loss_pct: float = 0.001  # Reduce from 0.0012
     
     # Class Imbalance Mitigation Configuration
     enable_imbalance_mitigation: bool = True
@@ -104,8 +104,8 @@ class UniversalTrainingConfig:
     
     # General settings
     symbol_embedding_dim: int = 32
-    early_stopping_patience: int = 20,  # Increase from 10
-    reduce_lr_patience: int = 5 
+    early_stopping_patience: int = 20  # Increase from 10
+    reduce_lr_patience: int = 5
     min_samples_per_symbol: int = 1000
     max_symbols_per_batch: int = 50
 
@@ -159,40 +159,6 @@ class UniversalTrainer:
         self.training_history = []
         self.imbalance_metrics = []
         
-        # Default model configurations (feature_count will be updated dynamically)
-        # self.model_configs = {
-        #     'lstm': ModelConfig(
-        #         name='universal_lstm',
-        #         model_type='lstm',
-        #         parameters={'units': 32, 'dropout': 0.35},
-        #         training_window=252,
-        #         validation_window=63,
-        #         lookback_window=15,
-        #         feature_count=None,  # Will be set dynamically
-        #         learning_rate=0.0003
-        #     ),
-        #     'cnn': ModelConfig(
-        #         name='universal_cnn',
-        #         model_type='cnn',
-        #         parameters={'filters': 32, 'kernel_size': 3},
-        #         training_window=252,
-        #         validation_window=63,
-        #         lookback_window=15,
-        #         feature_count=None,  # Will be set dynamically
-        #         learning_rate=0.0005
-        #     ),
-        #     'transformer': ModelConfig(
-        #         name='universal_transformer',
-        #         model_type='transformer',
-        #         parameters={'num_heads': 6, 'd_model': 48},
-        #         training_window=252,
-        #         validation_window=63,
-        #         lookback_window=15,
-        #         feature_count=None,  # Will be set dynamically
-        #         learning_rate=0.0003
-        #     )
-        # }
-        
         self.model_configs = {
             'lstm': ModelConfig(
                 name='lstm',
@@ -200,7 +166,7 @@ class UniversalTrainer:
                 parameters={
                     'units': [64, 32, 16],  # Reduced from [128, 64, 32] for less overfitting
                     'dropout': 0.3,  # Increased from 0.2 for better regularization
-                    'epochs': 100,  # Keep same but with reduced early stopping patience
+                    'epochs': 1,  # 100 Keep same but with reduced early stopping patience
                     'batch_size': 128,  # Reduced from 256 for better gradient updates
                     'learning_rate': 0.0005,  # Reduced from 0.001 for stability
                     'optimizer': 'adam',
@@ -208,7 +174,7 @@ class UniversalTrainer:
                 },
                 training_window=12,  # Reduced from 18 months for faster adaptation
                 validation_window=3,  # Reduced from 6 months for current market relevance
-                lookback_window=15,  # Reduced from 60 minutes for noise reduction
+                lookback_window=30,  # Reduced from 60 minutes for noise reduction
                 feature_count=None,
                 learning_rate=0.0005,
                 prediction_threshold=0.45  # Increased from 0.35 for better signal quality
@@ -221,14 +187,14 @@ class UniversalTrainer:
                     'kernel_size': (3, 3),
                     'dropout': 0.4,  # Increased from 0.3 for better noise reduction
                     'l2_reg': 0.01,  # Keep same L2 regularization
-                    'epochs': 80,  # Keep same but with reduced early stopping patience
+                    'epochs': 1,  # 80 Keep same but with reduced early stopping patience
                     'batch_size': 64,  # Reduced from 128 for better gradient updates
                     'learning_rate': 0.0003,  # Reduced from 0.0005 for stability
                     'optimizer': 'rmsprop'
                 },
                 training_window=12,  # Reduced from 18 months
                 validation_window=3,  # Reduced from 6 months
-                lookback_window=15,  # Uniform 15 minutes (was 30)
+                lookback_window=30,  # Uniform 15 minutes (was 30)
                 feature_count=None,
                 learning_rate=0.0003,
                 prediction_threshold=0.45  # Increased from 0.35 for better signal quality
@@ -240,14 +206,14 @@ class UniversalTrainer:
                     'num_heads': 4,  # Increased from 2 for better attention
                     'num_layers': 3,  # Increased from 2 for more complexity
                     'dropout': 0.7,   # Critical: Very high dropout
-                    'epochs': 40,  # Keep same but with reduced early stopping patience
+                    'epochs': 1,  #  40Keep same but with reduced early stopping patience
                     'batch_size': 8,  # Increased from 4 for better training stability
                     'learning_rate': 0.0001,     # Much lower learning rate  
                     'warmup_steps': 100
                 },
                 training_window=12,  # Reduced from 18 months
                 validation_window=3,  # Reduced from 6 months
-                lookback_window=15,  # Uniform 15 minutes (was 60)
+                lookback_window=30,  # Uniform 15 minutes (was 60)
                 feature_count=None,
                 learning_rate=0.0003,
                 prediction_threshold=0.7  # Increased from 0.3 for better signal quality
@@ -1625,12 +1591,28 @@ class UniversalTrainer:
         # Collect predictions from all models
         model_predictions = {}
         
-        for model_type in self.symbol_models.keys():
+        # Check if phase2 was skipped (symbol_models is empty)
+        if not self.symbol_models:
+            logger.info("Phase2 was skipped, using base models for ensemble optimization")
+            models_to_use = self.base_models
+            use_base_models = True
+        else:
+            logger.info("Using symbol-specific models from phase2")
+            models_to_use = self.symbol_models
+            use_base_models = False
+        
+        for model_type in models_to_use.keys():
             model_predictions[model_type] = {}
             
             for symbol in symbols:
-                if symbol not in self.symbol_models[model_type]:
-                    continue
+                if use_base_models:
+                    # For base models, we use the same model for all symbols
+                    model = models_to_use[model_type]
+                else:
+                    # For symbol-specific models, check if symbol exists
+                    if symbol not in models_to_use[model_type]:
+                        continue
+                    model = models_to_use[model_type][symbol]
                 
                 try:
                     # Load validation data
@@ -1700,8 +1682,6 @@ class UniversalTrainer:
                     logger.info(f"Created {len(X_sequences)} sequences for {symbol} with shape {X_sequences.shape}")
                     
                     X = [X_sequences, X_symbols_seq]
-                    
-                    model = self.symbol_models[model_type][symbol]
                     
                     # === COMPREHENSIVE DEBUGGING FOR IDENTICAL ACCURACY INVESTIGATION ===
                     logger.info(f"\n=== DEBUGGING {model_type.upper()}-{symbol} MODEL ===")
@@ -1928,13 +1908,9 @@ class UniversalTrainer:
                 model_types=model_types
             )
             
-            # Phase 2: Symbol-specific fine-tuning
-            phase2_results = await self.phase2_symbol_specific_finetuning(
-                symbols=symbols,
-                start_date=start_date,
-                end_date=end_date,
-                model_types=list(phase1_results.keys())
-            )
+            # Phase 2: Symbol-specific fine-tuning (DISABLED)
+            # Skipping phase2_symbol_specific_finetuning to eliminate dependency
+            phase2_results = {}
             
             # Phase 3: Ensemble optimization
             # Use 5-day validation period for day trading (optimal for capturing recent patterns)
@@ -1964,12 +1940,12 @@ class UniversalTrainer:
                 'ensemble_weights': ensemble_weights,
                 'model_summary': {
                     'base_models': list(self.base_models.keys()),
-                    'symbol_models': {model: list(symbols.keys()) for model, symbols in self.symbol_models.items()},
-                    'total_models': len(self.base_models) + sum(len(symbols) for symbols in self.symbol_models.values())
+                    'symbol_models': {model: list(symbols.keys()) for model, symbols in self.symbol_models.items()} if self.symbol_models else {},
+                    'total_models': len(self.base_models) + (sum(len(symbols) for symbols in self.symbol_models.values()) if self.symbol_models else 0)
                 },
                 'performance_summary': {
                     'avg_base_accuracy': np.mean([r.validation_accuracy for r in phase1_results.values()]) if phase1_results else 0.0,
-                    'avg_symbol_accuracy': np.mean([r.validation_accuracy for r in phase2_results.values()]) if phase2_results else 0.0,
+                    'avg_symbol_accuracy': 0.0,  # Phase 2 disabled
                     'best_model': max(ensemble_weights.items(), key=lambda x: x[1])[0] if ensemble_weights else 'none'
                 }
             }
@@ -2044,61 +2020,64 @@ class UniversalTrainer:
                 logger.error(f"✗ Failed to save base {model_type} model: {e}")
                 raise
         
-        # Save symbol-specific models
+        # Save symbol-specific models (if any exist)
         symbol_dir = save_dir / "symbol_models"
         symbol_dir.mkdir(exist_ok=True)
         
-        for model_type, symbol_models in self.symbol_models.items():
-            type_dir = symbol_dir / model_type
-            type_dir.mkdir(exist_ok=True)
-            
-            for symbol, model in symbol_models.items():
-                logger.info(f"Saving {model_type} model for symbol {symbol}...")
+        if self.symbol_models:
+            for model_type, symbol_models in self.symbol_models.items():
+                type_dir = symbol_dir / model_type
+                type_dir.mkdir(exist_ok=True)
                 
-                # Validate model architecture before saving
-                try:
-                    logger.info(f"Symbol {symbol} {model_type} - Architecture validation:")
-                    logger.info(f"  - Model name: {model.name}")
-                    logger.info(f"  - Total parameters: {model.count_params():,}")
-                    logger.info(f"  - Input shape: {model.input_shape if hasattr(model, 'input_shape') else 'Multiple inputs'}")
-                    logger.info(f"  - Output shape: {model.output_shape if hasattr(model, 'output_shape') else 'Multiple outputs'}")
-                    logger.info(f"  - Number of layers: {len(model.layers)}")
+                for symbol, model in symbol_models.items():
+                    logger.info(f"Saving {model_type} model for symbol {symbol}...")
                     
-                    # Test model connectivity with dummy prediction
+                    # Validate model architecture before saving
                     try:
-                        if hasattr(model, 'input_shape') and model.input_shape:
-                            # Handle single input models
-                            if isinstance(model.input_shape, tuple):
-                                dummy_input = np.random.random((1,) + model.input_shape[1:])
-                                dummy_output = model.predict(dummy_input, verbose=0)
-                                logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
-                            # Handle multiple input models
-                            elif isinstance(model.input_shape, list):
-                                dummy_inputs = []
-                                for input_shape in model.input_shape:
-                                    if input_shape is not None:
-                                        dummy_inputs.append(np.random.random((1,) + input_shape[1:]))
-                                dummy_output = model.predict(dummy_inputs, verbose=0)
-                                logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
-                            else:
-                                logger.info(f"  - Connectivity test: SKIPPED (unknown input shape format)")
-                        else:
-                            logger.info(f"  - Connectivity test: SKIPPED (no input shape)")
-                    except Exception as connectivity_error:
-                        logger.error(f"  - Connectivity test: FAILED ({connectivity_error})")
+                        logger.info(f"Symbol {symbol} {model_type} - Architecture validation:")
+                        logger.info(f"  - Model name: {model.name}")
+                        logger.info(f"  - Total parameters: {model.count_params():,}")
+                        logger.info(f"  - Input shape: {model.input_shape if hasattr(model, 'input_shape') else 'Multiple inputs'}")
+                        logger.info(f"  - Output shape: {model.output_shape if hasattr(model, 'output_shape') else 'Multiple outputs'}")
+                        logger.info(f"  - Number of layers: {len(model.layers)}")
                         
-                except Exception as e:
-                    logger.error(f"Symbol {symbol} {model_type} - Architecture validation FAILED: {e}")
-                    logger.error(f"  - This model may be corrupted and could cause loading issues")
-                    
-                # Save the model with detailed error logging
-                try:
-                    model_path = type_dir / f"{symbol}.h5"
-                    model.save(model_path)
-                    logger.info(f"✓ Successfully saved {model_type} model for {symbol} to {model_path}")
-                except Exception as e:
-                    logger.error(f"✗ Failed to save {model_type} model for {symbol}: {e}")
-                    raise
+                        # Test model connectivity with dummy prediction
+                        try:
+                            if hasattr(model, 'input_shape') and model.input_shape:
+                                # Handle single input models
+                                if isinstance(model.input_shape, tuple):
+                                    dummy_input = np.random.random((1,) + model.input_shape[1:])
+                                    dummy_output = model.predict(dummy_input, verbose=0)
+                                    logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
+                                # Handle multiple input models
+                                elif isinstance(model.input_shape, list):
+                                    dummy_inputs = []
+                                    for input_shape in model.input_shape:
+                                        if input_shape is not None:
+                                            dummy_inputs.append(np.random.random((1,) + input_shape[1:]))
+                                    dummy_output = model.predict(dummy_inputs, verbose=0)
+                                    logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
+                                else:
+                                    logger.info(f"  - Connectivity test: SKIPPED (unknown input shape format)")
+                            else:
+                                logger.info(f"  - Connectivity test: SKIPPED (no input shape)")
+                        except Exception as connectivity_error:
+                            logger.error(f"  - Connectivity test: FAILED ({connectivity_error})")
+                            
+                    except Exception as e:
+                        logger.error(f"Symbol {symbol} {model_type} - Architecture validation FAILED: {e}")
+                        logger.error(f"  - This model may be corrupted and could cause loading issues")
+                        
+                    # Save the model with detailed error logging
+                    try:
+                        model_path = type_dir / f"{symbol}.h5"
+                        model.save(model_path)
+                        logger.info(f"✓ Successfully saved {model_type} model for {symbol} to {model_path}")
+                    except Exception as e:
+                        logger.error(f"✗ Failed to save {model_type} model for {symbol}: {e}")
+                        raise
+        else:
+            logger.info("No symbol-specific models to save (Phase 2 was skipped)")
         
         # Save metadata
         metadata = {

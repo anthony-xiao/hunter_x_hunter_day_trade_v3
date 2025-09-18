@@ -2,28 +2,22 @@
   "symbol_mappings": {
     "symbol_to_id": {
       "NVDA": 0,
-      "TSLA": 1,
-      "PLTR": 2,
-      "GOOGL": 3,
-      "QQQ": 4
+      "TSLA": 1
     },
     "id_to_symbol": {
       "0": "NVDA",
-      "1": "TSLA",
-      "2": "PLTR",
-      "3": "GOOGL",
-      "4": "QQQ"
+      "1": "TSLA"
     }
   },
   "ensemble_weights": {
-    "lstm": 0.32809221349054396,
-    "cnn": 0.3359338660266092,
-    "transformer": 0.3359739204828469
+    "lstm": 0.09494770930307192,
+    "cnn": 0.40160309894386853,
+    "transformer": 0.5034491917530596
   },
   "config": {
     "symbol_embedding_dim": 32,
     "base_epochs": 100,
     "finetune_epochs": 30
   },
-  "training_timestamp": "2025-09-16T18:46:03.808672"
+  "training_timestamp": "2025-09-18T14:51:51.135815"
 }
