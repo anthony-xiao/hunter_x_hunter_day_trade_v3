@@ -877,7 +877,7 @@ class SignalGenerator:
                 
                 # Expected dimensions from model architecture
                 # Updated to 574 features to match training dimensions
-                expected_sequence_length = 15
+                expected_sequence_length = 30
                 expected_feature_dim = 574
                 
                 if len(features.shape) == 2:
@@ -957,7 +957,7 @@ class SignalGenerator:
                 # after convolution and pooling operations
                 #
                 # Use actual feature dimensions from data (no hardcoded filtering)
-                required_height = 15   # Match actual training lookback_window
+                required_height = 30   # Match actual training lookback_window
                 required_width = actual_feature_count   # Use actual feature count from data
                 
                 if len(features.shape) == 2:
@@ -2447,13 +2447,13 @@ class SignalGenerator:
             
             logger.info(f"[{symbol}] Final feature shape: {symbol_df.shape}")
             
-            # Return the last 15 rows of features for sequence creation (or all available if less than 15)
+            # Return the last 30 rows of features for sequence creation (or all available if less than 15)
             if len(symbol_df) > 0:
-                lookback_window = 15
+                lookback_window = 30
                 if len(symbol_df) >= lookback_window:
                     return symbol_df.iloc[-lookback_window:].values
                 else:
-                    # If we have less than 15 rows, pad with the first row repeated
+                    # If we have less than 30 rows, pad with the first row repeated
                     available_data = symbol_df.values
                     padding_needed = lookback_window - len(available_data)
                     if padding_needed > 0:
