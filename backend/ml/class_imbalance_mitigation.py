@@ -10,6 +10,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
 from sklearn.utils.class_weight import compute_class_weight
+from .temporal_aggregator import TemporalAggregator, AggregationConfig
 
 @dataclass
 class ImbalanceConfig:
@@ -70,6 +71,9 @@ class ClassImbalanceMitigator:
         self.smote = None
         self.scaler = StandardScaler()
         self.metrics_history = []
+        
+        # Initialize temporal aggregator for consistent 3D data handling
+        self.temporal_aggregator = TemporalAggregator(AggregationConfig())
         
         logger.info(f"Initialized ClassImbalanceMitigator with config: {self.config}")
     
@@ -168,16 +172,27 @@ class ClassImbalanceMitigator:
             # Get original distribution
             original_dist = self.analyze_class_distribution(y)
             
-            # Handle 3D sequence data
+            # Handle 3D sequence data using temporal aggregation
             original_shape = X.shape
             is_3d = len(original_shape) == 3
             
             if is_3d:
-                # Reshape 3D to 2D: (samples, timesteps, features) -> (samples, timesteps * features)
+                # Use temporal aggregation instead of flattening for consistency with feature selection
                 n_samples, n_timesteps, n_features = original_shape
-                logger.info(f"Detected 3D sequence data: {original_shape}. Reshaping for SMOTE.")
-                X_2d = X.reshape(n_samples, n_timesteps * n_features)
-                logger.info(f"Reshaped to 2D: {X_2d.shape}")
+                logger.info(f"Detected 3D sequence data: {original_shape}. Using temporal aggregation for SMOTE.")
+                
+                # Generate feature names for temporal aggregation
+                feature_names = [f"feature_{i}" for i in range(n_features)]
+                
+                # Convert 3D to aggregated 2D DataFrame using same method as feature selection
+                aggregated_df = self.temporal_aggregator.aggregate_3d_to_dataframe(
+                    data_3d=X,
+                    feature_names=feature_names
+                )
+                
+                # Convert DataFrame to numpy array for SMOTE
+                X_2d = aggregated_df.values
+                logger.info(f"Aggregated to 2D: {X_2d.shape} (consistent with feature selection methodology)")
             else:
                 X_2d = X
                 logger.info(f"Using 2D data directly: {X_2d.shape}")
@@ -186,15 +201,18 @@ class ClassImbalanceMitigator:
             logger.info(f"Applying SMOTE with strategy: {self.config.smote_sampling_strategy}")
             X_resampled_2d, y_resampled = self.smote.fit_resample(X_2d, y)
             
-            # Reshape back to 3D if needed
+            # Handle resampled data format
             if is_3d:
-                # Calculate new number of samples after SMOTE
-                n_new_samples = X_resampled_2d.shape[0]
-                # Reshape back to 3D: (new_samples, timesteps * features) -> (new_samples, timesteps, features)
-                X_resampled = X_resampled_2d.reshape(n_new_samples, n_timesteps, n_features)
-                logger.info(f"Reshaped back to 3D: {X_resampled.shape}")
+                # For 3D data, SMOTE was applied to temporally aggregated features
+                # Convert back to DataFrame to maintain consistency with feature selection pipeline
+                X_resampled = pd.DataFrame(
+                    X_resampled_2d, 
+                    columns=aggregated_df.columns
+                )
+                logger.info(f"SMOTE applied to aggregated features: {X_resampled.shape} (returned as DataFrame for feature selection compatibility)")
             else:
                 X_resampled = X_resampled_2d
+                logger.info(f"SMOTE applied to 2D data: {X_resampled.shape} (returned as numpy array)")
             
             # Get new distribution
             new_dist = self.analyze_class_distribution(y_resampled)
@@ -218,13 +236,17 @@ class ClassImbalanceMitigator:
                 'improvement_factor': new_dist['positive_ratio'] / original_dist['positive_ratio'],
                 'original_shape': original_shape,
                 'final_shape': X_resampled.shape,
-                'was_3d': is_3d
+                'was_3d': is_3d,
+                'temporal_aggregation_applied': is_3d,
+                'aggregation_method': 'temporal_aggregation' if is_3d else 'direct_2d'
             }
             
             logger.info(f"SMOTE applied successfully. Original samples: {len(y)}, New samples: {len(y_resampled)}")
             logger.info(f"Positive class ratio improved from {original_dist['positive_ratio']:.3f} to {new_dist['positive_ratio']:.3f}")
             if is_3d:
-                logger.info(f"Sequence data maintained: {original_shape} -> {X_resampled.shape}")
+                logger.info(f"3D sequence data converted to aggregated features: {original_shape} -> {X_resampled.shape} (temporal aggregation applied)")
+            else:
+                logger.info(f"2D data processed directly: {original_shape} -> {X_resampled.shape}")
             
             return X_resampled, y_resampled, smote_info
             

@@ -369,6 +369,113 @@ class UniversalModelArchitectures:
         
         return model
     
+    def create_universal_dense(
+        self,
+        feature_dim: int,
+        config: Dict,
+        model_name: str = "universal_dense"
+    ) -> Model:
+        """
+        Create universal dense neural network for 2D aggregated features.
+        
+        Args:
+            feature_dim: Number of aggregated features
+            config: Model configuration parameters
+            model_name: Name for the model
+            
+        Returns:
+            Compiled universal dense model
+        """
+        # Extract parameters with model-specific defaults
+        dropout = config.get('dropout', 0.3)
+        l2_reg = config.get('l2_reg', 0.01)
+        learning_rate = config.get('learning_rate', 0.001)
+        
+        # Get layer configuration based on model type
+        if 'lstm' in model_name.lower():
+            # LSTM-inspired dense architecture
+            units = config.get('units', [128, 64, 32])
+            if isinstance(units, int):
+                units = [units, units//2, units//4]
+        elif 'cnn' in model_name.lower():
+            # CNN-inspired dense architecture
+            filters = config.get('filters', [64, 128])
+            if isinstance(filters, int):
+                filters = [filters, filters*2]
+            units = [f*2 for f in filters] + [64, 32]  # Convert filters to dense units
+        else:
+            # Transformer or generic dense architecture
+            units = config.get('units', [256, 128, 64])
+            if isinstance(units, int):
+                units = [units, units//2, units//4]
+        
+        # Input layers
+        feature_input = Input(shape=(feature_dim,), name='feature_input')
+        symbol_input = Input(shape=(), dtype=tf.int32, name='symbol_input')
+        
+        # Symbol embedding
+        symbol_embedding = Embedding(
+            input_dim=self.num_symbols,
+            output_dim=self.symbol_embedding_dim,
+            name='symbol_embedding'
+        )(symbol_input)
+        
+        # Dense layers for feature processing
+        x = feature_input
+        for i, layer_units in enumerate(units):
+            x = Dense(
+                units=layer_units,
+                activation='relu',
+                kernel_regularizer=l2(l2_reg),
+                name=f'dense_feature_{i+1}'
+            )(x)
+            x = BatchNormalization(name=f'batch_norm_{i+1}')(x)
+            x = Dropout(dropout, name=f'dropout_feature_{i+1}')(x)
+        
+        # Combine dense output with symbol embedding
+        combined = Concatenate(name='feature_symbol_concat')([x, symbol_embedding])
+        
+        # Final dense layers
+        dense1 = Dense(
+            units=64,
+            activation='relu',
+            kernel_regularizer=l2(l2_reg),
+            name='dense_final_1'
+        )(combined)
+        dropout1 = Dropout(dropout, name='dropout_final_1')(dense1)
+        
+        dense2 = Dense(
+            units=32,
+            activation='relu',
+            kernel_regularizer=l2(l2_reg),
+            name='dense_final_2'
+        )(dropout1)
+        dropout2 = Dropout(dropout, name='dropout_final_2')(dense2)
+        
+        # Output layer
+        output = Dense(1, activation='sigmoid', name='output')(dropout2)
+        
+        # Create and compile model
+        model = Model(
+            inputs=[feature_input, symbol_input],
+            outputs=output,
+            name=model_name
+        )
+        
+        model.compile(
+            optimizer=Adam(learning_rate=learning_rate, clipnorm=1.0),
+            loss='binary_crossentropy',
+            metrics=['accuracy']
+        )
+        
+        # Log detailed model architecture
+        logger.info(f"Created {model_name} model with {model.count_params()} parameters")
+        logger.info(f"Dense Model Layer Structure for {feature_dim} aggregated features:")
+        for i, layer in enumerate(model.layers):
+            logger.info(f"  Layer {i}: {layer.name} ({layer.__class__.__name__}) - Output Shape: {layer.output_shape if hasattr(layer, 'output_shape') else 'N/A'}")
+        
+        return model
+    
     def create_symbol_specific_head(
         self,
         base_model: Model,
