@@ -42,6 +42,8 @@ from .universal_feature_engineering import UniversalFeatureEngineering
 from .universal_model_architectures import UniversalModelArchitectures
 from .universal_feature_engineering import UniversalFeatureSet
 from .class_imbalance_mitigation import ClassImbalanceMitigator, ImbalanceConfig, ImbalanceMetrics
+from .feature_selector import UniversalFeatureSelector, FeatureSelectionConfig
+from .temporal_aggregator import TemporalAggregator, AggregationConfig
 
 @dataclass
 class ModelConfig:
@@ -102,6 +104,10 @@ class UniversalTrainingConfig:
     enable_imbalance_mitigation: bool = True
     imbalance_config: ImbalanceConfig = None
     
+    # Temporal Aggregation Configuration
+    enable_temporal_aggregation: bool = True
+    temporal_aggregation_config: AggregationConfig = None
+    
     # General settings
     symbol_embedding_dim: int = 32
     early_stopping_patience: int = 20  # Increase from 10
@@ -146,6 +152,16 @@ class UniversalTrainer:
             self.config.imbalance_config = ImbalanceConfig()
         
         self.imbalance_mitigator = ClassImbalanceMitigator(self.config.imbalance_config) if self.config.enable_imbalance_mitigation else None
+        
+        # Initialize temporal aggregator
+        if self.config.temporal_aggregation_config is None:
+            self.config.temporal_aggregation_config = AggregationConfig()
+        
+        self.temporal_aggregator = TemporalAggregator(self.config.temporal_aggregation_config) if self.config.enable_temporal_aggregation else None
+        
+        # Initialize feature selector
+        self.feature_selector = None
+        self.selected_features = None
         
         # Initialize components
         self.symbol_to_id = {}
@@ -634,6 +650,13 @@ class UniversalTrainer:
         logger.info(f"  - Included market regime features ({len(market_regime_cols)}): {market_regime_cols}")
         logger.info(f"  - Total feature columns kept: {len(feature_columns)}")
         
+        # Apply feature selection if available
+        if self.selected_features is not None and len(self.selected_features) > 0:
+            # Filter feature columns to only include selected features
+            selected_feature_columns = [col for col in feature_columns if col in self.selected_features]
+            logger.info(f"[{symbol}] Applying feature selection: {len(feature_columns)} -> {len(selected_feature_columns)} features")
+            feature_columns = selected_feature_columns
+        
         # Filter to keep only non-symbol-embedding features
         symbol_df = symbol_df[feature_columns]
         
@@ -763,6 +786,39 @@ class UniversalTrainer:
             Binary targets as numpy array (1 for take profit, 0 for stop loss or no exit)
         """
         return self._create_dual_exit_targets(market_data)
+    
+    def _calculate_expected_unique_features(self) -> int:
+        """
+        Calculate the expected number of unique base features from selected features.
+        This accounts for temporal aggregation where multiple aggregated features
+        (e.g., feature_5_min, feature_5_max) map to the same base feature.
+        
+        Returns:
+            Number of unique base features expected
+        """
+        try:
+            # Load selected features
+            feature_selector = UniversalFeatureSelector()
+            selected_features = feature_selector.load_selected_features()
+            
+            if not selected_features:
+                logger.warning("No selected features found, defaulting to 47")
+                return 47
+            
+            # Extract unique base feature indices from temporal aggregation names
+            unique_indices = set()
+            for feature_name in selected_features:
+                # Extract feature index from names like 'feature_5_min', 'feature_6_max', etc.
+                if feature_name.startswith('feature_'):
+                    parts = feature_name.split('_')
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        unique_indices.add(int(parts[1]))
+            
+            return len(unique_indices)
+            
+        except Exception as e:
+            logger.warning(f"Error calculating expected unique features: {e}, defaulting to 47")
+            return 47
     
     async def prepare_universal_dataset(
         self,
@@ -903,17 +959,7 @@ class UniversalTrainer:
             else:
                 logger.info(f"  - ✅ FEATURE COUNT EXCEEDED: {actual_technical_features} features (expected {expected_features})")
             
-            # Additional validation for total feature count including all types
-            total_features = len(X.columns)
-            logger.info(f"  - Total feature validation: {total_features} total columns (technical + symbol + cross + regime + sector)")
-            
-            # Log feature distribution for debugging
-            logger.info(f"  - Feature distribution breakdown:")
-            logger.info(f"    * Technical: {len(technical_cols)} ({len(technical_cols)/total_features*100:.1f}%)")
-            logger.info(f"    * Symbol: {len(symbol_cols)} ({len(symbol_cols)/total_features*100:.1f}%)")
-            logger.info(f"    * Cross-symbol: {len(cross_cols)} ({len(cross_cols)/total_features*100:.1f}%)")
-            logger.info(f"    * Market regime: {len(regime_cols)} ({len(regime_cols)/total_features*100:.1f}%)")
-            logger.info(f"    * Sector: {len(sector_cols)} ({len(sector_cols)/total_features*100:.1f}%)")
+            # Note: Total feature validation moved after feature selection to show accurate counts
         
         if X.empty or y.empty:
             logger.error("No training data available")
@@ -962,6 +1008,73 @@ class UniversalTrainer:
         # Keep all features except actual symbol embedding columns
         feature_columns = [col for col in X.columns if col not in symbol_embedding_cols]
         
+        # Apply feature selection if available
+        if self.selected_features is not None and len(self.selected_features) > 0:
+            logger.info(f"Feature selection available: {len(self.selected_features)} selected features")
+            logger.info(f"Selected features format: {self.selected_features[:5]}...")
+            logger.info(f"DataFrame columns format: {feature_columns[:5]}...")
+            
+            # Check if selected features are in temporal aggregation format (feature_X_aggregation)
+            # If so, we need to map them back to original feature indices
+            if any('_' in feat and feat.startswith('feature_') for feat in self.selected_features):
+                logger.info("Detected temporal aggregation format in selected features")
+                
+                # Extract feature indices from temporal aggregation names
+                # e.g., 'feature_5_max' -> index 5
+                selected_indices = set()
+                for feat_name in self.selected_features:
+                    if feat_name.startswith('feature_') and '_' in feat_name:
+                        try:
+                            # Extract the number between 'feature_' and the aggregation type
+                            parts = feat_name.split('_')
+                            if len(parts) >= 3:  # feature_X_aggregation
+                                idx = int(parts[1])
+                                selected_indices.add(idx)
+                        except (ValueError, IndexError):
+                            logger.warning(f"Could not parse feature index from: {feat_name}")
+                            continue
+                
+                logger.info(f"Extracted {len(selected_indices)} unique feature indices: {sorted(list(selected_indices))[:10]}...")
+                
+                # Map indices back to actual column names
+                # FIXED: Use the original full column list (192 columns) for mapping, not just technical features
+                # The selected feature indices were calculated from the original dataset before filtering
+                original_feature_columns = [col for col in X.columns if col not in symbol_embedding_cols]
+                logger.info(f"Original feature columns for mapping: {len(original_feature_columns)} (before any filtering)")
+                logger.info(f"Technical features after filtering: {len([col for col in feature_columns if not any([col.startswith('corr_'), col.startswith('beta_'), col.startswith('relative_strength_'), col.startswith('market_dispersion_'), col.startswith('market_volatility'), col.startswith('vol_regime_'), col.startswith('vol_trend'), col.startswith('vol_correlation'), col.startswith('sector_')])])}")
+                
+                # Select features based on the indices using the original full column list
+                selected_feature_columns = []
+                sorted_indices = sorted(list(selected_indices))
+                
+                logger.info(f"Mapping {len(sorted_indices)} selected indices to column names:")
+                for idx in sorted_indices:
+                    if idx < len(original_feature_columns):
+                        col_name = original_feature_columns[idx]
+                        selected_feature_columns.append(col_name)
+                        logger.debug(f"  Index {idx} -> '{col_name}'")
+                    else:
+                        logger.warning(f"Feature index {idx} exceeds available original features ({len(original_feature_columns)})")
+                
+                # STRICT FEATURE SELECTION: Only use the selected features, no additional features
+                # Removed automatic inclusion of cross-symbol and market regime features
+                # to maintain consistency with the 65 selected features throughout training
+                logger.info(f"Strictly using only {len(selected_feature_columns)} selected features (no additional cross-symbol/market regime features)")
+                
+                logger.info(f"Mapped to {len(selected_feature_columns)} actual columns (strictly selected features only):")
+                logger.info(f"  - Selected features used: {len(selected_feature_columns)}")
+                logger.info(f"  - Cross-symbol features: NOT automatically included (strict selection mode)")
+                logger.info(f"  - Market regime features: NOT automatically included (strict selection mode)")
+                
+                feature_columns = selected_feature_columns
+            else:
+                # Direct column name matching (fallback)
+                selected_feature_columns = [col for col in feature_columns if col in self.selected_features]
+                logger.info(f"Direct column matching: {len(feature_columns)} -> {len(selected_feature_columns)} features")
+                feature_columns = selected_feature_columns
+            
+            logger.info(f"Final feature selection result: {len(feature_columns)} features")
+        
         # Log which columns are being excluded vs included for debugging
         excluded_cols = [col for col in X.columns if col in symbol_embedding_cols]
         cross_symbol_cols = [col for col in X.columns if any([
@@ -982,6 +1095,34 @@ class UniversalTrainer:
         logger.info(f"  - Included cross-symbol features ({len(cross_symbol_cols)}): {cross_symbol_cols}")
         logger.info(f"  - Included market regime features ({len(market_regime_cols)}): {market_regime_cols}")
         logger.info(f"  - Total feature columns kept: {len(feature_columns)}")
+        if self.selected_features is not None:
+            logger.info(f"  - Feature selection applied: {len(self.selected_features)} selected features")
+        
+        # Final validation for total feature count after feature selection
+        logger.info(f"  - ✅ FINAL FEATURE COUNT VALIDATION: {len(feature_columns)} total columns after all filtering")
+        
+        # Log feature distribution for debugging (after feature selection)
+        final_technical_cols = [col for col in feature_columns if not any([
+            col.startswith('corr_'), col.startswith('beta_'), col.startswith('relative_strength_'),
+            col.startswith('market_dispersion_'), col.startswith('market_volatility'),
+            col.startswith('vol_regime_'), col.startswith('vol_trend'), col.startswith('vol_correlation'),
+            col.startswith('sector_')
+        ])]
+        final_cross_cols = [col for col in feature_columns if any([
+            col.startswith('corr_'), col.startswith('beta_'), col.startswith('relative_strength_'),
+            col.startswith('market_dispersion_')
+        ])]
+        final_regime_cols = [col for col in feature_columns if any([
+            col.startswith('market_volatility'), col.startswith('vol_regime_'),
+            col.startswith('vol_trend'), col.startswith('vol_correlation')
+        ])]
+        final_sector_cols = [col for col in feature_columns if col.startswith('sector_')]
+        
+        logger.info(f"  - Final feature distribution breakdown:")
+        logger.info(f"    * Technical: {len(final_technical_cols)} ({len(final_technical_cols)/len(feature_columns)*100:.1f}%)")
+        logger.info(f"    * Cross-symbol: {len(final_cross_cols)} ({len(final_cross_cols)/len(feature_columns)*100:.1f}%)")
+        logger.info(f"    * Market regime: {len(final_regime_cols)} ({len(final_regime_cols)/len(feature_columns)*100:.1f}%)")
+        logger.info(f"    * Sector: {len(final_sector_cols)} ({len(final_sector_cols)/len(feature_columns)*100:.1f}%)")
         
         features = X[feature_columns].values.astype(np.float32)
         targets = y.values.astype(np.float32)
@@ -998,8 +1139,10 @@ class UniversalTrainer:
         if features.shape[1] != len(feature_columns):
             logger.error(f"  - MISMATCH: Expected {len(feature_columns)} features but got {features.shape[1]}")
         
-        if features.shape[1] < 153:
-             logger.warning(f"  - WARNING: Only {features.shape[1]} features in final array, expected ~153 (validated count)")
+        # Calculate expected unique feature count dynamically
+        expected_unique_features = self._calculate_expected_unique_features()
+        if features.shape[1] < expected_unique_features:
+             logger.warning(f"  - WARNING: Only {features.shape[1]} features in final array, expected ~{expected_unique_features} (unique base features from selection)")
         
         # Reshape features for sequence models (assuming lookback_window)
         lookback_window = self.config.base_lookback_window if hasattr(self.config, 'base_lookback_window') else 30
@@ -1126,6 +1269,110 @@ class UniversalTrainer:
         
         return [X_train_features, X_train_symbols], y_train, [X_val_features, X_val_symbols], y_val
     
+    async def perform_feature_selection(
+        self,
+        symbols: List[str],
+        start_date: str,
+        end_date: str,
+        config: FeatureSelectionConfig = None
+    ) -> Dict[str, Any]:
+        """
+        Perform comprehensive feature selection analysis.
+        
+        Args:
+            symbols: List of trading symbols
+            start_date: Start date for analysis
+            end_date: End date for analysis
+            config: Feature selection configuration
+            
+        Returns:
+            Dictionary containing feature selection results
+        """
+        logger.info("Starting comprehensive feature selection analysis")
+        
+        # Use default config if none provided
+        if config is None:
+            config = FeatureSelectionConfig()
+        
+        # Prepare dataset for feature selection
+        X_train, y_train, X_val, y_val = await self.prepare_universal_dataset(
+            symbols=symbols,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        if not X_train or len(X_train) == 0:
+            logger.error("No training data available for feature selection")
+            return {}
+        
+        # Extract features (exclude symbol embeddings for feature selection)
+        if isinstance(X_train, list) and len(X_train) >= 2:
+            features_train = X_train[0]  # Feature matrix
+            features_val = X_val[0] if X_val else None
+        else:
+            features_train = X_train
+            features_val = X_val
+        
+        # Handle 3D data by converting to 2D using temporal aggregation
+        if isinstance(features_train, np.ndarray) and len(features_train.shape) == 3:
+            logger.info("Detected 3D training data, applying temporal aggregation for feature selection")
+            features_train = self.prepare_3d_for_feature_selection(features_train)
+            
+            if features_val is not None and isinstance(features_val, np.ndarray) and len(features_val.shape) == 3:
+                logger.info("Detected 3D validation data, applying temporal aggregation for feature selection")
+                features_val = self.prepare_3d_for_feature_selection(features_val)
+        
+        # Initialize feature selector
+        self.feature_selector = UniversalFeatureSelector(config)
+        
+        # Perform feature selection
+        results = await self.feature_selector.select_features(
+            X_train=features_train,
+            y_train=y_train,
+            X_val=features_val,
+            y_val=y_val,
+            feature_names=None  # Will be inferred from data
+        )
+        
+        # Store selected features for use in training
+        self.selected_features = results.get('selected_features', [])
+        
+        logger.info(f"Feature selection completed. Selected {len(self.selected_features)} features")
+        logger.info(f"Feature reduction: {results.get('original_feature_count', 0)} -> {len(self.selected_features)}")
+        logger.info(f"Selected features: {self.selected_features}")
+        
+        return results
+    
+    def prepare_3d_for_feature_selection(self, data_3d: np.ndarray, feature_names: List[str] = None) -> pd.DataFrame:
+        """
+        Convert 3D temporal data to 2D aggregated DataFrame for feature selection.
+        
+        Args:
+            data_3d: 3D numpy array with shape (samples, timesteps, features)
+            feature_names: Optional list of feature names
+            
+        Returns:
+            2D DataFrame with aggregated features suitable for feature selection
+        """
+        if not self.config.enable_temporal_aggregation or self.temporal_aggregator is None:
+            logger.warning("Temporal aggregation is disabled, cannot convert 3D data")
+            raise ValueError("3D data requires temporal aggregation to be enabled")
+        
+        logger.info(f"Converting 3D data {data_3d.shape} to 2D DataFrame for feature selection")
+        
+        # Generate feature names if not provided
+        if feature_names is None:
+            feature_names = [f"feature_{i}" for i in range(data_3d.shape[2])]
+        
+        # Use temporal aggregator to convert 3D to 2D
+        aggregated_df = self.temporal_aggregator.aggregate_3d_to_dataframe(
+            data_3d=data_3d,
+            feature_names=feature_names
+        )
+        
+        logger.info(f"Successfully converted to 2D DataFrame: {aggregated_df.shape}")
+        return aggregated_df
+    
     async def phase1_train_base_models(
         self,
         symbols: List[str],
@@ -1179,18 +1426,38 @@ class UniversalTrainer:
         
         logger.info(f"Data preparation successful: {len(X_train[0]) if isinstance(X_train, list) else len(X_train)} training samples")
         
-        # Update feature_count dynamically based on actual data dimensions
+        # Handle 2D aggregated data from SMOTE (post-aggregation)
         if isinstance(X_train, list) and len(X_train) >= 2:
-            # X_train[0] contains features, get the feature dimension
-            actual_feature_count = X_train[0].shape[-1] if hasattr(X_train[0], 'shape') else len(X_train[0][0])
-            logger.info(f"Detected actual feature count: {actual_feature_count}")
+            # Check if we have 2D aggregated data (from SMOTE temporal aggregation)
+            # SMOTE returns pandas DataFrame for 3D->2D aggregated data
+            if isinstance(X_train[0], pd.DataFrame):
+                # 2D aggregated features from SMOTE temporal aggregation: (samples, aggregated_features)
+                actual_feature_count = X_train[0].shape[-1]
+                is_aggregated_data = True
+                logger.info(f"Detected 2D aggregated DataFrame from SMOTE: {X_train[0].shape[0]} samples, {actual_feature_count} aggregated features")
+            elif hasattr(X_train[0], 'shape') and len(X_train[0].shape) == 2:
+                # 2D numpy array: (samples, aggregated_features)
+                actual_feature_count = X_train[0].shape[-1]
+                is_aggregated_data = True
+                logger.info(f"Detected 2D aggregated numpy array: {X_train[0].shape[0]} samples, {actual_feature_count} aggregated features")
+            else:
+                # 3D sequence data: (samples, timesteps, features)
+                actual_feature_count = X_train[0].shape[-1] if hasattr(X_train[0], 'shape') else len(X_train[0][0])
+                is_aggregated_data = False
+                logger.info(f"Detected 3D sequence data: using {actual_feature_count} features per timestep")
             
-            # Update all model configs with actual feature count
+            # Check if feature selection is active for logging purposes
+            if hasattr(self, 'selected_features') and self.selected_features is not None and len(self.selected_features) > 0:
+                logger.info(f"Feature selection active: using {actual_feature_count} {'aggregated' if is_aggregated_data else 'sequence'} features (mapped from {len(self.selected_features)} selected features)")
+            else:
+                logger.info(f"No feature selection active: using actual feature count {actual_feature_count}")
+            
+            # Update all model configs with actual feature count (post-mapping)
             for model_type in model_types:
                 if model_type in self.model_configs:
                     old_count = self.model_configs[model_type].feature_count
                     self.model_configs[model_type].feature_count = actual_feature_count
-                    logger.info(f"Updated {model_type} feature_count from {old_count} to {actual_feature_count}")
+                    logger.info(f"Updated {model_type} feature_count from {old_count} to {actual_feature_count} (using {'aggregated' if is_aggregated_data else 'sequence'} features)")
         
         results = {}
         
@@ -1202,28 +1469,54 @@ class UniversalTrainer:
                 # Get model configuration
                 config = self.model_configs[model_type]
                 
-                # Create universal model
-                if model_type == 'lstm':
-                    model = self.universal_architectures.create_universal_lstm(
-                        sequence_length=config.lookback_window,
+                # Create universal model - handle both 2D aggregated and 3D sequence data
+                if is_aggregated_data:
+                    # For 2D aggregated data, create dense neural networks
+                    logger.info(f"Creating dense neural network for {model_type} with {config.feature_count} aggregated features")
+                    
+                    # Convert DataFrame to numpy array if needed for model training
+                    if isinstance(X_train[0], pd.DataFrame):
+                        logger.info("Converting DataFrame to numpy array for model training")
+                        X_train_array = X_train[0].values.astype(np.float32)
+                        X_train_symbols_array = X_train[1]
+                        X_train = [X_train_array, X_train_symbols_array]
+                        
+                        if X_val and isinstance(X_val[0], pd.DataFrame):
+                            X_val_array = X_val[0].values.astype(np.float32)
+                            X_val_symbols_array = X_val[1]
+                            X_val = [X_val_array, X_val_symbols_array]
+                            logger.info(f"Converted validation DataFrame to numpy array: {X_val_array.shape}")
+                        
+                        logger.info(f"Converted training DataFrame to numpy array: {X_train_array.shape}")
+                    
+                    model = self.universal_architectures.create_universal_dense(
                         feature_dim=config.feature_count,
-                        config=config.parameters
-                    )
-                elif model_type == 'cnn':
-                    model = self.universal_architectures.create_universal_cnn(
-                        sequence_length=config.lookback_window,
-                        feature_dim=config.feature_count,
-                        config=config.parameters
-                    )
-                elif model_type == 'transformer':
-                    model = self.universal_architectures.create_universal_transformer(
-                        sequence_length=config.lookback_window,
-                        feature_dim=config.feature_count,
-                        config=config.parameters
+                        config=config.parameters,
+                        model_name=f"universal_{model_type}_dense"
                     )
                 else:
-                    logger.warning(f"Unsupported model type: {model_type}")
-                    continue
+                    # For 3D sequence data, use original sequence-based models
+                    if model_type == 'lstm':
+                        model = self.universal_architectures.create_universal_lstm(
+                            sequence_length=config.lookback_window,
+                            feature_dim=config.feature_count,
+                            config=config.parameters
+                        )
+                    elif model_type == 'cnn':
+                        model = self.universal_architectures.create_universal_cnn(
+                            sequence_length=config.lookback_window,
+                            feature_dim=config.feature_count,
+                            config=config.parameters
+                        )
+                    elif model_type == 'transformer':
+                        model = self.universal_architectures.create_universal_transformer(
+                            sequence_length=config.lookback_window,
+                            feature_dim=config.feature_count,
+                            config=config.parameters
+                        )
+                    else:
+                        logger.warning(f"Unsupported model type: {model_type}")
+                        continue
                 
                 # Setup callbacks
                 callbacks = [
@@ -1900,6 +2193,14 @@ class UniversalTrainer:
         start_time = datetime.now()
         
         try:
+            # Feature Selection: Perform feature selection before training
+            logger.info("Performing feature selection...")
+            await self.perform_feature_selection(
+                symbols=symbols,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
             # Phase 1: Train base models
             phase1_results = await self.phase1_train_base_models(
                 symbols=symbols,

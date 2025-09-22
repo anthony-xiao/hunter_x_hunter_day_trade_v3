@@ -1,0 +1,15 @@
+{
+  "selection_timestamp": "2025-09-22T14:19:11.433359",
+  "selected_feature_count": 65,
+  "target_feature_count": 65,
+  "selection_method": "mutual_info",
+  "category_distribution": {
+    "other": 65
+  },
+  "config": {
+    "target_feature_count": 65,
+    "min_feature_count": 50,
+    "max_feature_count": 75,
+    "selection_method": "mutual_info"
+  }
+}

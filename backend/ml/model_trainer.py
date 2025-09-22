@@ -111,7 +111,7 @@ class ModelTrainer:
                 },
                 training_window=18,  # 18 months
                 validation_window=6,  # 6 months
-                lookback_window=15,  # 60-minute lookback as per requirements
+                lookback_window=30,  # 60-minute lookback as per requirements
                 feature_count=feature_count,
                 learning_rate=0.001,
                 prediction_threshold=0.35
@@ -151,7 +151,7 @@ class ModelTrainer:
                 },
                 training_window=18,
                 validation_window=6,
-                lookback_window=15,  # As per requirements: 120-minute sequence
+                lookback_window=30,  # As per requirements: 120-minute sequence
                 feature_count=feature_count,
                 learning_rate=0.001,
                 prediction_threshold=0.3

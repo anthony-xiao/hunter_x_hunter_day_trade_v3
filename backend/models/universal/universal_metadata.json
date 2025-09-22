@@ -6,7 +6,10 @@
       "AAPL": 2,
       "META": 3,
       "AMD": 4,
-      "PLTR": 5
+      "PLTR": 5,
+      "AMZN": 6,
+      "GOOGL": 7,
+      "MSFT": 8
     },
     "id_to_symbol": {
       "0": "NVDA",
@@ -14,18 +17,19 @@
       "2": "AAPL",
       "3": "META",
       "4": "AMD",
-      "5": "PLTR"
+      "5": "PLTR",
+      "6": "AMZN",
+      "7": "GOOGL",
+      "8": "MSFT"
     }
   },
   "ensemble_weights": {
-    "lstm": 0.3496179570459772,
-    "cnn": 0.1687122372017608,
-    "transformer": 0.48166980575226204
+    "lstm": 1.0
   },
   "config": {
     "symbol_embedding_dim": 32,
     "base_epochs": 100,
     "finetune_epochs": 30
   },
-  "training_timestamp": "2025-09-18T20:06:37.147419"
+  "training_timestamp": "2025-09-20T08:42:34.563561"
 }

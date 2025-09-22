@@ -28,6 +28,7 @@ from ml.universal_trainer import UniversalTrainer
 from ml.universal_model_architectures import UniversalModelArchitectures
 from ml.universal_feature_engineering import UniversalFeatureEngineering
 from ml.ml_feature_engineering import FeatureEngineering
+from ml.feature_selector import UniversalFeatureSelector, FeatureSelectionConfig
 
 class SignalType(Enum):
     BUY = "buy"
@@ -203,6 +204,11 @@ class SignalGenerator:
         self.universal_models: Dict[str, Any] = {}  # Store loaded universal models
         self.universal_symbol_models: Dict[str, Dict[str, Any]] = {}  # Store symbol-specific universal models
         self.universal_metadata: Dict[str, Any] = {}  # Store universal metadata
+        
+        # Feature selection components
+        self.feature_selector: Optional[UniversalFeatureSelector] = None
+        self.selected_features: Optional[List[str]] = None
+        self.feature_selection_metadata: Dict[str, Any] = {}
         
         # Initialize additional attributes
         self._initialize_attributes()
@@ -409,6 +415,45 @@ class SignalGenerator:
         }
         logger.info(f"Using default model configurations with {default_feature_count} features for all models")
     
+    async def load_feature_selection_results(self) -> bool:
+        """Load feature selection results from the latest training"""
+        try:
+            models_dir = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models')
+            latest_link = models_dir / 'latest'
+            
+            if latest_link.exists() and latest_link.is_symlink():
+                # Try to load from universal metadata first
+                universal_metadata_file = latest_link / 'universal_metadata.json'
+                if universal_metadata_file.exists():
+                    with open(universal_metadata_file, 'r') as f:
+                        metadata = json.load(f)
+                    
+                    # Load selected features
+                    if 'selected_features' in metadata:
+                        self.selected_features = metadata['selected_features']
+                        self.feature_selection_metadata = metadata.get('feature_selection', {})
+                        logger.info(f"Loaded {len(self.selected_features)} selected features from universal metadata")
+                        return True
+                
+                # Fallback to training metadata
+                training_metadata_file = latest_link / 'training_metadata.json'
+                if training_metadata_file.exists():
+                    with open(training_metadata_file, 'r') as f:
+                        metadata = json.load(f)
+                    
+                    if 'selected_features' in metadata:
+                        self.selected_features = metadata['selected_features']
+                        self.feature_selection_metadata = metadata.get('feature_selection', {})
+                        logger.info(f"Loaded {len(self.selected_features)} selected features from training metadata")
+                        return True
+            
+            logger.warning("No feature selection results found, using all features")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error loading feature selection results: {e}")
+            return False
+    
     def _determine_feature_count_from_data(self, data: pd.DataFrame) -> int:
         """Determine the actual feature count from cached data"""
         try:
@@ -440,6 +485,17 @@ class SignalGenerator:
                 logger.info("Falling back to symbol-specific models due to universal model error")
                 self.is_universal_mode = False
                 universal_success = False
+            
+            # Load feature selection results after model initialization
+            try:
+                await self.load_feature_selection_results()
+                if self.selected_features:
+                    logger.info(f"Loaded {len(self.selected_features)} selected features for signal generation")
+                else:
+                    logger.info("No feature selection applied - using all available features")
+            except Exception as fs_error:
+                logger.warning(f"Failed to load feature selection results: {fs_error}")
+                logger.info("Continuing without feature selection - using all available features")
             
             for symbol in symbols:
                 logger.info(f"Initializing models for {symbol}")
@@ -1398,7 +1454,20 @@ class SignalGenerator:
             exclude_columns = {'timestamp'}
             
             # Get all feature columns (everything except excluded columns)
-            feature_columns = [col for col in recent_data.columns if col not in exclude_columns]
+            all_feature_columns = [col for col in recent_data.columns if col not in exclude_columns]
+            
+            # Apply feature selection if selected features are available
+            if self.selected_features:
+                # Use only selected features that are available in the data
+                feature_columns = [col for col in self.selected_features if col in all_feature_columns]
+                if len(feature_columns) < len(self.selected_features):
+                    missing_features = set(self.selected_features) - set(all_feature_columns)
+                    logger.warning(f"Some selected features not found in data for {symbol}: {missing_features}")
+                logger.info(f"[FEATURE_DEBUG] {symbol}: Using {len(feature_columns)} selected features out of {len(all_feature_columns)} available")
+            else:
+                # Use all available features if no feature selection is applied
+                feature_columns = all_feature_columns
+                logger.info(f"[FEATURE_DEBUG] {symbol}: No feature selection applied, using all {len(feature_columns)} features")
             
             # FEATURE COUNT DEBUG: Log initial feature count
             logger.info(f"[FEATURE_DEBUG] {symbol}: _prepare_features - Input data has {len(recent_data.columns)} total columns, {len(feature_columns)} feature columns")
@@ -2455,7 +2524,21 @@ class SignalGenerator:
                 )]
                 
                 # Keep all features except symbol embedding columns and target
-                feature_columns = [col for col in individual_df.columns if col not in symbol_embedding_cols and col != 'target']
+                all_feature_columns = [col for col in individual_df.columns if col not in symbol_embedding_cols and col != 'target']
+                
+                # Apply feature selection if selected features are available
+                if self.selected_features:
+                    # Use only selected features that are available in the data
+                    feature_columns = [col for col in self.selected_features if col in all_feature_columns]
+                    if len(feature_columns) < len(self.selected_features):
+                        missing_features = set(self.selected_features) - set(all_feature_columns)
+                        logger.warning(f"[{symbol}] Some selected features not found in universal data: {missing_features}")
+                    logger.info(f"[{symbol}] Using {len(feature_columns)} selected features out of {len(all_feature_columns)} available")
+                else:
+                    # Use all available features if no feature selection is applied
+                    feature_columns = all_feature_columns
+                    logger.info(f"[{symbol}] No feature selection applied, using all {len(feature_columns)} features")
+                
                 symbol_df = individual_df[feature_columns]
                 
                 logger.info(f"[{symbol}] Excluded symbol embedding columns ({len(symbol_embedding_cols)}): {symbol_embedding_cols}")
@@ -2487,7 +2570,21 @@ class SignalGenerator:
                 )]
                 
                 # Keep all features except symbol embedding columns and target
-                feature_columns = [col for col in symbol_df.columns if col not in symbol_embedding_cols and col != 'target']
+                all_feature_columns = [col for col in symbol_df.columns if col not in symbol_embedding_cols and col != 'target']
+                
+                # Apply feature selection if selected features are available
+                if self.selected_features:
+                    # Use only selected features that are available in the data
+                    feature_columns = [col for col in self.selected_features if col in all_feature_columns]
+                    if len(feature_columns) < len(self.selected_features):
+                        missing_features = set(self.selected_features) - set(all_feature_columns)
+                        logger.warning(f"[{symbol}] Fallback: Some selected features not found: {missing_features}")
+                    logger.info(f"[{symbol}] Fallback: Using {len(feature_columns)} selected features out of {len(all_feature_columns)} available")
+                else:
+                    # Use all available features if no feature selection is applied
+                    feature_columns = all_feature_columns
+                    logger.info(f"[{symbol}] Fallback: No feature selection applied, using all {len(feature_columns)} features")
+                
                 symbol_df = symbol_df[feature_columns]
                 
                 logger.info(f"[{symbol}] Fallback: Excluded symbol embedding columns ({len(symbol_embedding_cols)}): {symbol_embedding_cols}")
