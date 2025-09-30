@@ -207,13 +207,13 @@ class UniversalFeatureEngineering(FeatureEngineering):
             # Create tasks for concurrent feature engineering
             tasks = []
             for symbol in symbols:
-                task = self.engineer_features(
+                task = asyncio.create_task(self.engineer_features(
                     symbol=symbol,
                     start_date=start_date,
                     end_date=end_date,
                     include_cross_asset=include_cross_asset,
                     training_mode=training_mode
-                )
+                ))
                 tasks.append((symbol, task))
             
             # Execute all tasks concurrently

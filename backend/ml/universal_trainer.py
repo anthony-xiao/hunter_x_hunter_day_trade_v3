@@ -5,12 +5,14 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import time
 from datetime import datetime, timezone, timedelta
 from loguru import logger
 import tensorflow as tf
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, Callback
 from tensorflow.keras.models import Model
+from tqdm import tqdm
 
 class NaNDetectionCallback(Callback):
     """Custom callback to detect NaN values during training and stop if found."""
@@ -44,6 +46,7 @@ from .universal_feature_engineering import UniversalFeatureSet
 from .class_imbalance_mitigation import ClassImbalanceMitigator, ImbalanceConfig, ImbalanceMetrics
 from .feature_selector import UniversalFeatureSelector, FeatureSelectionConfig
 from .temporal_aggregator import TemporalAggregator, AggregationConfig
+from .model_types import ModelType
 
 @dataclass
 class ModelConfig:
@@ -77,28 +80,67 @@ class ModelPerformance:
 
 @dataclass
 class UniversalTrainingConfig:
-    """Configuration for universal training phases"""
-    # Phase 1: Universal Base Model
-    base_epochs: int = 150  # Increase from 100
-    base_batch_size: int = 64  # Reduce from 128 for better gradients
-    base_learning_rate: float = 0.0003  # Reduce from 0.001
-    base_validation_split: float = 0.15  # Reduce from 0.2
-    base_lookback_window: int = 30  # Increase from 15
+    """Configuration for universal statistical model training phases"""
+    # Phase 1: Universal Base Model Training
+    base_training_window: int = 12  # months of training data
+    base_validation_window: int = 3  # months of validation data
+    base_lookback_window: int = 30  # minutes of lookback for features
+    base_validation_split: float = 0.2
+    
+    # Symbols for training
+    symbols: List[str] = None
+    
+    # Date range for training
+    start_date: str = None
+    end_date: str = None
+    
+    # Data pipeline configuration
+    force_2d_for_statistical: bool = False  # Enforce 2D data pipeline for statistical models
+    
+    # Data augmentation settings
+    enable_smote: bool = False
     
     # Phase 2: Symbol-Specific Fine-tuning
-    finetune_epochs: int = 50
-    finetune_batch_size: int = 128
-    finetune_learning_rate: float = 0.0001
-    layers_to_unfreeze: int = 3
+    finetune_training_window: int = 6  # months for fine-tuning
+    finetune_validation_window: int = 2  # months for fine-tuning validation
+    finetune_sample_weight_adjustment: float = 1.2  # boost recent samples
     
     # Phase 3: Ensemble Optimization
     ensemble_validation_periods: int = 10
     ensemble_rebalance_frequency: int = 5
+    ensemble_cross_validation_folds: int = 5
+    
+    # XGBoost Configuration
+    xgboost_n_estimators: int = 1000
+    xgboost_max_depth: int = 7
+    xgboost_learning_rate: float = 0.15
+    xgboost_subsample: float = 0.8
+    xgboost_colsample_bytree: float = 0.8
+    xgboost_reg_alpha: float = 0.1
+    xgboost_reg_lambda: float = 0.1
+    
+    # Random Forest Configuration
+    rf_n_estimators: int = 500
+    rf_max_depth: int = 12
+    rf_min_samples_split: int = 10
+    rf_min_samples_leaf: int = 5
+    rf_max_features: str = 'sqrt'
+    
+    # SVM Configuration
+    svm_kernel: str = 'rbf'
+    svm_C: float = 1.0
+    svm_gamma: str = 'scale'
+    svm_class_weight: str = 'balanced'
+    
+    # Ensemble Configuration
+    ensemble_xgb_weight: float = 0.45
+    ensemble_rf_weight: float = 0.35
+    ensemble_svm_weight: float = 0.20
     
     # Dual Exit Target Configuration
     prediction_window: int = 15  # Maximum prediction window in minutes (periods)
-    take_profit_pct: float = 0.003  # Increase from 0.0024
-    stop_loss_pct: float = 0.001  # Reduce from 0.0012
+    take_profit_pct: float = 0.003
+    stop_loss_pct: float = 0.001
     
     # Class Imbalance Mitigation Configuration
     enable_imbalance_mitigation: bool = True
@@ -109,11 +151,20 @@ class UniversalTrainingConfig:
     temporal_aggregation_config: AggregationConfig = None
     
     # General settings
-    symbol_embedding_dim: int = 32
-    early_stopping_patience: int = 20  # Increase from 10
-    reduce_lr_patience: int = 5
+    prediction_threshold: float = 0.55
     min_samples_per_symbol: int = 1000
     max_symbols_per_batch: int = 50
+    random_state: int = 42
+    n_jobs: int = -1
+    
+    def __post_init__(self):
+        # Validate ensemble weights sum to 1.0
+        total_weight = self.ensemble_xgb_weight + self.ensemble_rf_weight + self.ensemble_svm_weight
+        if abs(total_weight - 1.0) > 0.01:
+            logger.warning(f"Ensemble weights sum to {total_weight}, normalizing to 1.0")
+            self.ensemble_xgb_weight /= total_weight
+            self.ensemble_rf_weight /= total_weight
+            self.ensemble_svm_weight /= total_weight
 
 @dataclass
 class UniversalTrainingResult:
@@ -162,6 +213,7 @@ class UniversalTrainer:
         # Initialize feature selector
         self.feature_selector = None
         self.selected_features = None
+        self.selected_feature_indices = None
         
         # Initialize components
         self.symbol_to_id = {}
@@ -176,63 +228,84 @@ class UniversalTrainer:
         self.imbalance_metrics = []
         
         self.model_configs = {
-            'lstm': ModelConfig(
-                name='lstm',
-                model_type='neural_network',
+            ModelType.XGBOOST: ModelConfig(
+                name='xgboost',
+                model_type='statistical',
                 parameters={
-                    'units': [64, 32, 16],  # Reduced from [128, 64, 32] for less overfitting
-                    'dropout': 0.4,  # Increased from 0.2 for better regularization
-                    'epochs': 100,  # 100 Keep same but with reduced early stopping patience
-                    'batch_size': 64,  # Reduced from 256 for better gradient updates
-                    'learning_rate': 0.0003,  # Reduced from 0.001 for stability
-                    'optimizer': 'adam',
-                    'loss': 'binary_crossentropy'
+                    'n_estimators': self.config.xgboost_n_estimators,
+                    'max_depth': self.config.xgboost_max_depth,
+                    'learning_rate': self.config.xgboost_learning_rate,
+                    'subsample': self.config.xgboost_subsample,
+                    'colsample_bytree': self.config.xgboost_colsample_bytree,
+                    'reg_alpha': self.config.xgboost_reg_alpha,
+                    'reg_lambda': self.config.xgboost_reg_lambda,
+                    'random_state': self.config.random_state,
+                    'n_jobs': self.config.n_jobs,
+                    'objective': 'binary:logistic',
+                    'eval_metric': 'logloss'
                 },
-                training_window=12,  # Reduced from 18 months for faster adaptation
-                validation_window=3,  # Reduced from 6 months for current market relevance
-                lookback_window=30,  # Reduced from 60 minutes for noise reduction
+                training_window=self.config.base_training_window,
+                validation_window=self.config.base_validation_window,
+                lookback_window=self.config.base_lookback_window,
                 feature_count=None,
-                learning_rate=0.0005,
-                prediction_threshold=0.55  # Reduce from 0.45
+                learning_rate=self.config.xgboost_learning_rate,
+                prediction_threshold=self.config.prediction_threshold
             ),
-            'cnn': ModelConfig(
-                name='cnn',
-                model_type='neural_network',
+            ModelType.RANDOM_FOREST: ModelConfig(
+                name='random_forest',
+                model_type='statistical',
                 parameters={
-                    'filters': [16, 32],  # Reduced from [32, 64] to prevent overfitting
-                    'kernel_size': (3, 3),
-                    'dropout': 0.4,  # Increased from 0.3 for better noise reduction
-                    'l2_reg': 0.01,  # Keep same L2 regularization
-                    'epochs': 80,  # 80 Keep same but with reduced early stopping patience
-                    'batch_size': 64,  # Reduced from 128 for better gradient updates
-                    'learning_rate': 0.0003,  # Reduced from 0.0005 for stability
-                    'optimizer': 'rmsprop'
+                    'n_estimators': self.config.rf_n_estimators,
+                    'max_depth': self.config.rf_max_depth,
+                    'min_samples_split': self.config.rf_min_samples_split,
+                    'min_samples_leaf': self.config.rf_min_samples_leaf,
+                    'max_features': self.config.rf_max_features,
+                    'bootstrap': True,
+                    'random_state': self.config.random_state,
+                    'n_jobs': self.config.n_jobs,
+                    'class_weight': 'balanced'
                 },
-                training_window=12,  # Reduced from 18 months
-                validation_window=3,  # Reduced from 6 months
-                lookback_window=30,  # Uniform 15 minutes (was 30)
+                training_window=self.config.base_training_window,
+                validation_window=self.config.base_validation_window,
+                lookback_window=self.config.base_lookback_window,
                 feature_count=None,
-                learning_rate=0.0003,
-                prediction_threshold=0.55  # Reduce from 0.45
+                learning_rate=None,
+                prediction_threshold=self.config.prediction_threshold
             ),
-            'transformer': ModelConfig(
-                name='transformer',
-                model_type='neural_network',
+            ModelType.SVM: ModelConfig(
+                name='svm',
+                model_type='statistical',
                 parameters={
-                    'num_heads': 4,  # Increased from 2 for better attention
-                    'num_layers': 3,  # Increased from 2 for more complexity
-                    'dropout': 0.7,   # Critical: Very high dropout
-                    'epochs': 40,  #  40 Keep same but with reduced early stopping patience
-                    'batch_size': 8,  # Increased from 4 for better training stability
-                    'learning_rate': 0.0001,     # Much lower learning rate  
-                    'warmup_steps': 100
+                    'C': self.config.svm_C,
+                    'kernel': self.config.svm_kernel,
+                    'gamma': self.config.svm_gamma,
+                    'probability': True,
+                    'random_state': self.config.random_state,
+                    'class_weight': self.config.svm_class_weight,
+                    'cache_size': 1000
                 },
-                training_window=12,  # Reduced from 18 months
-                validation_window=3,  # Reduced from 6 months
-                lookback_window=30,  # Uniform 15 minutes (was 60)
+                training_window=self.config.base_training_window,
+                validation_window=self.config.base_validation_window,
+                lookback_window=self.config.base_lookback_window,
                 feature_count=None,
-                learning_rate=0.0003,
-                prediction_threshold=0.60  # Reduce from 0.7
+                learning_rate=None,
+                prediction_threshold=self.config.prediction_threshold
+            ),
+            ModelType.ENSEMBLE: ModelConfig(
+                name='ensemble',
+                model_type='ensemble',
+                parameters={
+                    'base_models': [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM],
+                    'voting': 'soft',
+                    'weights': [self.config.ensemble_xgb_weight, self.config.ensemble_rf_weight, self.config.ensemble_svm_weight],
+                    'n_jobs': self.config.n_jobs
+                },
+                training_window=self.config.base_training_window,
+                validation_window=self.config.base_validation_window,
+                lookback_window=self.config.base_lookback_window,
+                feature_count=None,
+                learning_rate=None,
+                prediction_threshold=self.config.prediction_threshold
             )
         }
 
@@ -257,15 +330,15 @@ class UniversalTrainer:
         
         logger.info(f"Initialized symbol mappings for {len(symbols)} symbols")
     
-    def _combine_features_from_featureset(self, feature_set) -> np.ndarray:
+    def _combine_features_from_featureset(self, feature_set) -> pd.DataFrame:
         """
-        Combine all feature components from a FeatureSet into a single features array.
+        Combine all feature components from a FeatureSet into a single features DataFrame.
         
         Args:
             feature_set: FeatureSet object containing various feature categories
             
         Returns:
-            Combined features as numpy array
+            Combined features as pandas DataFrame (preserving column names)
         """
         feature_dfs = []
         
@@ -292,7 +365,7 @@ class UniversalTrainer:
         # Handle NaN values
         combined_df = combined_df.fillna(method='ffill').fillna(method='bfill').fillna(0)
         
-        return combined_df.values
+        return combined_df
     
     def _validate_feature_dimensions(self, features_df: pd.DataFrame, context: str, expected_total: int = 262) -> bool:
         """
@@ -824,7 +897,8 @@ class UniversalTrainer:
         self,
         symbols: List[str],
         start_date: str,
-        end_date: str
+        end_date: str,
+        config: UniversalTrainingConfig = None
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Prepare universal training dataset with symbol embeddings.
@@ -1008,6 +1082,9 @@ class UniversalTrainer:
         # Keep all features except actual symbol embedding columns
         feature_columns = [col for col in X.columns if col not in symbol_embedding_cols]
         
+        # Store original feature columns for later use
+        original_feature_columns = feature_columns.copy()
+        
         # Apply feature selection if available
         if self.selected_features is not None and len(self.selected_features) > 0:
             logger.info(f"Feature selection available: {len(self.selected_features)} selected features")
@@ -1052,7 +1129,7 @@ class UniversalTrainer:
                     if idx < len(original_feature_columns):
                         col_name = original_feature_columns[idx]
                         selected_feature_columns.append(col_name)
-                        logger.debug(f"  Index {idx} -> '{col_name}'")
+                        logger.info(f"  Index {idx} -> '{col_name}'")
                     else:
                         logger.warning(f"Feature index {idx} exceeds available original features ({len(original_feature_columns)})")
                 
@@ -1144,47 +1221,72 @@ class UniversalTrainer:
         if features.shape[1] < expected_unique_features:
              logger.warning(f"  - WARNING: Only {features.shape[1]} features in final array, expected ~{expected_unique_features} (unique base features from selection)")
         
-        # Reshape features for sequence models (assuming lookback_window)
-        lookback_window = self.config.base_lookback_window if hasattr(self.config, 'base_lookback_window') else 30
+        # Check if we need to enforce 2D data pipeline for statistical models
+        force_2d = getattr(config, 'force_2d_for_statistical', False) if config else False
         
-        # Create sequences
-        X_sequences = []
-        X_symbols = []
-        y_sequences = []
+        if force_2d:
+            logger.info("Enforcing 2D data pipeline for statistical models - skipping sequence creation")
+            # For statistical models, data is already in 2D format - no temporal aggregation needed
+            # The features are already aggregated/flattened from the data pipeline
+            logger.info(f"Using 2D features directly for statistical models: {features.shape}")
+            
+            # For 2D pipeline, no sequence creation - use direct train/val split
+            validation_split = getattr(config, 'base_validation_split', 0.2) if config else 0.2
+            split_idx = int(len(features) * (1 - validation_split))
+            
+            X_train_features = features[:split_idx]
+            X_train_symbols = symbol_ids[:split_idx]
+            y_train = targets[:split_idx]
+            
+            X_val_features = features[split_idx:]
+            X_val_symbols = symbol_ids[split_idx:]
+            y_val = targets[split_idx:]
+            
+            logger.info(f"2D Pipeline - Prepared dataset: {len(X_train_features)} training, {len(X_val_features)} validation samples")
+            logger.info(f"2D Pipeline - Feature shape: {X_train_features.shape}")
+        else:
+            # Original 3D sequence pipeline
+            # Reshape features for sequence models (assuming lookback_window)
+            lookback_window = getattr(config, 'base_lookback_window', 30) if config else 30
+            
+            # Create sequences
+            X_sequences = []
+            X_symbols = []
+            y_sequences = []
         
-        logger.info(f"Creating sequences with lookback_window={lookback_window}, total_samples={len(features)}")
-        
-        for i in range(lookback_window, len(features)):
-            X_sequences.append(features[i-lookback_window:i])
-            X_symbols.append(symbol_ids[i])
-            y_sequences.append(targets[i])
-        
-        logger.info(f"Created {len(X_sequences)} sequences")
-        logger.info(f"Step 4 - Sequence details:")
-        if len(X_sequences) > 0:
-            X_sequences_array = np.array(X_sequences)
-            logger.info(f"  - Input sequences shape: {X_sequences_array.shape} (samples, timesteps, features)")
-            logger.info(f"  - Features per timestep: {X_sequences_array.shape[2] if len(X_sequences_array.shape) > 2 else 'N/A'}")
-            logger.info(f"  - Target sequences shape: {np.array(y_sequences).shape}")
-        
-        if len(X_sequences) == 0:
-            logger.error(f"Insufficient data for sequence creation: need at least {lookback_window} samples, got {len(features)}")
-            return [], [], [], []
-        
-        X_sequences = np.array(X_sequences)
-        X_symbols = np.array(X_symbols)
-        y_sequences = np.array(y_sequences)
-        
-        # Split into training and validation
-        split_idx = int(len(X_sequences) * (1 - self.config.base_validation_split))
-        
-        X_train_features = X_sequences[:split_idx]
-        X_train_symbols = X_symbols[:split_idx]
-        y_train = y_sequences[:split_idx]
-        
-        X_val_features = X_sequences[split_idx:]
-        X_val_symbols = X_symbols[split_idx:]
-        y_val = y_sequences[split_idx:]
+            logger.info(f"Creating sequences with lookback_window={lookback_window}, total_samples={len(features)}")
+            
+            for i in range(lookback_window, len(features)):
+                X_sequences.append(features[i-lookback_window:i])
+                X_symbols.append(symbol_ids[i])
+                y_sequences.append(targets[i])
+            
+            logger.info(f"Created {len(X_sequences)} sequences")
+            logger.info(f"Step 4 - Sequence details:")
+            if len(X_sequences) > 0:
+                X_sequences_array = np.array(X_sequences)
+                logger.info(f"  - Input sequences shape: {X_sequences_array.shape} (samples, timesteps, features)")
+                logger.info(f"  - Features per timestep: {X_sequences_array.shape[2] if len(X_sequences_array.shape) > 2 else 'N/A'}")
+                logger.info(f"  - Target sequences shape: {np.array(y_sequences).shape}")
+            
+            if len(X_sequences) == 0:
+                logger.error(f"Insufficient data for sequence creation: need at least {lookback_window} samples, got {len(features)}")
+                return [], [], [], []
+            
+            X_sequences = np.array(X_sequences)
+            X_symbols = np.array(X_symbols)
+            y_sequences = np.array(y_sequences)
+            
+            # Split into training and validation
+            split_idx = int(len(X_sequences) * (1 - self.config.base_validation_split))
+            
+            X_train_features = X_sequences[:split_idx]
+            X_train_symbols = X_symbols[:split_idx]
+            y_train = y_sequences[:split_idx]
+            
+            X_val_features = X_sequences[split_idx:]
+            X_val_symbols = X_symbols[split_idx:]
+            y_val = y_sequences[split_idx:]
         
         logger.info(f"Prepared dataset: {len(X_train_features)} training, {len(X_val_features)} validation samples")
         logger.info(f"Feature shape: {X_train_features.shape}, Symbol shape: {X_train_symbols.shape}")
@@ -1194,9 +1296,9 @@ class UniversalTrainer:
         logger.info(f"  - Features per sample: {X_train_features.shape[2] if len(X_train_features.shape) > 2 else 'N/A'}")
         logger.info(f"  - Timesteps per sample: {X_train_features.shape[1] if len(X_train_features.shape) > 1 else 'N/A'}")
         
-        # Apply class imbalance mitigation if enabled
+        # Apply class imbalance mitigation if enabled (AFTER feature selection)
         if self.config.enable_imbalance_mitigation and self.imbalance_mitigator:
-            logger.info("Step 6 - Applying class imbalance mitigation")
+            logger.info("Step 6 - Applying class imbalance mitigation (with selected features only)")
             
             # Analyze original class distribution
             original_metrics = self.imbalance_mitigator.analyze_class_distribution(y_train)
@@ -1205,6 +1307,7 @@ class UniversalTrainer:
             # Store original sample count for symbol replication
             original_sample_count = len(X_train_features)
             logger.info(f"Original sample count: {original_sample_count}")
+            logger.info(f"Applying SMOTE to data with {X_train_features.shape[-1] if hasattr(X_train_features, 'shape') else 'unknown'} selected features")
             
             # Apply comprehensive balancing (SMOTE + class weights)
             X_train_balanced, y_train_balanced, imbalance_metrics = self.imbalance_mitigator.apply_comprehensive_balancing(
@@ -1214,6 +1317,12 @@ class UniversalTrainer:
             # Update training data with balanced data
             X_train_features = X_train_balanced
             y_train = y_train_balanced
+            
+            # Verify that SMOTE maintained feature consistency
+            if hasattr(X_train_features, 'shape') and len(X_train_features.shape) > 1:
+                logger.info(f"SMOTE result verification: {X_train_features.shape[-1]} features maintained (expected: {len(feature_columns)})")
+                if X_train_features.shape[-1] != len(feature_columns):
+                    logger.warning(f"Feature count mismatch after SMOTE: expected {len(feature_columns)}, got {X_train_features.shape[-1]}")
             
             # Handle symbol data replication if SMOTE was applied
             if imbalance_metrics.smote_applied and len(X_train_features) > original_sample_count:
@@ -1336,10 +1445,12 @@ class UniversalTrainer:
         
         # Store selected features for use in training
         self.selected_features = results.get('selected_features', [])
+        self.selected_feature_indices = results.get('selected_feature_indices', [])
         
         logger.info(f"Feature selection completed. Selected {len(self.selected_features)} features")
         logger.info(f"Feature reduction: {results.get('original_feature_count', 0)} -> {len(self.selected_features)}")
         logger.info(f"Selected features: {self.selected_features}")
+        logger.info(f"Selected feature indices: {self.selected_feature_indices}")
         
         return results
     
@@ -1869,7 +1980,7 @@ class UniversalTrainer:
         validation_end: str
     ) -> Dict[str, float]:
         """
-        Phase 3: Optimize ensemble weights based on validation performance.
+        Phase 3: Optimize ensemble weights based on validation performance for statistical models.
         
         Args:
             symbols: List of trading symbols
@@ -1879,9 +1990,19 @@ class UniversalTrainer:
         Returns:
             Optimized ensemble weights by model type
         """
-        logger.info("Phase 3: Optimizing ensemble weights")
+        logger.info("Phase 3: Optimizing ensemble weights for statistical models")
         
-        # Collect predictions from all models
+        # DEBUG: Log contents of self.base_models and self.symbol_models at START of phase3
+        logger.info("=== DEBUG: Model availability at START of phase3 ===")
+        logger.info(f"self.base_models keys: {list(self.base_models.keys())}")
+        for key, model in self.base_models.items():
+            logger.info(f"  - base_models[{key}]: {type(model).__name__} (id: {id(model)})")
+        logger.info(f"self.symbol_models keys: {list(self.symbol_models.keys())}")
+        for key, symbol_dict in self.symbol_models.items():
+            logger.info(f"  - symbol_models[{key}]: {len(symbol_dict)} symbols")
+        logger.info("=== END DEBUG phase3 start ===")
+        
+        # Collect predictions from all statistical models
         model_predictions = {}
         
         # Check if phase2 was skipped (symbol_models is empty)
@@ -1893,6 +2014,17 @@ class UniversalTrainer:
             logger.info("Using symbol-specific models from phase2")
             models_to_use = self.symbol_models
             use_base_models = False
+        
+        # DEBUG: Log models_to_use selection result
+        logger.info(f"=== DEBUG: models_to_use selection ===")
+        logger.info(f"use_base_models: {use_base_models}")
+        logger.info(f"models_to_use keys: {list(models_to_use.keys())}")
+        logger.info(f"models_to_use is empty: {len(models_to_use) == 0}")
+        if len(models_to_use) == 0:
+            logger.error("CRITICAL: models_to_use is empty! This will cause 'No model predictions available'")
+            logger.error(f"self.base_models empty: {len(self.base_models) == 0}")
+            logger.error(f"self.symbol_models empty: {len(self.symbol_models) == 0}")
+        logger.info("=== END DEBUG models_to_use ===")
         
         for model_type in models_to_use.keys():
             model_predictions[model_type] = {}
@@ -1910,11 +2042,9 @@ class UniversalTrainer:
                 try:
                     # Load validation data
                     # Convert dates to timezone-aware UTC datetime objects
-                    # Handle both string and datetime inputs
                     if isinstance(validation_start, str):
                         validation_start_dt = datetime.strptime(validation_start, '%Y-%m-%d').replace(tzinfo=timezone.utc)
                     elif isinstance(validation_start, datetime):
-                        # Ensure timezone-aware UTC
                         validation_start_dt = validation_start.replace(tzinfo=timezone.utc) if validation_start.tzinfo is None else validation_start.astimezone(timezone.utc)
                     else:
                         raise TypeError(f"validation_start must be str or datetime, got {type(validation_start)}")
@@ -1922,7 +2052,6 @@ class UniversalTrainer:
                     if isinstance(validation_end, str):
                         validation_end_dt = datetime.strptime(validation_end, '%Y-%m-%d').replace(tzinfo=timezone.utc)
                     elif isinstance(validation_end, datetime):
-                        # Ensure timezone-aware UTC
                         validation_end_dt = validation_end.replace(tzinfo=timezone.utc) if validation_end.tzinfo is None else validation_end.astimezone(timezone.utc)
                     else:
                         raise TypeError(f"validation_end must be str or datetime, got {type(validation_end)}")
@@ -1933,115 +2062,236 @@ class UniversalTrainer:
                         end_date=validation_end_dt
                     )
                     
-                    # Get features
-                    features = await self.feature_engineering.engineer_features(
-                        symbol=symbol,
+                    # Get comprehensive features using the same DataFrame approach as phase1
+                    # This ensures we have the full feature set with actual column names
+                    logger.info(f"Loading comprehensive feature set for {symbol} using phase1 DataFrame approach")
+                    
+                    # Use the same data loading approach as phase1_universal_base_training
+                    # Step 1: Load universal data
+                    universal_data = await self.data_pipeline.load_universal_data(
+                        symbols=[symbol],
                         start_date=validation_start_dt,
                         end_date=validation_end_dt
                     )
                     
-                    # Make predictions using exact same feature preparation as phase2
-                    symbol_id = self.symbol_to_id[symbol]
-                    
-                    # Prepare universal features using same method as fine-tuning
-                    X_features = await self._prepare_universal_features_for_symbol(
-                        symbol=symbol,
-                        feature_set=features,
+                    # Step 2: Engineer universal features
+                    universal_features = await self.feature_engineering.engineer_universal_features(
+                        symbols=[symbol],
                         start_date=validation_start_dt,
-                        end_date=validation_end_dt
+                        end_date=validation_end_dt,
+                        training_mode=True
                     )
-                    y = self._extract_targets_from_market_data(validation_data)
                     
-                    # Align X_features and X_symbols with targets length (targets are shortened by 1)
-                    X_features = X_features[:len(y)]
-                    X_symbols = np.full(len(X_features), symbol_id)
+                    # Step 3: Get universal training data (returns DataFrame with actual column names)
+                    X, y = await self.feature_engineering.prepare_universal_training_data(
+                        universal_features=universal_features,
+                        target_column='target'
+                    )
                     
-                    # Create sequences for all model types (LSTM, CNN, Transformer)
-                    config = self.model_configs[model_type]
-                    lookback_window = config.lookback_window
-                    
-                    logger.info(f"Creating sequences for {symbol} with lookback_window={lookback_window}")
-                    
-                    # Use helper method to create sequences
-                    X_sequences, y_sequences = self.create_sequences(X_features, y, lookback_window)
-                    
-                    if len(X_sequences) == 0:
-                        logger.warning(f"Insufficient data for {symbol}: need at least {lookback_window} samples, got {len(X_features)}")
+                    if X.empty or y.empty:
+                        logger.warning(f"No validation data available for {symbol}")
                         continue
                     
-                    # Create symbol sequences for the valid sequence length (matching create_sequences output)
-                    X_symbols_seq = np.array([X_symbols[i] for i in range(lookback_window, len(X_features))])
+                    logger.info(f"Loaded DataFrame for {symbol}: {X.shape} with actual column names")
+                    logger.info(f"Sample column names: {list(X.columns)[:10]}...")
                     
-                    logger.info(f"Created {len(X_sequences)} sequences for {symbol} with shape {X_sequences.shape}")
+                    # Extract symbol IDs and validate
+                    symbol_ids = X['symbol_id'].values.astype(np.int32)
                     
-                    X = [X_sequences, X_symbols_seq]
+                    # Define symbol embedding columns to exclude (same as phase1)
+                    symbol_embedding_cols = [col for col in X.columns if (
+                        col == 'symbol_id' or (
+                            col.startswith('symbol_') and not any([
+                                col.startswith('corr_'),
+                                col.startswith('beta_'),
+                                col.startswith('relative_strength_'),
+                                col.startswith('market_dispersion_'),
+                                col.startswith('market_volatility'),
+                                col.startswith('vol_regime_'),
+                                col.startswith('vol_trend'),
+                                col.startswith('vol_correlation')
+                            ])
+                        )
+                    )]
                     
-                    # === COMPREHENSIVE DEBUGGING FOR IDENTICAL ACCURACY INVESTIGATION ===
-                    logger.info(f"\n=== DEBUGGING {model_type.upper()}-{symbol} MODEL ===")
+                    # Keep all features except symbol embedding columns (same as phase1)
+                    feature_columns = [col for col in X.columns if col not in symbol_embedding_cols]
+                    original_feature_columns = feature_columns.copy()
                     
-                    # 1. Log model object ID to verify different instances
-                    model_id = id(model)
-                    logger.info(f"Model object ID: {model_id}")
+                    logger.info(f"Feature columns for {symbol}: {len(feature_columns)} (excluding {len(symbol_embedding_cols)} symbol embedding cols)")
                     
-                    # 2. Log input data shapes and first few values
-                    logger.info(f"Input data shapes: X_sequences={X_sequences.shape}, X_symbols_seq={X_symbols_seq.shape}")
-                    logger.info(f"First 3 X_sequences values: {X_sequences[:3].flatten()[:10] if len(X_sequences) > 0 else 'None'}")
-                    logger.info(f"First 3 X_symbols_seq values: {X_symbols_seq[:3] if len(X_symbols_seq) > 0 else 'None'}")
-                    logger.info(f"First 3 y_sequences values: {y_sequences[:3] if len(y_sequences) > 0 else 'None'}")
-                    
-                    # 3. Log model architecture summary
-                    try:
-                        total_params = model.count_params()
-                        trainable_params = sum([tf.keras.backend.count_params(w) for w in model.trainable_weights])
-                        logger.info(f"Model params: total={total_params}, trainable={trainable_params}")
+                    # Apply feature selection using the same approach as phase1_universal_base_training
+                    if hasattr(self, 'selected_features') and self.selected_features is not None:
+                        logger.info(f"Phase3: Applying selected features for {symbol}: {len(self.selected_features)} features")
+                        logger.info(f"Selected features format: {self.selected_features[:5]}... (showing first 5)")
+                        logger.info(f"DataFrame columns format: {feature_columns[:5]}... (showing first 5)")
                         
-                        # Log layer names and types
-                        layer_info = [(layer.name, type(layer).__name__, getattr(layer, 'units', getattr(layer, 'filters', 'N/A'))) for layer in model.layers]
-                        logger.info(f"Model layers: {layer_info[:5]}...")  # First 5 layers
-                        
-                        # Log model input/output shapes
-                        logger.info(f"Model input shape: {model.input_shape if hasattr(model, 'input_shape') else 'Multiple inputs'}")
-                        logger.info(f"Model output shape: {model.output_shape}")
-                    except Exception as arch_e:
-                        logger.warning(f"Could not log architecture info: {arch_e}")
-                    
-                    # 4. Validate model weights are different by checking first layer weights
-                    try:
-                        if len(model.layers) > 1:
-                            first_trainable_layer = None
-                            for layer in model.layers:
-                                if len(layer.get_weights()) > 0:
-                                    first_trainable_layer = layer
-                                    break
+                        # Check if selected features are in temporal aggregation format (feature_X_aggregation)
+                        # If so, we need to map them back to original feature indices
+                        if any('_' in feat and feat.startswith('feature_') for feat in self.selected_features):
+                            logger.info("Detected temporal aggregation format in selected features")
                             
-                            if first_trainable_layer:
-                                weights = first_trainable_layer.get_weights()[0]
-                                weight_hash = hash(weights.tobytes())
-                                weight_mean = np.mean(weights)
-                                weight_std = np.std(weights)
-                                logger.info(f"First layer ({first_trainable_layer.name}) weight stats: hash={weight_hash}, mean={weight_mean:.6f}, std={weight_std:.6f}")
-                                logger.info(f"First layer weight sample: {weights.flatten()[:5]}")
-                    except Exception as weight_e:
-                        logger.warning(f"Could not log weight info: {weight_e}")
+                            # Extract feature indices from temporal aggregation names
+                            # e.g., 'feature_5_max' -> index 5
+                            selected_indices = set()
+                            for feat_name in self.selected_features:
+                                if feat_name.startswith('feature_') and '_' in feat_name:
+                                    try:
+                                        # Extract the number between 'feature_' and the aggregation type
+                                        parts = feat_name.split('_')
+                                        if len(parts) >= 3:  # feature_X_aggregation
+                                            idx = int(parts[1])
+                                            selected_indices.add(idx)
+                                    except (ValueError, IndexError):
+                                        logger.warning(f"Could not parse feature index from: {feat_name}")
+                                        continue
+                            
+                            logger.info(f"Extracted {len(selected_indices)} unique feature indices: {sorted(list(selected_indices))[:10]}...")
+                            
+                            # Map indices back to actual column names using original_feature_columns
+                            logger.info(f"Original feature columns for mapping: {len(original_feature_columns)} (comprehensive feature set matching phase1)")
+                            
+                            # Select features based on the indices using the original full column list
+                            selected_feature_columns = []
+                            sorted_indices = sorted(list(selected_indices))
+                            
+                            logger.info(f"Mapping {len(sorted_indices)} selected indices to column names:")
+                            for idx in sorted_indices:
+                                if idx < len(original_feature_columns):
+                                    col_name = original_feature_columns[idx]
+                                    selected_feature_columns.append(col_name)
+                                    logger.info(f"  Index {idx} -> '{col_name}'")
+                                else:
+                                    logger.warning(f"Feature index {idx} exceeds available original features ({len(original_feature_columns)})")
+                            
+                            # STRICT FEATURE SELECTION: Only use the selected features, no additional features
+                            logger.info(f"Strictly using only {len(selected_feature_columns)} selected features (no additional cross-symbol/market regime features)")
+                            
+                            logger.info(f"Mapped to {len(selected_feature_columns)} actual columns (strictly selected features only):")
+                            logger.info(f"  - Selected features used: {len(selected_feature_columns)}")
+                            
+                            feature_columns = selected_feature_columns
+                        else:
+                            # Direct column name matching (fallback)
+                            selected_feature_columns = [col for col in feature_columns if col in self.selected_features]
+                            logger.info(f"Direct column matching: {len(feature_columns)} -> {len(selected_feature_columns)} features")
+                            feature_columns = selected_feature_columns
+                        
+                        logger.info(f"Final feature selection result: {len(feature_columns)} features")
                     
-                    # 5. Make predictions and log detailed results
-                    predictions = model.predict(X, batch_size=None, verbose=0)
-                    predictions_flat = predictions.flatten()
+                    # Extract features using the selected column names (same as phase1)
+                    features = X[feature_columns]
+                    logger.info(f"Selected features for {symbol}: {features.shape} with actual column names")
+                    logger.info(f"Feature column names: {list(features.columns)[:10]}... (showing first 10)")
                     
-                    # 6. Log actual prediction values and target values for comparison
-                    logger.info(f"Predictions shape: {predictions.shape}")
+                    # Convert to numpy array for model input
+                    X_features = features.values.astype(np.float32)
+                    
+                    # Use targets from DataFrame
+                    y = y.values.astype(np.float32)
+                    
+                    # Ensure features and targets are aligned
+                    min_length = min(len(X_features), len(y))
+                    X_features = X_features[:min_length]
+                    y = y[:min_length]
+                    
+                    if len(X_features) == 0:
+                        logger.warning(f"No validation data available for {symbol}")
+                        continue
+                    
+                    logger.info(f"Validation data for {symbol}: {len(X_features)} samples with {X_features.shape[1]} features")
+                    
+                    # === STATISTICAL MODEL DEBUGGING ===
+                    logger.info(f"\n=== DEBUGGING {model_type.upper()}-{symbol} STATISTICAL MODEL ===")
+                    
+                    # 1. Log model object ID and type
+                    model_id = id(model)
+                    model_class = type(model).__name__
+                    logger.info(f"Model object ID: {model_id}, Class: {model_class}")
+                    
+                    # 2. Log input data shapes and sample values
+                    logger.info(f"Input data shape: {X_features.shape}")
+                    logger.info(f"First 3 feature vectors (first 5 features): {X_features[:3, :5] if len(X_features) > 0 else 'None'}")
+                    logger.info(f"First 10 targets: {y[:10] if len(y) > 0 else 'None'}")
+                    
+                    # 3. Log model-specific information
+                    try:
+                        if hasattr(model, 'n_features_in_'):
+                            logger.info(f"Model expects {model.n_features_in_} features, got {X_features.shape[1]}")
+                        if hasattr(model, 'classes_'):
+                            logger.info(f"Model classes: {model.classes_}")
+                        if hasattr(model, 'feature_importances_'):
+                            top_features = np.argsort(model.feature_importances_)[-5:]
+                            logger.info(f"Top 5 feature importances: {model.feature_importances_[top_features]}")
+                    except Exception as model_info_e:
+                        logger.warning(f"Could not log model info: {model_info_e}")
+                    
+                    # 4. Make predictions with statistical models
+                    # Check if this is an ensemble model (stored as dictionary)
+                    if isinstance(model, dict) and 'models' in model and 'weights' in model:
+                        logger.info(f"Handling ensemble model for {model_type}-{symbol}")
+                        # Handle ensemble model - extract predictions from component models
+                        ensemble_models = model['models']
+                        ensemble_weights = model['weights']
+                        
+                        # Get predictions from each component model
+                        component_predictions = []
+                        for component_name, component_model in ensemble_models.items():
+                            logger.info(f"Getting predictions from ensemble component: {component_name}")
+                            
+                            if hasattr(component_model, 'predict_proba'):
+                                # For models that support probability prediction
+                                comp_predictions_proba = component_model.predict_proba(X_features)
+                                if comp_predictions_proba.shape[1] > 1:
+                                    comp_predictions = comp_predictions_proba[:, 1]  # Probability of positive class
+                                else:
+                                    comp_predictions = comp_predictions_proba.flatten()
+                            else:
+                                # For models that only support binary prediction
+                                comp_predictions_binary = component_model.predict(X_features)
+                                comp_predictions = comp_predictions_binary.astype(float)
+                            
+                            component_predictions.append(comp_predictions)
+                            logger.info(f"Component {component_name} predictions shape: {comp_predictions.shape}")
+                        
+                        # Combine predictions using ensemble weights
+                        if component_predictions:
+                            # Stack predictions and apply weights
+                            stacked_predictions = np.stack(component_predictions, axis=0)  # Shape: (n_models, n_samples)
+                            weight_values = np.array([ensemble_weights.get(name, 0.0) for name in ensemble_models.keys()])
+                            
+                            # Weighted average of predictions
+                            predictions_flat = np.average(stacked_predictions, axis=0, weights=weight_values)
+                            logger.info(f"Ensemble prediction shape: {predictions_flat.shape}, weights: {weight_values}")
+                        else:
+                            logger.error(f"No component predictions available for ensemble {model_type}-{symbol}")
+                            continue
+                    else:
+                        # Handle regular (non-ensemble) models
+                        if hasattr(model, 'predict_proba'):
+                            # For models that support probability prediction
+                            predictions_proba = model.predict_proba(X_features)
+                            if predictions_proba.shape[1] > 1:
+                                predictions_flat = predictions_proba[:, 1]  # Probability of positive class
+                            else:
+                                predictions_flat = predictions_proba.flatten()
+                        else:
+                            # For models that only support binary prediction
+                            predictions_binary = model.predict(X_features)
+                            predictions_flat = predictions_binary.astype(float)
+                    
+                    # 5. Log prediction results
+                    logger.info(f"Predictions shape: {predictions_flat.shape}")
                     logger.info(f"First 10 raw predictions: {predictions_flat[:10]}")
-                    logger.info(f"First 10 binary predictions: {(predictions_flat[:10] > 0.5).astype(int)}")
-                    logger.info(f"First 10 targets: {y_sequences[:10]}")
                     
-                    # 7. Calculate and log detailed accuracy metrics
+                    # 6. Calculate accuracy
                     binary_predictions = (predictions_flat > 0.5).astype(int)
-                    accuracy = accuracy_score(y_sequences, binary_predictions)
+                    accuracy = accuracy_score(y, binary_predictions)
                     
                     # Additional metrics for debugging
                     unique_predictions = np.unique(predictions_flat)
                     unique_binary_predictions = np.unique(binary_predictions)
-                    unique_targets = np.unique(y_sequences)
+                    unique_targets = np.unique(y)
                     
                     logger.info(f"Accuracy: {accuracy:.6f}")
                     logger.info(f"Unique raw predictions count: {len(unique_predictions)}")
@@ -2049,19 +2299,19 @@ class UniversalTrainer:
                     logger.info(f"Unique targets: {unique_targets}")
                     logger.info(f"Prediction distribution: min={np.min(predictions_flat):.6f}, max={np.max(predictions_flat):.6f}, mean={np.mean(predictions_flat):.6f}")
                     
-                    # 8. Check if predictions are constant (indicating potential issue)
+                    # 7. Check for prediction issues
                     if len(unique_predictions) == 1:
                         logger.error(f"WARNING: All predictions are identical ({unique_predictions[0]:.6f}) - model may not be learning!")
                     
                     logger.info(f"=== END DEBUGGING {model_type.upper()}-{symbol} ===")
                     
-                    # Use the properly aligned targets from sequences (same as phase2)
+                    # Store prediction results
                     model_predictions[model_type][symbol] = {
                         'predictions': predictions_flat,
-                        'targets': y_sequences,
+                        'targets': y,
                         'accuracy': accuracy,
-                        'model_id': model_id,  # Store for cross-reference
-                        'weight_hash': weight_hash if 'weight_hash' in locals() else None
+                        'model_id': model_id,
+                        'model_class': model_class
                     }
                     
                 except Exception as e:
@@ -2120,6 +2370,13 @@ class UniversalTrainer:
             for symbol, pred_data in model_predictions[model_type].items():
                 all_accuracies.append(pred_data['accuracy'])
         
+        # Check if we have any accuracies to analyze
+        if not all_accuracies:
+            logger.error("CRITICAL: No model predictions available for ensemble optimization!")
+            logger.error("This indicates that no models were successfully trained in Phase 1.")
+            logger.error("Returning empty ensemble weights.")
+            return {}
+        
         unique_accuracy_values = set(all_accuracies)
         logger.info(f"Total models evaluated: {len(all_accuracies)}")
         logger.info(f"Unique accuracy values: {len(unique_accuracy_values)}")
@@ -2170,6 +2427,90 @@ class UniversalTrainer:
         logger.info(f"Phase 3 completed: Ensemble weights = {self.ensemble_weights}")
         return self.ensemble_weights
     
+    async def _prepare_2d_aggregated_features(self, features, symbol) -> np.ndarray:
+        """
+        Prepare 2D aggregated features for statistical models.
+        
+        Args:
+            features: numpy array of features (2D or 3D) or FeatureSet object
+            symbol: string symbol name for logging
+            
+        Returns:
+            2D numpy array with aggregated features
+        """
+        try:
+            # Validate input features
+            if features is None:
+                raise ValueError(f"No features provided for {symbol}")
+            
+            # Handle FeatureSet objects first
+            if hasattr(features, 'symbol_features'):
+                # This is a UniversalFeatureSet
+                logger.info(f"[{symbol}] Converting UniversalFeatureSet in _prepare_2d_aggregated_features")
+                features_df = self._combine_features_from_featureset(features.symbol_features.get(symbol, features))
+                features = pd.DataFrame(features_df) if isinstance(features_df, np.ndarray) else features_df
+            elif hasattr(features, 'technical_features'):
+                # This is a regular FeatureSet
+                logger.info(f"[{symbol}] Converting FeatureSet in _prepare_2d_aggregated_features")
+                features_df = self._combine_features_from_featureset(features)
+                features = pd.DataFrame(features_df) if isinstance(features_df, np.ndarray) else features_df
+            
+            # Convert to numpy array if needed
+            if hasattr(features, 'values'):
+                features = features.values
+            
+            # Apply temporal aggregation if enabled and data is 3D
+            if (self.config.enable_temporal_aggregation and 
+                self.temporal_aggregator is not None and 
+                len(features.shape) == 3):
+                
+                logger.info(f"[{symbol}] Applying TemporalAggregator to 3D features {features.shape}")
+                
+                # Generate feature names for temporal aggregation
+                n_features = features.shape[2]
+                feature_names = [f"feature_{i}" for i in range(n_features)]
+                
+                # Use TemporalAggregator for proper temporal feature engineering
+                aggregated_df = self.temporal_aggregator.aggregate_3d_to_dataframe(
+                    data_3d=features,
+                    feature_names=feature_names
+                )
+                
+                # Convert DataFrame to numpy array
+                aggregated_features = aggregated_df.values
+                    
+                logger.info(f"[{symbol}] TemporalAggregator result: {features.shape} -> {aggregated_features.shape}")
+                return aggregated_features
+            
+            # If already 2D, return as-is
+            if len(features.shape) == 2:
+                logger.info(f"[{symbol}] Using 2D features directly: {features.shape}")
+                return features
+            elif len(features.shape) == 3:
+                # Fallback temporal aggregation using direct numpy operations
+                logger.info(f"[{symbol}] Applying fallback temporal aggregation to 3D features {features.shape}")
+                
+                # Calculate temporal statistics across the time dimension (axis=1)
+                mean_features = np.nanmean(features, axis=1)  # Shape: (samples, features)
+                max_features = np.nanmax(features, axis=1)    # Shape: (samples, features)
+                std_features = np.nanstd(features, axis=1)    # Shape: (samples, features)
+                
+                # Concatenate all temporal statistics
+                aggregated_features = np.concatenate([
+                    mean_features,
+                    max_features, 
+                    std_features
+                ], axis=1)
+                
+                logger.info(f"[{symbol}] Fallback temporal aggregation complete: {features.shape} -> {aggregated_features.shape}")
+                return aggregated_features
+            else:
+                raise ValueError(f"Unexpected feature shape for {symbol}: {features.shape}")
+                
+        except Exception as e:
+            logger.error(f"Error preparing 2D aggregated features for {symbol}: {e}")
+            raise
+    
     async def train_universal_models(
         self,
         symbols: List[str],
@@ -2190,6 +2531,11 @@ class UniversalTrainer:
             Complete training results
         """
         logger.info(f"Starting universal training for {len(symbols)} symbols")
+        
+        # DEBUG: Check what's in self.base_models at the very start
+        logger.info(f"DEBUG - START OF TRAINING: self.base_models keys: {list(self.base_models.keys())}")
+        logger.info(f"DEBUG - START OF TRAINING: self.base_models empty: {len(self.base_models) == 0}")
+        
         start_time = datetime.now()
         
         try:
@@ -2201,13 +2547,24 @@ class UniversalTrainer:
                 end_date=end_date
             )
             
-            # Phase 1: Train base models
-            phase1_results = await self.phase1_train_base_models(
+            # Phase 1: Train statistical base models using 2D aggregated features
+            config = UniversalTrainingConfig(
                 symbols=symbols,
                 start_date=start_date,
                 end_date=end_date,
-                model_types=model_types
+                enable_smote=self.config.enable_imbalance_mitigation,
+                force_2d_for_statistical=True  # Enforce 2D data pipeline for statistical models
             )
+            phase1_results = await self.phase1_universal_base_training(
+                data_loader=self.data_pipeline,
+                config=config
+            )
+            
+            # DEBUG: Check what's in self.base_models after phase1 statistical training
+            logger.info(f"DEBUG - AFTER PHASE1: self.base_models keys: {list(self.base_models.keys())}")
+            logger.info(f"DEBUG - AFTER PHASE1: self.base_models count: {len(self.base_models)}")
+            for model_type, model in self.base_models.items():
+                logger.info(f"DEBUG - AFTER PHASE1: {model_type} model type: {type(model).__name__}")
             
             # Phase 2: Symbol-specific fine-tuning (DISABLED)
             # Skipping phase2_symbol_specific_finetuning to eliminate dependency
@@ -2231,23 +2588,75 @@ class UniversalTrainer:
             # Calculate total training time
             total_time = (datetime.now() - start_time).total_seconds()
             
-            # Compile final results
+            # Compile comprehensive statistical model training results
             results = {
                 'training_completed': True,
                 'total_training_time': total_time,
                 'symbols_trained': symbols,
+                'training_date_range': {'start': start_date, 'end': end_date},
+                
+                # Add models_trained field for main.py validation check
+                'models_trained': list(self.base_models.keys()) if self.base_models else [],
+                
+                # Statistical Model Performance Metrics
+                'statistical_models': {
+                    'models_trained': phase1_results.get('models_trained', []),
+                    'validation_metrics': phase1_results.get('validation_metrics', {}),
+                    'model_configs': phase1_results.get('model_configs', {}),
+                    'feature_importance': phase1_results.get('feature_importance', {}),
+                    'phase1_training_time': phase1_results.get('training_time', 0)
+                },
+                
+                # Feature Selection Information
+                'feature_selection': {
+                    'selected_feature_count': len(self.selected_features) if self.selected_features else 0,
+                    'selected_feature_indices_count': len(self.selected_feature_indices) if self.selected_feature_indices else 0,
+                    'feature_selection_method': 'mutual_info_regression',  # Based on UniversalFeatureSelector
+                    'expected_unique_features': self._calculate_expected_unique_features() if hasattr(self, '_calculate_expected_unique_features') else 0
+                },
+                
+                # Trading-Specific Metrics for Minute-to-Minute System
+                'trading_performance': {
+                    'avg_model_accuracy': np.mean([metrics.get('accuracy', 0) for metrics in phase1_results.get('validation_metrics', {}).values()]) if phase1_results.get('validation_metrics') else 0.0,
+                    'best_performing_model': max(phase1_results.get('validation_metrics', {}).items(), key=lambda x: x[1].get('accuracy', 0))[0] if phase1_results.get('validation_metrics') else 'none',
+                    'model_consistency': {
+                        'accuracy_std': np.std([metrics.get('accuracy', 0) for metrics in phase1_results.get('validation_metrics', {}).values()]) if phase1_results.get('validation_metrics') else 0.0,
+                        'loss_std': np.std([metrics.get('loss', 0) for metrics in phase1_results.get('validation_metrics', {}).values()]) if phase1_results.get('validation_metrics') else 0.0
+                    },
+                    'prediction_readiness': {
+                        'models_ready_for_inference': len(self.base_models),
+                        'ensemble_weights_available': len(ensemble_weights) > 0,
+                        'feature_selection_applied': self.selected_features is not None or self.selected_feature_indices is not None
+                    }
+                },
+                
+                # Model Training Details
+                'training_details': {
+                    'imbalance_mitigation_enabled': self.config.enable_imbalance_mitigation,
+                    'validation_split': self.config.base_validation_split,
+                    'lookback_window_minutes': self.config.base_lookback_window,
+                    'prediction_threshold': self.config.prediction_threshold,
+                    'class_balance_info': {
+                        'smote_applied': hasattr(self, 'imbalance_metrics') and len(self.imbalance_metrics) > 0,
+                        'class_weights_available': hasattr(self, 'class_weights_sklearn') and self.class_weights_sklearn is not None
+                    }
+                },
+                
+                # Ensemble Information
+                'ensemble_optimization': {
+                    'weights': ensemble_weights,
+                    'validation_period_days': 20,  # Based on validation window used
+                    'optimization_completed': len(ensemble_weights) > 0
+                },
+                
+                # Legacy fields for backward compatibility
                 'phase1_results': phase1_results,
-                'phase2_results': phase2_results,
+                'phase2_results': phase2_results,  # Empty as Phase 2 is disabled
                 'ensemble_weights': ensemble_weights,
                 'model_summary': {
                     'base_models': list(self.base_models.keys()),
-                    'symbol_models': {model: list(symbols.keys()) for model, symbols in self.symbol_models.items()} if self.symbol_models else {},
-                    'total_models': len(self.base_models) + (sum(len(symbols) for symbols in self.symbol_models.values()) if self.symbol_models else 0)
-                },
-                'performance_summary': {
-                    'avg_base_accuracy': np.mean([r.validation_accuracy for r in phase1_results.values()]) if phase1_results else 0.0,
-                    'avg_symbol_accuracy': 0.0,  # Phase 2 disabled
-                    'best_model': max(ensemble_weights.items(), key=lambda x: x[1])[0] if ensemble_weights else 'none'
+                    'total_statistical_models': len(self.base_models),
+                    'neural_network_models': 0  # No longer using neural networks
                 }
             }
             
@@ -2260,7 +2669,7 @@ class UniversalTrainer:
     
     async def save_universal_models(self, save_dir: Path) -> None:
         """
-        Save all universal models and training state.
+        Save all universal statistical models and training state using joblib.
         
         Args:
             save_dir: Directory to save models
@@ -2268,54 +2677,43 @@ class UniversalTrainer:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         
-        logger.info(f"Starting model saving process to {save_dir}")
+        logger.info(f"Starting statistical model saving process to {save_dir}")
         
         # Save base models
         base_dir = save_dir / "base_models"
         base_dir.mkdir(exist_ok=True)
         
         for model_type, model in self.base_models.items():
-            logger.info(f"Saving base {model_type} model...")
+            logger.info(f"Saving base {model_type} statistical model...")
             
-            # Validate model architecture before saving
+            # Validate statistical model before saving
             try:
-                logger.info(f"Base {model_type} - Architecture validation:")
-                logger.info(f"  - Model name: {model.name}")
-                logger.info(f"  - Total parameters: {model.count_params():,}")
-                logger.info(f"  - Input shape: {model.input_shape if hasattr(model, 'input_shape') else 'Multiple inputs'}")
-                logger.info(f"  - Output shape: {model.output_shape if hasattr(model, 'output_shape') else 'Multiple outputs'}")
-                logger.info(f"  - Number of layers: {len(model.layers)}")
+                logger.info(f"Base {model_type} - Model validation:")
+                if hasattr(model, '__class__'):
+                    logger.info(f"  - Model type: {model.__class__.__name__}")
+                if hasattr(model, 'n_features_in_'):
+                    logger.info(f"  - Features trained on: {model.n_features_in_}")
+                if hasattr(model, 'classes_'):
+                    logger.info(f"  - Classes: {model.classes_}")
                 
-                # Test model connectivity with dummy prediction
+                # Test model with dummy prediction for statistical models
                 try:
-                    if hasattr(model, 'input_shape') and model.input_shape:
-                        # Handle single input models
-                        if isinstance(model.input_shape, tuple):
-                            dummy_input = np.random.random((1,) + model.input_shape[1:])
-                            dummy_output = model.predict(dummy_input, verbose=0)
-                            logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
-                        # Handle multiple input models
-                        elif isinstance(model.input_shape, list):
-                            dummy_inputs = []
-                            for input_shape in model.input_shape:
-                                if input_shape is not None:
-                                    dummy_inputs.append(np.random.random((1,) + input_shape[1:]))
-                            dummy_output = model.predict(dummy_inputs, verbose=0)
-                            logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
-                        else:
-                            logger.info(f"  - Connectivity test: SKIPPED (unknown input shape format)")
+                    if hasattr(model, 'n_features_in_'):
+                        dummy_input = np.random.random((1, model.n_features_in_))
+                        dummy_output = model.predict_proba(dummy_input) if hasattr(model, 'predict_proba') else model.predict(dummy_input)
+                        logger.info(f"  - Prediction test: PASSED (output shape: {dummy_output.shape})")
                     else:
-                        logger.info(f"  - Connectivity test: SKIPPED (no input shape)")
-                except Exception as connectivity_error:
-                    logger.error(f"  - Connectivity test: FAILED ({connectivity_error})")
+                        logger.info(f"  - Prediction test: SKIPPED (no feature info)")
+                except Exception as prediction_error:
+                    logger.error(f"  - Prediction test: FAILED ({prediction_error})")
                     
             except Exception as e:
-                logger.error(f"Base {model_type} - Architecture validation FAILED: {e}")
+                logger.error(f"Base {model_type} - Model validation FAILED: {e}")
                 
-            # Save the model with detailed error logging
+            # Save the statistical model using joblib
             try:
-                model_path = base_dir / f"{model_type}_base.h5"
-                model.save(model_path)
+                model_path = base_dir / f"{model_type}_base.joblib"
+                self.universal_architectures.save_statistical_model(model, model_path)
                 logger.info(f"✓ Successfully saved base {model_type} model to {model_path}")
             except Exception as e:
                 logger.error(f"✗ Failed to save base {model_type} model: {e}")
@@ -2331,48 +2729,37 @@ class UniversalTrainer:
                 type_dir.mkdir(exist_ok=True)
                 
                 for symbol, model in symbol_models.items():
-                    logger.info(f"Saving {model_type} model for symbol {symbol}...")
+                    logger.info(f"Saving {model_type} statistical model for symbol {symbol}...")
                     
-                    # Validate model architecture before saving
+                    # Validate statistical model before saving
                     try:
-                        logger.info(f"Symbol {symbol} {model_type} - Architecture validation:")
-                        logger.info(f"  - Model name: {model.name}")
-                        logger.info(f"  - Total parameters: {model.count_params():,}")
-                        logger.info(f"  - Input shape: {model.input_shape if hasattr(model, 'input_shape') else 'Multiple inputs'}")
-                        logger.info(f"  - Output shape: {model.output_shape if hasattr(model, 'output_shape') else 'Multiple outputs'}")
-                        logger.info(f"  - Number of layers: {len(model.layers)}")
+                        logger.info(f"Symbol {symbol} {model_type} - Model validation:")
+                        if hasattr(model, '__class__'):
+                            logger.info(f"  - Model type: {model.__class__.__name__}")
+                        if hasattr(model, 'n_features_in_'):
+                            logger.info(f"  - Features trained on: {model.n_features_in_}")
+                        if hasattr(model, 'classes_'):
+                            logger.info(f"  - Classes: {model.classes_}")
                         
-                        # Test model connectivity with dummy prediction
+                        # Test model with dummy prediction for statistical models
                         try:
-                            if hasattr(model, 'input_shape') and model.input_shape:
-                                # Handle single input models
-                                if isinstance(model.input_shape, tuple):
-                                    dummy_input = np.random.random((1,) + model.input_shape[1:])
-                                    dummy_output = model.predict(dummy_input, verbose=0)
-                                    logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
-                                # Handle multiple input models
-                                elif isinstance(model.input_shape, list):
-                                    dummy_inputs = []
-                                    for input_shape in model.input_shape:
-                                        if input_shape is not None:
-                                            dummy_inputs.append(np.random.random((1,) + input_shape[1:]))
-                                    dummy_output = model.predict(dummy_inputs, verbose=0)
-                                    logger.info(f"  - Connectivity test: PASSED (output shape: {dummy_output.shape})")
-                                else:
-                                    logger.info(f"  - Connectivity test: SKIPPED (unknown input shape format)")
+                            if hasattr(model, 'n_features_in_'):
+                                dummy_input = np.random.random((1, model.n_features_in_))
+                                dummy_output = model.predict_proba(dummy_input) if hasattr(model, 'predict_proba') else model.predict(dummy_input)
+                                logger.info(f"  - Prediction test: PASSED (output shape: {dummy_output.shape})")
                             else:
-                                logger.info(f"  - Connectivity test: SKIPPED (no input shape)")
-                        except Exception as connectivity_error:
-                            logger.error(f"  - Connectivity test: FAILED ({connectivity_error})")
+                                logger.info(f"  - Prediction test: SKIPPED (no feature info)")
+                        except Exception as prediction_error:
+                            logger.error(f"  - Prediction test: FAILED ({prediction_error})")
                             
                     except Exception as e:
-                        logger.error(f"Symbol {symbol} {model_type} - Architecture validation FAILED: {e}")
+                        logger.error(f"Symbol {symbol} {model_type} - Model validation FAILED: {e}")
                         logger.error(f"  - This model may be corrupted and could cause loading issues")
                         
-                    # Save the model with detailed error logging
+                    # Save the statistical model using joblib
                     try:
-                        model_path = type_dir / f"{symbol}.h5"
-                        model.save(model_path)
+                        model_path = type_dir / f"{symbol}.joblib"
+                        self.universal_architectures.save_statistical_model(model, model_path)
                         logger.info(f"✓ Successfully saved {model_type} model for {symbol} to {model_path}")
                     except Exception as e:
                         logger.error(f"✗ Failed to save {model_type} model for {symbol}: {e}")
@@ -2387,18 +2774,245 @@ class UniversalTrainer:
                 'id_to_symbol': self.id_to_symbol
             },
             'ensemble_weights': self.ensemble_weights,
-            'config': {
-                'symbol_embedding_dim': self.config.symbol_embedding_dim,
-                'base_epochs': self.config.base_epochs,
-                'finetune_epochs': self.config.finetune_epochs
+            'model_configs': {
+                'xgboost': {
+                    'n_estimators': getattr(self.config, 'xgb_n_estimators', 100),
+                    'max_depth': getattr(self.config, 'xgb_max_depth', 6),
+                    'learning_rate': getattr(self.config, 'xgb_learning_rate', 0.1),
+                    'subsample': getattr(self.config, 'xgb_subsample', 0.8)
+                },
+                'random_forest': {
+                    'n_estimators': getattr(self.config, 'rf_n_estimators', 100),
+                    'max_depth': getattr(self.config, 'rf_max_depth', 10),
+                    'min_samples_split': getattr(self.config, 'rf_min_samples_split', 2),
+                    'min_samples_leaf': getattr(self.config, 'rf_min_samples_leaf', 1)
+                },
+                'svm': {
+                    'C': getattr(self.config, 'svm_C', 1.0),
+                    'kernel': getattr(self.config, 'svm_kernel', 'rbf'),
+                    'gamma': getattr(self.config, 'svm_gamma', 'scale')
+                }
             },
-            'training_timestamp': datetime.now().isoformat()
+            'feature_selection': {
+                'selected_features': getattr(self, 'selected_features', None),
+                'selected_feature_indices': getattr(self, 'selected_feature_indices', None),
+                'feature_importance': getattr(self, 'feature_importance', {}),
+                'feature_mapping': getattr(self, 'feature_mapping', {}),
+                'total_features': len(getattr(self, 'selected_features', [])) if hasattr(self, 'selected_features') and self.selected_features else 0
+            },
+            'model_performance': {
+                'validation_accuracy': getattr(self, 'best_validation_accuracy', 0.0),
+                'validation_precision': getattr(self, 'best_validation_precision', 0.0),
+                'validation_recall': getattr(self, 'best_validation_recall', 0.0),
+                'validation_f1': getattr(self, 'best_validation_f1', 0.0),
+                'ensemble_accuracy': getattr(self, 'ensemble_accuracy', 0.0),
+                'prediction_confidence_threshold': getattr(self.config, 'prediction_confidence_threshold', 0.6)
+            },
+            'training_data_stats': {
+                'training_start_date': getattr(self, 'training_start_date', None),
+                'training_end_date': getattr(self, 'training_end_date', None),
+                'total_samples': getattr(self, 'total_training_samples', 0),
+                'class_distribution': getattr(self, 'class_distribution', {}),
+                'symbols_trained': list(self.symbol_to_id.keys()) if hasattr(self, 'symbol_to_id') else []
+            },
+            'model_files': {
+                'xgboost_model_path': getattr(self, 'xgb_model_path', None),
+                'random_forest_model_path': getattr(self, 'rf_model_path', None),
+                'svm_model_path': getattr(self, 'svm_model_path', None),
+                'ensemble_model_path': getattr(self, 'ensemble_model_path', None),
+                'scaler_path': getattr(self, 'scaler_path', None)
+            },
+            'prediction_thresholds': {
+                'buy_threshold': getattr(self.config, 'buy_threshold', 0.7),
+                'sell_threshold': getattr(self.config, 'sell_threshold', 0.7),
+                'hold_threshold': getattr(self.config, 'hold_threshold', 0.5)
+            },
+            'live_trading_config': {
+                'prediction_window_minutes': getattr(self.config, 'prediction_window_minutes', 1),
+                'feature_update_frequency': getattr(self.config, 'feature_update_frequency', 60),
+                'model_version': getattr(self, 'model_version', '1.0.0'),
+                'requires_feature_scaling': True,
+                'max_prediction_latency_ms': getattr(self.config, 'max_prediction_latency_ms', 100)
+            },
+            'training_timestamp': datetime.now().isoformat(),
+            'model_type': 'statistical_ensemble'
         }
         
         with open(save_dir / "universal_metadata.json", 'w') as f:
             json.dump(metadata, f, indent=2)
         
         logger.info(f"Saved universal models to {save_dir}")
+    
+    async def train_statistical_model(self, model_type: ModelType, X_train: np.ndarray, y_train: np.ndarray,
+                                     X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> Tuple[object, float, Dict[str, float]]:
+        """
+        Train statistical models (XGBoost, Random Forest, SVM) optimized for 2D aggregated features.
+        Returns model, validation loss, and comprehensive metrics dictionary.
+        """
+        logger.info(f"Training {model_type.value} model with {X_train.shape[1]} aggregated features")
+        
+        # Create progress bar for model training
+        pbar = tqdm(total=100, desc=f"Training {model_type.value}", unit="%")
+        pbar.update(10)  # Initial setup complete
+        
+        feature_dim = X_train.shape[1]
+        
+        if model_type == ModelType.XGBOOST:
+            pbar.set_description(f"Creating {model_type.value} model")
+            model = self.universal_architectures.create_universal_xgboost(
+                feature_dim=feature_dim,
+                config=config.parameters,
+                model_name=f"universal_{model_type.value}"
+            )
+            pbar.update(20)  # Model creation complete
+            
+            # Train with early stopping
+            pbar.set_description(f"Training {model_type.value} model")
+            eval_set = [(X_train, y_train), (X_val, y_val)]
+            model.fit(
+                X_train, y_train,
+                eval_set=eval_set,
+                verbose=False
+            )
+            pbar.update(60)  # Training complete
+            
+        elif model_type == ModelType.RANDOM_FOREST:
+            pbar.set_description(f"Creating {model_type.value} model")
+            model = self.universal_architectures.create_universal_random_forest(
+                feature_dim=feature_dim,
+                config=config.parameters,
+                model_name=f"universal_{model_type.value}"
+            )
+            pbar.update(20)  # Model creation complete
+            
+            pbar.set_description(f"Training {model_type.value} model")
+            model.fit(X_train, y_train)
+            pbar.update(60)  # Training complete
+            
+        elif model_type == ModelType.SVM:
+            pbar.set_description(f"Creating {model_type.value} model")
+            model = self.universal_architectures.create_universal_svm(
+                feature_dim=feature_dim,
+                config=config.parameters,
+                model_name=f"universal_{model_type.value}"
+            )
+            pbar.update(20)  # Model creation complete
+            
+            pbar.set_description(f"Training {model_type.value} model")
+            model.fit(X_train, y_train)
+            pbar.update(60)  # Training complete
+            
+        elif model_type == ModelType.ENSEMBLE:
+            pbar.set_description(f"Creating {model_type.value} model")
+            ensemble = self.universal_architectures.create_ensemble_model(
+                feature_dim=feature_dim,
+                config=config.parameters,
+                model_name=f"universal_{model_type.value}"
+            )
+            pbar.update(15)  # Model creation complete
+            
+            # Train individual models
+            models = ensemble['models']
+            weights = ensemble['weights']
+            
+            # Train XGBoost
+            pbar.set_description(f"Training {model_type.value} XGBoost")
+            eval_set = [(X_train, y_train), (X_val, y_val)]
+            models['xgboost'].fit(X_train, y_train, eval_set=eval_set, verbose=False)
+            pbar.update(20)  # XGBoost training complete
+            
+            # Train Random Forest  
+            pbar.set_description(f"Training {model_type.value} Random Forest")
+            models['random_forest'].fit(X_train, y_train)
+            pbar.update(20)  # Random Forest training complete
+            
+            # Train SVM
+            pbar.set_description(f"Training {model_type.value} SVM")
+            models['svm'].fit(X_train, y_train)
+            pbar.update(20)  # SVM training complete
+            
+            model = ensemble
+            
+        else:
+            raise ValueError(f"Unsupported statistical model type: {model_type}")
+        
+        # Evaluate model
+        pbar.set_description(f"Evaluating {model_type.value} model")
+        if model_type == ModelType.ENSEMBLE:
+            # Ensemble predictions
+            models = model['models']
+            weights = model['weights']
+            
+            xgb_pred = models['xgboost'].predict_proba(X_val)[:, 1]
+            rf_pred = models['random_forest'].predict_proba(X_val)[:, 1]
+            svm_pred = models['svm'].predict_proba(X_val)[:, 1]
+            
+            val_predictions = (weights['xgboost'] * xgb_pred + 
+                              weights['random_forest'] * rf_pred + 
+                              weights['svm'] * svm_pred)
+        else:
+            val_predictions = model.predict_proba(X_val)[:, 1]
+        
+        # Calculate comprehensive metrics
+        val_predictions_binary = (val_predictions > 0.5).astype(int)
+        
+        # Basic metrics
+        val_accuracy = accuracy_score(y_val, val_predictions_binary)
+        val_precision = precision_score(y_val, val_predictions_binary, zero_division=0)
+        val_recall = recall_score(y_val, val_predictions_binary, zero_division=0)
+        val_f1 = f1_score(y_val, val_predictions_binary, zero_division=0)
+        val_roc_auc = roc_auc_score(y_val, val_predictions) if len(np.unique(y_val)) > 1 else 0.0
+        val_loss = -np.mean(y_val * np.log(val_predictions + 1e-15) + (1 - y_val) * np.log(1 - val_predictions + 1e-15))
+        
+        # High confidence accuracy (predictions > 0.7)
+        high_conf_mask = val_predictions > 0.7
+        high_conf_accuracy = 0.0
+        if np.sum(high_conf_mask) > 0:
+            high_conf_predictions = val_predictions_binary[high_conf_mask]
+            high_conf_targets = y_val[high_conf_mask]
+            high_conf_accuracy = accuracy_score(high_conf_targets, high_conf_predictions)
+        
+        # Win rate by confidence levels
+        confidence_intervals = [(0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0)]
+        win_rates_by_confidence = {}
+        
+        for low, high in confidence_intervals:
+            mask = (val_predictions >= low) & (val_predictions < high)
+            if np.sum(mask) > 0:
+                conf_predictions = val_predictions_binary[mask]
+                conf_targets = y_val[mask]
+                win_rate = accuracy_score(conf_targets, conf_predictions)
+                win_rates_by_confidence[f"{low:.1f}-{high:.1f}"] = win_rate
+            else:
+                win_rates_by_confidence[f"{low:.1f}-{high:.1f}"] = 0.0
+        
+        # Compile all metrics
+        metrics = {
+            'accuracy': val_accuracy,
+            'precision': val_precision,
+            'recall': val_recall,
+            'f1_score': val_f1,
+            'roc_auc': val_roc_auc,
+            'high_confidence_accuracy': high_conf_accuracy,
+            'win_rate_0.5-0.6': win_rates_by_confidence.get('0.5-0.6', 0.0),
+            'win_rate_0.6-0.7': win_rates_by_confidence.get('0.6-0.7', 0.0),
+            'win_rate_0.7-0.8': win_rates_by_confidence.get('0.7-0.8', 0.0),
+            'win_rate_0.8-0.9': win_rates_by_confidence.get('0.8-0.9', 0.0),
+            'win_rate_0.9-1.0': win_rates_by_confidence.get('0.9-1.0', 0.0)
+        }
+        
+        pbar.update(10)  # Evaluation complete
+        
+        # Close progress bar
+        pbar.close()
+        
+        logger.info(f"Completed {model_type.value} training:")
+        logger.info(f"  - Loss: {val_loss:.4f}, Accuracy: {val_accuracy:.4f}")
+        logger.info(f"  - Precision: {val_precision:.4f}, Recall: {val_recall:.4f}, F1: {val_f1:.4f}")
+        logger.info(f"  - ROC-AUC: {val_roc_auc:.4f}, High Conf Accuracy: {high_conf_accuracy:.4f}")
+        logger.info(f"  - Win Rates: 0.5-0.6: {win_rates_by_confidence.get('0.5-0.6', 0.0):.3f}, 0.7-0.8: {win_rates_by_confidence.get('0.7-0.8', 0.0):.3f}, 0.9-1.0: {win_rates_by_confidence.get('0.9-1.0', 0.0):.3f}")
+        
+        return model, val_loss, metrics
     
     async def load_universal_models(self, load_dir: Path) -> bool:
         """
@@ -2432,81 +3046,49 @@ class UniversalTrainer:
                 symbol_embedding_dim=metadata['config']['symbol_embedding_dim']
             )
             
-            # Define custom objects for model loading
-            from tensorflow.keras.layers import (
-                MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D,
-                Embedding, Concatenate, BatchNormalization, Add, Reshape,
-                Conv2D, MaxPooling2D, Flatten, LSTM, Dense, Dropout, Input
-            )
-            
-            custom_objects = {
-                'MultiHeadAttention': MultiHeadAttention,
-                'LayerNormalization': LayerNormalization,
-                'GlobalAveragePooling1D': GlobalAveragePooling1D,
-                'Embedding': Embedding,
-                'Concatenate': Concatenate,
-                'BatchNormalization': BatchNormalization,
-                'Add': Add,
-                'Reshape': Reshape,
-                'Conv2D': Conv2D,
-                'MaxPooling2D': MaxPooling2D,
-                'Flatten': Flatten,
-                'LSTM': LSTM,
-                'Dense': Dense,
-                'Dropout': Dropout,
-                'Input': Input
-            }
+            # Import joblib for loading statistical models
+            import joblib
             
             # Load base models
             base_dir = load_dir / "base_models"
             base_models_loaded = 0
             if base_dir.exists():
-                for model_file in base_dir.glob("*_base.h5"):
+                for model_file in base_dir.glob("*_base.joblib"):
                     model_type = model_file.stem.replace('_base', '')
                     try:
-                        loaded_model = tf.keras.models.load_model(
-                            model_file, 
-                            custom_objects=custom_objects,
-                            compile=False
-                        )
+                        loaded_model = self.universal_architectures.load_statistical_model(model_file)
                         
                         # Perform integrity check after loading
                         try:
                             logger.info(f"Base {model_type} - Post-load integrity check:")
-                            logger.info(f"  - Model name: {loaded_model.name}")
-                            logger.info(f"  - Total parameters: {loaded_model.count_params():,}")
-                            logger.info(f"  - Input shape: {loaded_model.input_shape if hasattr(loaded_model, 'input_shape') else 'Multiple inputs'}")
-                            logger.info(f"  - Output shape: {loaded_model.output_shape if hasattr(loaded_model, 'output_shape') else 'Multiple outputs'}")
-                            logger.info(f"  - Number of layers: {len(loaded_model.layers)}")
+                            if hasattr(loaded_model, '__class__'):
+                                logger.info(f"  - Model type: {loaded_model.__class__.__name__}")
+                            if hasattr(loaded_model, 'n_features_in_'):
+                                logger.info(f"  - Features trained on: {loaded_model.n_features_in_}")
+                            if hasattr(loaded_model, 'classes_'):
+                                logger.info(f"  - Classes: {loaded_model.classes_}")
                             
-                            # Test model connectivity with dummy prediction
+                            # Test model with dummy prediction for statistical models
                             try:
-                                if hasattr(loaded_model, 'input_shape') and loaded_model.input_shape:
-                                    # Handle both single and multiple input models
-                                    if isinstance(loaded_model.input_shape, tuple):
-                                        # Single input model
-                                        dummy_input = np.random.random((1,) + loaded_model.input_shape[1:])
-                                    else:
-                                        # Multiple input model - use first input shape (feature input)
-                                        dummy_input = [np.random.random((1,) + tuple(loaded_model.input_shape[0][1:])),
-                                                     np.random.random((1, 1))]  # symbol input
-                                    dummy_output = loaded_model.predict(dummy_input, verbose=0)
-                                    logger.info(f"  - Post-load connectivity test: PASSED (output shape: {dummy_output.shape})")
+                                if hasattr(loaded_model, 'n_features_in_'):
+                                    dummy_input = np.random.random((1, loaded_model.n_features_in_))
+                                    dummy_output = loaded_model.predict_proba(dummy_input) if hasattr(loaded_model, 'predict_proba') else loaded_model.predict(dummy_input)
+                                    logger.info(f"  - Post-load prediction test: PASSED (output shape: {dummy_output.shape})")
                                 else:
-                                    logger.info(f"  - Post-load connectivity test: SKIPPED (no input_shape attribute)")
-                            except Exception as conn_error:
-                                logger.warning(f"  - Post-load connectivity test: FAILED ({conn_error})")
+                                    logger.info(f"  - Post-load prediction test: SKIPPED (no feature info)")
+                            except Exception as pred_error:
+                                logger.warning(f"  - Post-load prediction test: FAILED ({pred_error})")
                                 
                             self.base_models[model_type] = loaded_model
                             base_models_loaded += 1
-                            logger.info(f"✓ Loaded and verified base {model_type} model")
+                            logger.info(f"✓ Loaded and verified base {model_type} statistical model")
                             
                         except Exception as integrity_error:
                             logger.error(f"Base {model_type} - Post-load integrity check FAILED: {integrity_error}")
                             logger.error(f"  - Model loaded but failed verification, skipping")
                             
                     except Exception as e:
-                        logger.error(f"Failed to load base {model_type} model: {e}")
+                        logger.error(f"Failed to load base {model_type} statistical model: {e}")
             
             # Load symbol-specific models
             symbol_dir = load_dir / "symbol_models"
@@ -2518,60 +3100,44 @@ class UniversalTrainer:
                         model_type = type_dir.name
                         self.symbol_models[model_type] = {}
                         
-                        for model_file in type_dir.glob("*.h5"):
+                        for model_file in type_dir.glob("*.joblib"):
                             symbol = model_file.stem
                             try:
-                                loaded_model = tf.keras.models.load_model(
-                                    model_file,
-                                    custom_objects=custom_objects,
-                                    compile=False
-                                )
+                                loaded_model = self.universal_architectures.load_statistical_model(model_file)
                                 
                                 # Perform integrity check after loading
                                 try:
                                     logger.info(f"Symbol {symbol} {model_type} - Post-load integrity check:")
-                                    logger.info(f"  - Model name: {loaded_model.name}")
-                                    logger.info(f"  - Total parameters: {loaded_model.count_params():,}")
-                                    logger.info(f"  - Input shape: {loaded_model.input_shape if hasattr(loaded_model, 'input_shape') else 'Multiple inputs'}")
-                                    logger.info(f"  - Output shape: {loaded_model.output_shape if hasattr(loaded_model, 'output_shape') else 'Multiple outputs'}")
-                                    logger.info(f"  - Number of layers: {len(loaded_model.layers)}")
+                                    if hasattr(loaded_model, '__class__'):
+                                        logger.info(f"  - Model type: {loaded_model.__class__.__name__}")
+                                    if hasattr(loaded_model, 'n_features_in_'):
+                                        logger.info(f"  - Features trained on: {loaded_model.n_features_in_}")
+                                    if hasattr(loaded_model, 'classes_'):
+                                        logger.info(f"  - Classes: {loaded_model.classes_}")
                                     
-                                    # Test model connectivity with dummy prediction
+                                    # Test model with dummy prediction for statistical models
                                     try:
-                                        if hasattr(loaded_model, 'input_shape') and loaded_model.input_shape:
-                                            # Handle both single and multiple input models
-                                            if isinstance(loaded_model.input_shape, tuple):
-                                                # Single input model
-                                                dummy_input = np.random.random((1,) + loaded_model.input_shape[1:])
-                                            else:
-                                                # Multiple input model - use first input shape (feature input)
-                                                dummy_input = [np.random.random((1,) + tuple(loaded_model.input_shape[0][1:])),
-                                                             np.random.random((1, 1))]  # symbol input
-                                            dummy_output = loaded_model.predict(dummy_input, verbose=0)
-                                            logger.info(f"  - Post-load connectivity test: PASSED (output shape: {dummy_output.shape})")
+                                        if hasattr(loaded_model, 'n_features_in_'):
+                                            dummy_input = np.random.random((1, loaded_model.n_features_in_))
+                                            dummy_output = loaded_model.predict_proba(dummy_input) if hasattr(loaded_model, 'predict_proba') else loaded_model.predict(dummy_input)
+                                            logger.info(f"  - Post-load prediction test: PASSED (output shape: {dummy_output.shape})")
                                         else:
-                                            logger.info(f"  - Post-load connectivity test: SKIPPED (no input_shape attribute)")
-                                    except Exception as conn_error:
-                                        logger.warning(f"  - Post-load connectivity test: FAILED ({conn_error})")
+                                            logger.info(f"  - Post-load prediction test: SKIPPED (no feature info)")
+                                    except Exception as pred_error:
+                                        logger.warning(f"  - Post-load prediction test: FAILED ({pred_error})")
                                         
                                     self.symbol_models[model_type][symbol] = loaded_model
                                     symbol_models_loaded += 1
-                                    logger.info(f"✓ Loaded and verified {model_type} model for {symbol}")
+                                    logger.info(f"✓ Loaded and verified {model_type} statistical model for {symbol}")
                                     
                                 except Exception as integrity_error:
                                     logger.error(f"Symbol {symbol} {model_type} - Post-load integrity check FAILED: {integrity_error}")
                                     logger.error(f"  - Model loaded but failed verification, marking as corrupted")
                                     corrupted_models.append(f"{model_type}/{symbol}")
                                     
-                            except ValueError as e:
-                                if "inputs` not connected to `outputs" in str(e):
-                                    corrupted_models.append(f"{model_type}/{symbol}")
-                                    logger.warning(f"⚠️  Corrupted {model_type} model for {symbol} (architectural issue) - will be regenerated during training")
-                                    logger.error(f"  - ValueError details: {e}")
-                                else:
-                                    logger.error(f"Failed to load {model_type} model for {symbol}: {e}")
                             except Exception as e:
-                                logger.error(f"Failed to load {model_type} model for {symbol}: {e}")
+                                logger.error(f"Failed to load {model_type} statistical model for {symbol}: {e}")
+                                corrupted_models.append(f"{model_type}/{symbol}")
             
             total_models = base_models_loaded + symbol_models_loaded
             
@@ -2587,3 +3153,150 @@ class UniversalTrainer:
         except Exception as e:
             logger.error(f"Error loading universal models: {e}")
             return False
+    
+    async def phase1_universal_base_training(self, data_loader: DataPipeline, config: UniversalTrainingConfig) -> Dict[str, Any]:
+        """
+        Phase 1: Train statistical models on 2D aggregated features.
+        
+        Args:
+            data_loader: DataLoader instance for loading training data
+            config: Training configuration
+            
+        Returns:
+            Dict containing training results and model information
+        """
+        logger.info("Starting Phase 1: Universal Base Training with Statistical Models")
+        
+        # Initialize results dictionary
+        results = {
+            'models_trained': [],
+            'training_metrics': {},
+            'validation_metrics': {},
+            'model_configs': {},
+            'feature_importance': {},
+            'training_time': 0
+        }
+        
+        start_time = time.time()
+        
+        try:
+            # Step 2: Feature Selection → Use features already selected in train_universal_models
+            logger.info("Step 2: Feature Selection - Using pre-selected features from train_universal_models...")
+            
+            # Verify selected features are available (should be set by train_universal_models)
+            if self.selected_features is None and self.selected_feature_indices is None:
+                logger.warning("No pre-existing selected features available, will use all features")
+            else:
+                logger.info(f"Using selected features: {len(self.selected_features) if self.selected_features else 0} feature names, {len(self.selected_feature_indices) if self.selected_feature_indices else 0} feature indices")
+            
+            # Step 1 & 3: Data Preparation using prepare_universal_dataset approach
+            logger.info("Step 1 & 3: Data Preparation using comprehensive dataset preparation...")
+            
+            # Use the comprehensive prepare_universal_dataset approach
+            # Calculate date range from config
+            from datetime import datetime, timedelta
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=config.base_training_window * 30)  # Convert months to days
+            
+            X_train_data, y_train, X_val_data, y_val = await self.prepare_universal_dataset(
+                symbols=config.symbols,
+                start_date=start_date.strftime('%Y-%m-%d'),
+                end_date=end_date.strftime('%Y-%m-%d'),
+                config=config  # Pass config to enable force_2d_for_statistical
+            )
+            
+            # Unpack the returned data lists
+            X_train_features, X_train_symbols = X_train_data
+            X_val_features, X_val_symbols = X_val_data
+            
+            logger.info(f"Dataset prepared: Training set {X_train_features.shape[0]} samples, Validation set {X_val_features.shape[0]} samples")
+            logger.info(f"Feature count: {X_train_features.shape[1]} features")
+            logger.info(f"Positive samples in training: {np.sum(y_train)} ({np.mean(y_train):.2%})")
+            
+            # Step 4: Validation - Calculate expected unique features and validate feature count
+            logger.info("Step 4: Validation - Checking feature count consistency...")
+            expected_unique_features = self._calculate_expected_unique_features()
+            if X_train_features.shape[1] < expected_unique_features:
+                logger.warning(f"  - WARNING: Only {X_train_features.shape[1]} features in final dataset, expected ~{expected_unique_features} (unique base features from selection)")
+            else:
+                logger.info(f"  - ✅ FEATURE COUNT VALIDATED: {X_train_features.shape[1]} features meets expected minimum of {expected_unique_features}")
+            
+            # Step 5: Training → phase1_universal_base_training applies selections
+            logger.info("Step 5: Training - Training statistical models with selected features...")
+            statistical_models = [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM, ModelType.ENSEMBLE]
+            
+            for model_type in statistical_models:
+                try:
+                    logger.info(f"Training {model_type.value} model...")
+                    
+                    # Train model
+                    model, val_loss, metrics = await self.train_statistical_model(
+                        model_type=model_type,
+                        X_train=X_train_features,
+                        y_train=y_train,
+                        X_val=X_val_features,
+                        y_val=y_val,
+                        config=self.model_configs[model_type]
+                    )
+                    
+                    # Store model
+                    self.base_models[model_type.value] = model
+                    
+                    # Record results
+                    results['models_trained'].append(model_type.value)
+                    results['validation_metrics'][model_type.value] = {
+                        'loss': val_loss,
+                        **metrics  # Include all comprehensive metrics
+                    }
+                    
+                    # Get feature importance for tree-based models
+                    if model_type in [ModelType.XGBOOST, ModelType.RANDOM_FOREST]:
+                        try:
+                            if hasattr(model, 'feature_importances_'):
+                                importance = model.feature_importances_
+                            elif hasattr(model, 'get_score'):
+                                importance_dict = model.get_score(importance_type='weight')
+                                importance = np.array([importance_dict.get(f'f{i}', 0) for i in range(X_train_features.shape[1])])
+                            else:
+                                importance = None
+                            
+                            if importance is not None:
+                                results['feature_importance'][model_type.value] = importance.tolist()
+                                logger.info(f"Extracted feature importance for {model_type.value}")
+                        except Exception as e:
+                            logger.warning(f"Could not extract feature importance for {model_type.value}: {e}")
+                    
+                    logger.info(f"✓ {model_type.value} training completed: val_loss={val_loss:.4f}, val_accuracy={metrics['accuracy']:.4f}")
+                    logger.info(f"  📊 Trading Metrics - Precision: {metrics['precision']:.4f}, Recall: {metrics['recall']:.4f}, F1: {metrics['f1_score']:.4f}")
+                    logger.info(f"  🎯 ROC-AUC: {metrics['roc_auc']:.4f}, High Confidence Accuracy (>0.7): {metrics['high_confidence_accuracy']:.4f}")
+                    logger.info(f"  💰 Win Rates by Confidence - 0.5-0.6: {metrics['win_rate_0.5-0.6']:.3f}, 0.7-0.8: {metrics['win_rate_0.7-0.8']:.3f}, 0.9-1.0: {metrics['win_rate_0.9-1.0']:.3f}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to train {model_type.value} model: {e}")
+                    continue
+            
+            # Calculate training time
+            training_time = time.time() - start_time
+            results['training_time'] = training_time
+            
+            # Store model configurations
+            results['model_configs'] = {
+                model_type: config_dict for model_type, config_dict in self.model_configs.items()
+                if model_type in [mt.value for mt in statistical_models]
+            }
+            
+            logger.info(f"Phase 1 Universal Base Training completed in {training_time:.2f} seconds")
+            logger.info(f"Successfully trained {len(results['models_trained'])} statistical models")
+            
+            # DEBUG: Log contents of self.base_models at end of phase1
+            logger.info("=== DEBUG: self.base_models contents at END of phase1 ===")
+            logger.info(f"self.base_models keys: {list(self.base_models.keys())}")
+            for key, model in self.base_models.items():
+                logger.info(f"  - {key}: {type(model).__name__} (id: {id(model)})")
+            logger.info("=== END DEBUG phase1 ===")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in Phase 1 Universal Base Training: {e}")
+            raise

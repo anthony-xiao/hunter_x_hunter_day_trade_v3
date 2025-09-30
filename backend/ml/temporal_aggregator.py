@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional, Tuple, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from loguru import logger
 import warnings
 warnings.filterwarnings('ignore')
@@ -21,7 +21,7 @@ class AggregationConfig:
     
     # Advanced aggregation options
     include_quantiles: bool = False    # 25th, 50th, 75th percentiles
-    quantile_levels: List[float] = field(default_factory=lambda: [0.25, 0.5, 0.75])
+    quantile_levels: List[float] = None  # [0.25, 0.5, 0.75]
     
     # Trend calculation options
     trend_method: str = 'linear'       # 'linear', 'polynomial'
@@ -32,6 +32,10 @@ class AggregationConfig:
     
     # Feature naming
     separator: str = '_'               # Feature name separator
+    
+    def __post_init__(self):
+        if self.quantile_levels is None:
+            self.quantile_levels = [0.25, 0.5, 0.75]
 
 class TemporalAggregator:
     """

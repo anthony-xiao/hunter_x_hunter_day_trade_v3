@@ -13,6 +13,7 @@ from ml.ml_feature_engineering import FeatureEngineering as FeatureEngineer
 from trading.signal_generator import SignalGenerator
 from trading.execution_engine import ExecutionEngine, TradeSignal
 from trading.risk_manager import RiskManager
+from ml.model_types import ModelType
 from config import settings
 
 @dataclass
@@ -816,11 +817,38 @@ class TradingOrchestrator:
                     market_data = None
                 
                 if market_data is not None and len(market_data) >= 10:
-                    # Calculate position size with risk management
-                    position_size = await self.risk_manager.calculate_position_size(
-                        signal=signal,
-                        market_data=market_data
-                    )
+                    # Check if signal contains statistical model predictions
+                    has_statistical_models = False
+                    if hasattr(signal, 'model_predictions') and signal.model_predictions:
+                        statistical_model_types = {ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM, ModelType.ENSEMBLE}
+                        signal_model_types = set()
+                        
+                        # Extract model types from model_predictions
+                        for model_name in signal.model_predictions.keys():
+                            if 'xgboost' in model_name.lower() or 'xgb' in model_name.lower():
+                                signal_model_types.add(ModelType.XGBOOST)
+                            elif 'random_forest' in model_name.lower() or 'rf' in model_name.lower():
+                                signal_model_types.add(ModelType.RANDOM_FOREST)
+                            elif 'svm' in model_name.lower():
+                                signal_model_types.add(ModelType.SVM)
+                            elif 'ensemble' in model_name.lower():
+                                signal_model_types.add(ModelType.ENSEMBLE)
+                        
+                        has_statistical_models = bool(signal_model_types.intersection(statistical_model_types))
+                    
+                    # Use appropriate position sizing method
+                    if has_statistical_models:
+                        position_size = await self.risk_manager.calculate_statistical_model_position_size(
+                            signal=signal,
+                            market_data=market_data
+                        )
+                        logger.debug(f"Using statistical model position sizing for {signal.symbol}: {position_size}")
+                    else:
+                        position_size = await self.risk_manager.calculate_position_size(
+                            signal=signal,
+                            market_data=market_data
+                        )
+                        logger.debug(f"Using standard position sizing for {signal.symbol}: {position_size}")
                     
                     if position_size > 0:
                         risk_adjusted_signal = signal  # Use original signal with calculated position size

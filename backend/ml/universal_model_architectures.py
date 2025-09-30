@@ -7,9 +7,19 @@ from tensorflow.keras.layers import (
 )
 from tensorflow.keras.optimizers import Adam, RMSprop
 from tensorflow.keras.regularizers import l2
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
 import numpy as np
 from loguru import logger
+
+# Statistical model imports
+import xgboost as xgb
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.svm import SVC
+from sklearn.model_selection import cross_val_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+import joblib
+import os
+from pathlib import Path
 
 class UniversalModelArchitectures:
     """
@@ -998,3 +1008,202 @@ class UniversalModelArchitectures:
             'loss': model.loss,
             'metrics': model.metrics_names
         }
+
+    def create_universal_xgboost(self, feature_dim: int, config: Dict, model_name: str = "universal_xgboost") -> Any:
+        """
+        Create XGBoost model optimized for trading aggregated features.
+        """
+        import xgboost as xgb
+        
+        logger.info(f"Creating XGBoost model with {feature_dim} aggregated features")
+        
+        model = xgb.XGBClassifier(
+            # Core parameters
+            n_estimators=config.get('n_estimators', 1000),
+            max_depth=config.get('max_depth', 7),
+            learning_rate=config.get('learning_rate', 0.15),
+            
+            # Regularization
+            subsample=config.get('subsample', 0.8),
+            colsample_bytree=config.get('colsample_bytree', 0.8),
+            reg_alpha=config.get('reg_alpha', 0.1),
+            reg_lambda=config.get('reg_lambda', 0.1),
+            
+            # Performance
+            n_jobs=-1,
+            random_state=42,
+            
+            # Trading-specific
+            objective='binary:logistic',
+            tree_method='hist'
+        )
+        
+        logger.info(f"Created XGBoost model: {model.n_estimators} trees")
+        return model
+
+    def create_universal_random_forest(self, feature_dim: int, config: Dict, model_name: str = "universal_random_forest") -> Any:
+        """
+        Create Random Forest model optimized for trading aggregated features.
+        """
+        from sklearn.ensemble import RandomForestClassifier
+        
+        logger.info(f"Creating Random Forest model with {feature_dim} aggregated features")
+        
+        model = RandomForestClassifier(
+            n_estimators=config.get('n_estimators', 500),
+            max_depth=config.get('max_depth', 12),
+            min_samples_split=config.get('min_samples_split', 10),
+            min_samples_leaf=config.get('min_samples_leaf', 5),
+            max_features=config.get('max_features', 'sqrt'),
+            bootstrap=config.get('bootstrap', True),
+            
+            # Performance
+            n_jobs=-1,
+            random_state=42,
+            class_weight='balanced'
+        )
+        
+        logger.info(f"Created Random Forest: {model.n_estimators} trees")
+        return model
+
+    def create_universal_svm(self, feature_dim: int, config: Dict, model_name: str = "universal_svm") -> Any:
+        """
+        Create SVM model optimized for trading aggregated features.
+        """
+        from sklearn.svm import SVC
+        
+        logger.info(f"Creating SVM model with {feature_dim} aggregated features")
+        
+        # Use linear kernel for large datasets to avoid hanging
+        # RBF kernel can be very slow on datasets with many features
+        kernel = config.get('kernel', 'linear' if feature_dim > 20 else 'rbf')
+        
+        model = SVC(
+            kernel=kernel,
+            C=config.get('C', 0.1),  # Lower C for faster training
+            gamma=config.get('gamma', 'scale'),
+            class_weight=config.get('class_weight', 'balanced'),
+            
+            # Enable probability estimates
+            probability=True,
+            cache_size=2000,  # Increased cache for better performance
+            max_iter=1000,    # Limit iterations to prevent hanging
+            random_state=42
+        )
+        
+        logger.info(f"Created SVM: kernel={model.kernel}, C={model.C}, max_iter={model.max_iter}")
+        return model
+
+    def create_ensemble_model(self, feature_dim: int, config: Dict, model_name: str = "universal_ensemble") -> Dict:
+        """
+        Create ensemble combining XGBoost, Random Forest, and SVM.
+        """
+        logger.info(f"Creating ensemble model with {feature_dim} aggregated features")
+        
+        # Create individual models
+        xgb_model = self.create_universal_xgboost(feature_dim, config.get('xgboost', {}))
+        rf_model = self.create_universal_random_forest(feature_dim, config.get('random_forest', {}))
+        svm_model = self.create_universal_svm(feature_dim, config.get('svm', {}))
+        
+        ensemble = {
+            'models': {
+                'xgboost': xgb_model,
+                'random_forest': rf_model,
+                'svm': svm_model
+            },
+            'weights': {
+                'xgboost': config.get('xgb_weight', 0.45),
+                'random_forest': config.get('rf_weight', 0.35),
+                'svm': config.get('svm_weight', 0.20)
+            },
+            'feature_dim': feature_dim,
+            'name': model_name
+        }
+        
+        logger.info(f"Created ensemble with weights: {ensemble['weights']}")
+        return ensemble
+
+    def save_statistical_model(self, model, model_path):
+        """Save statistical models using joblib."""
+        from pathlib import Path
+        import joblib
+        import json
+        
+        try:
+            model_path = Path(model_path)
+            
+            if isinstance(model, dict) and 'models' in model:
+                # Ensemble model
+                ensemble_dir = model_path.parent / f"{model_path.stem}_ensemble"
+                ensemble_dir.mkdir(exist_ok=True)
+                
+                for model_name, individual_model in model['models'].items():
+                    individual_path = ensemble_dir / f"{model_name}.joblib"
+                    joblib.dump(individual_model, individual_path)
+                
+                # Save ensemble configuration
+                ensemble_config = {
+                    'weights': model['weights'],
+                    'feature_dim': model['feature_dim'],
+                    'name': model['name']
+                }
+                config_path = ensemble_dir / "ensemble_config.json"
+                with open(config_path, 'w') as f:
+                    json.dump(ensemble_config, f)
+                    
+                logger.info(f"Saved ensemble model to {ensemble_dir}")
+            else:
+                # Individual statistical model
+                joblib_path = str(model_path).replace('.h5', '.joblib')
+                joblib.dump(model, joblib_path)
+                logger.info(f"Saved statistical model to {joblib_path}")
+                
+        except Exception as e:
+            logger.error(f"Failed to save statistical model: {e}")
+            raise
+
+    def load_statistical_model(self, model_path):
+        """Load statistical models using joblib."""
+        from pathlib import Path
+        import joblib
+        import json
+        
+        try:
+            model_path = Path(model_path)
+            
+            # Check if it's an ensemble
+            ensemble_dir = model_path.parent / f"{model_path.stem}_ensemble"
+            if ensemble_dir.exists():
+                # Load ensemble
+                models = {}
+                for model_file in ensemble_dir.glob("*.joblib"):
+                    model_name = model_file.stem
+                    models[model_name] = joblib.load(model_file)
+                
+                # Load ensemble configuration
+                config_path = ensemble_dir / "ensemble_config.json"
+                with open(config_path, 'r') as f:
+                    ensemble_config = json.load(f)
+                
+                ensemble = {
+                    'models': models,
+                    'weights': ensemble_config['weights'],
+                    'feature_dim': ensemble_config['feature_dim'],
+                    'name': ensemble_config['name']
+                }
+                
+                logger.info(f"Loaded ensemble model from {ensemble_dir}")
+                return ensemble
+            else:
+                # Individual statistical model
+                joblib_path = str(model_path).replace('.h5', '.joblib')
+                if Path(joblib_path).exists():
+                    model = joblib.load(joblib_path)
+                    logger.info(f"Loaded statistical model from {joblib_path}")
+                    return model
+                else:
+                    raise FileNotFoundError(f"Statistical model not found at {joblib_path}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to load statistical model: {e}")
+            raise

@@ -17,7 +17,8 @@ from database.models import init_db
 from data.data_pipeline import DataPipeline
 from ml.ml_feature_engineering import FeatureEngineering as FeatureEngineer
 from data.polygon_websocket import websocket_manager
-from ml.model_trainer import ModelTrainer
+from ml.universal_trainer import UniversalTrainer
+from ml.universal_feature_engineering import UniversalFeatureEngineering
 from trading.signal_generator import SignalGenerator
 from trading.execution_engine import ExecutionEngine, TradeSignal
 from trading.risk_manager import RiskManager
@@ -26,7 +27,7 @@ from trading.trading_orchestrator import orchestrator, start_event_driven_tradin
 # Global instances
 data_pipeline: Optional[DataPipeline] = None
 feature_engineer: Optional[FeatureEngineer] = None
-model_trainer: Optional[ModelTrainer] = None
+model_trainer: Optional[UniversalTrainer] = None
 signal_generator: Optional[SignalGenerator] = None
 execution_engine: Optional[ExecutionEngine] = None
 risk_manager: Optional[RiskManager] = None
@@ -130,9 +131,10 @@ async def initialize_trading_system():
         from database import db_manager
         feature_engineer = FeatureEngineer(supabase_client=db_manager.get_supabase_client())
         
-        # Initialize model trainer
-        logger.info("Initializing model trainer...")
-        model_trainer = ModelTrainer(feature_count=50, create_model_dir=False)
+        # Initialize universal trainer
+        logger.info("Initializing universal trainer...")
+        universal_feature_engineering = UniversalFeatureEngineering(supabase_client=db_manager.get_supabase_client(), data_pipeline=data_pipeline)
+        model_trainer = UniversalTrainer(data_pipeline=data_pipeline, feature_engineering=universal_feature_engineering)
         
         # Initialize signal generator
         logger.info("Initializing signal generator...")
@@ -351,10 +353,30 @@ async def trading_loop():
                                 # Apply risk management
                                 if risk_manager:
                                     logger.info(f"Applying risk management for {signal.symbol} {signal.action} signal")
-                                    position_size = await risk_manager.calculate_position_size(
-                                        signal=signal,
-                                        market_data=market_data.get(signal.symbol)
-                                    )
+                                    
+                                    # Check if signal contains statistical model predictions
+                                    has_statistical_models = False
+                                    if hasattr(signal, 'model_predictions') and signal.model_predictions:
+                                        statistical_model_types = {'xgboost', 'random_forest', 'svm', 'ensemble'}
+                                        has_statistical_models = any(
+                                            model_type.lower() in statistical_model_types 
+                                            for model_type in signal.model_predictions.keys()
+                                        )
+                                    
+                                    # Use appropriate position sizing method
+                                    if has_statistical_models:
+                                        logger.info(f"Using statistical model position sizing for {signal.symbol}")
+                                        position_size = await risk_manager.calculate_statistical_model_position_size(
+                                            signal=signal,
+                                            market_data=market_data.get(signal.symbol)
+                                        )
+                                    else:
+                                        logger.info(f"Using standard position sizing for {signal.symbol}")
+                                        position_size = await risk_manager.calculate_position_size(
+                                            signal=signal,
+                                            market_data=market_data.get(signal.symbol)
+                                        )
+                                    
                                     logger.info(f"Risk management result for {signal.symbol}: position_size={position_size}")
                                     
                                     if position_size > 0:
@@ -1613,36 +1635,61 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
             logger.warning(f"Error with load_universal_data, using pre-verified data: {e}")
             universal_data = all_data
         
-        # Phase 3: Universal model training
-        job_status["phase"] = "universal_training"
+        # Phase 3: Statistical Model Training (XGBoost, RandomForest, SVM, Ensemble)
+        job_status["phase"] = "statistical_model_training"
         job_status["progress"] = 0.7
         
-        logger.info(f"Universal training job {job_id}: Starting universal model training")
+        logger.info(f"Universal training job {job_id}: Starting STATISTICAL MODEL training (XGBoost, RandomForest, SVM, Ensemble)")
         
-        # Initialize universal training
-        model_trainer.initialize_universal_training(list(universal_data.keys()))
+        # Train statistical models using phase1_universal_base_training
+        from ml.universal_trainer import UniversalTrainingConfig
         
-        # Train universal models
-        training_result = await model_trainer.train_universal_models(
+        # Create training configuration for statistical models
+        training_config = UniversalTrainingConfig(
+            base_training_window=12,
+            base_validation_window=3,
+            base_lookback_window=30,
             symbols=list(universal_data.keys()),
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            enable_smote=True
         )
         
-        job_status["phase_details"]["universal_training"] = {
-            "models_trained": training_result.get('symbols_trained', []) if training_result else [],
-            "training_metrics": training_result.get('performance_summary', {}) if training_result else {}
+        # Call train_universal_models instead of direct phase1_universal_base_training
+        # This ensures proper feature selection initialization before training
+        training_result = await model_trainer.train_universal_models(
+            symbols=list(universal_data.keys()),
+            start_date=start_date.strftime('%Y-%m-%d'),
+            end_date=end_date.strftime('%Y-%m-%d')
+        )
+        
+        job_status["phase_details"]["statistical_model_training"] = {
+            "models_trained": training_result.get('models_trained', []) if training_result else [],
+            "training_metrics": training_result.get('validation_metrics', {}) if training_result else {},
+            "feature_importance": training_result.get('feature_importance', {}) if training_result else {},
+            "model_configs": training_result.get('model_configs', {}) if training_result else {},
+            "training_time": training_result.get('training_time', 0) if training_result else 0,
+            "model_types": ["XGBoost", "RandomForest", "SVM", "Ensemble"]
         }
         
-        # Phase 4: Model validation and saving
-        job_status["phase"] = "validation_and_saving"
+        # Phase 4: Statistical Model validation and saving
+        job_status["phase"] = "statistical_model_validation_and_saving"
         job_status["progress"] = 0.9
         
-        logger.info(f"Universal training job {job_id}: Validating and saving models")
+        logger.info(f"Universal training job {job_id}: Validating and saving statistical models")
         
-        # Save universal models
-        if training_result and training_result.get('training_completed', False):
-            await model_trainer.save_universal_models()
+        # Save statistical models
+        if training_result and training_result.get('models_trained', []):
+            models_trained = training_result.get('models_trained', [])
+            validation_metrics = training_result.get('validation_metrics', {})
+            
+            # Log each statistical model's performance
+            for model_name in models_trained:
+                metrics = validation_metrics.get(model_name, {})
+                accuracy = metrics.get('accuracy', 0.0)
+                logger.info(f"Saving statistical model: {model_name} with accuracy: {accuracy:.4f}")
+            
+            await model_trainer.save_universal_models(Path('models/universal'))
             
             job_status["status"] = "completed"
             job_status["progress"] = 1.0
@@ -1650,26 +1697,39 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
                 "models_saved": True,
                 "completion_time": datetime.now(timezone.utc).isoformat(),
                 "symbols_trained": len(universal_data),
+                "statistical_models_trained": models_trained,
+                "best_model_accuracy": max([metrics.get('accuracy', 0.0) for metrics in validation_metrics.values()]) if validation_metrics else 0.0,
+                "training_time_total": training_result.get('training_time', 0),
                 "data_verification_summary": {
                     "symbols_downloaded_data": len(symbols_needing_data),
                     "symbols_engineered_features": len(symbols_needing_features)
+                },
+                "model_performance_summary": {
+                    model_name: f"Accuracy: {metrics.get('accuracy', 0.0):.4f}, Loss: {metrics.get('loss', 0.0):.4f}"
+                    for model_name, metrics in validation_metrics.items()
                 }
             }
             
-            logger.info(f"Universal training job {job_id}: Completed successfully")
+            logger.info(f"Universal training job {job_id}: Statistical model training completed successfully")
+            logger.info(f"Trained models: {models_trained}")
+            logger.info(f"Total training time: {training_result.get('training_time', 0):.2f} seconds")
         else:
             job_status["status"] = "failed"
-            job_status["error"] = "Universal training failed"
-            logger.error(f"Universal training job {job_id}: Failed")
+            job_status["error"] = "Statistical model training failed - no models were trained successfully"
+            logger.error(f"Universal training job {job_id}: Statistical model training failed")
         
     except Exception as e:
-        logger.error(f"Universal training job {job_id} failed: {e}")
+        logger.error(f"Statistical model training job {job_id} failed: {e}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
         
         job_status["status"] = "failed"
-        job_status["error"] = str(e)
-        job_status["phase_details"]["error_details"] = traceback.format_exc()
+        job_status["error"] = f"Statistical model training failed: {str(e)}"
+        job_status["phase_details"]["error_details"] = {
+            "error_message": str(e),
+            "traceback": traceback.format_exc(),
+            "failed_phase": job_status.get("phase", "unknown")
+        }
 
 @app.get("/data/status")
 async def get_data_status():

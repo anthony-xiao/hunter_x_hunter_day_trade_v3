@@ -164,7 +164,7 @@ class FeatureEngineering:
             logger.info(f"Engineering features for {symbol} from {start_date} to {end_date} (training_mode={training_mode})")
             
             # Get base market data first to determine available timestamps
-            market_data = await self._get_market_data(symbol, start_date, end_date)
+            market_data = self._get_market_data(symbol, start_date, end_date)
             
             if market_data is None or len(market_data) == 0:
                 logger.warning(f"No market data available for {symbol} in the specified range")
@@ -230,12 +230,12 @@ class FeatureEngineering:
             logger.error(f"Feature engineering failed for {symbol}: {e}")
             return self._get_empty_feature_set()
     
-    async def _get_market_data(self, symbol: str, start_date: datetime, end_date: datetime) -> Optional[pd.DataFrame]:
+    def _get_market_data(self, symbol: str, start_date: datetime, end_date: datetime) -> Optional[pd.DataFrame]:
         """Get market data for feature engineering using Supabase client with pagination"""
         try:
             # Special handling for SPY - ensure data is available before querying
             if symbol == 'SPY':
-                await self.data_pipeline.ensure_spy_data_available(start_date, end_date)
+                self.data_pipeline.ensure_spy_data_available(start_date, end_date)
             
             all_data = []
             page_size = 1000  # Supabase hard limit
@@ -730,7 +730,7 @@ class FeatureEngineering:
             await data_pipeline.ensure_spy_data_available(start_date, end_date)
             
             # Get SPY data for market correlation
-            spy_data = await self._get_market_data('SPY', start_date, end_date)
+            spy_data = self._get_market_data('SPY', start_date, end_date)
             
             if spy_data is not None and len(spy_data) > 0:
                 # Align data - create DataFrame with explicit unique column names

@@ -1,0 +1,1 @@
+{"weights": {"xgboost": 0.45, "random_forest": 0.35, "svm": 0.2}, "feature_dim": 45, "name": "universal_ensemble"}

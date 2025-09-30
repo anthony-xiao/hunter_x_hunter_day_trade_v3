@@ -23,7 +23,6 @@ import talib
 
 from config import settings
 from .execution_engine import TradeSignal
-from ml.model_trainer import ModelTrainer
 from ml.universal_trainer import UniversalTrainer
 from ml.universal_model_architectures import UniversalModelArchitectures
 from ml.universal_feature_engineering import UniversalFeatureEngineering
@@ -36,10 +35,8 @@ class SignalType(Enum):
     HOLD = "hold"
     CLOSE = "close"
 
-class ModelType(Enum):
-    LSTM = "lstm"
-    CNN = "cnn"
-    TRANSFORMER = "transformer"
+# Import ModelType from ml module to avoid circular imports
+from ml.model_types import ModelType
 
 class ConfidenceLevel(Enum):
     LOW = "low"        # 0.5-0.6
@@ -137,11 +134,11 @@ class DirectionalConfidence:
         )
 
 class SignalGenerator:
-    def __init__(self, model_trainer: Optional[ModelTrainer] = None, supabase_client=None, data_pipeline=None):
+    def __init__(self, model_trainer: Optional[UniversalTrainer] = None, supabase_client=None, data_pipeline=None):
         self.models: Dict[str, Dict[ModelType, Any]] = {}  # symbol -> model_type -> model
         self.scalers: Dict[str, StandardScaler] = {}  # symbol -> scaler
         
-        # Store ModelTrainer instance for universal model loading
+        # Store UniversalTrainer instance for universal model loading
         self.model_trainer = model_trainer
         
         # Store Supabase client for database operations
@@ -162,9 +159,9 @@ class SignalGenerator:
         # Initialize ensemble weights - will be loaded from optimization results
         self.ensemble_weights: Dict[str, Dict[ModelType, float]] = {}  # symbol -> model_type -> weight
         self.default_ensemble_weights = {
-            ModelType.LSTM: 0.35,
-            ModelType.CNN: 0.30,
-            ModelType.TRANSFORMER: 0.35
+            ModelType.XGBOOST: 0.35,
+            ModelType.RANDOM_FOREST: 0.30,
+            ModelType.SVM: 0.35
         }
         
         # Initialize ensemble configuration manager with absolute path
@@ -271,8 +268,8 @@ class SignalGenerator:
                     logger.info(f"📈 Sharpe ratio: {sharpe_ratio}")
             
             # Convert string keys to ModelType enum for internal use
-            # Filter out unsupported model types (random_forest, xgboost)
-            supported_models = {'lstm', 'cnn', 'transformer'}
+            # Filter out unsupported model types (legacy neural network models)
+            supported_models = {'xgboost', 'random_forest', 'svm', 'ensemble'}
             converted_weights = {}
             filtered_models = []
             
@@ -299,9 +296,9 @@ class SignalGenerator:
             logger.error(f"❌ Error loading optimized ensemble weights: {e}")
             # Fallback to default equal weights
             self.default_ensemble_weights = {
-                ModelType.LSTM: 0.33,
-                ModelType.CNN: 0.33,
-                ModelType.TRANSFORMER: 0.34
+                ModelType.XGBOOST: 0.33,
+                ModelType.RANDOM_FOREST: 0.33,
+                ModelType.SVM: 0.34
             }
             logger.info("⚠️  Using default equal ensemble weights as fallback:")
             logger.info("📊 Default ensemble weights:")
@@ -406,14 +403,15 @@ class SignalGenerator:
     
     def _set_default_model_configs(self) -> None:
         """Set default model configurations if loading fails"""
-        # Use 150 features to match the trained models
+        # Use 2D aggregated features for statistical models
         default_feature_count = 150  # Expected feature count from training metadata
         self.model_configs = {
-            'lstm': {'feature_count': default_feature_count},
-            'cnn': {'feature_count': default_feature_count},
-            'transformer': {'feature_count': default_feature_count}
+            'xgboost': {'feature_count': default_feature_count},
+            'random_forest': {'feature_count': default_feature_count},
+            'svm': {'feature_count': default_feature_count},
+            'ensemble': {'feature_count': default_feature_count}
         }
-        logger.info(f"Using default model configurations with {default_feature_count} features for all models")
+        logger.info(f"Using default model configurations with {default_feature_count} features for statistical models")
     
     async def load_feature_selection_results(self) -> bool:
         """Load feature selection results from the latest training"""
@@ -502,9 +500,9 @@ class SignalGenerator:
                 
                 # Initialize ensemble weights (equal weights initially)
                 self.ensemble_weights[symbol] = {
-                    ModelType.LSTM: 0.35,
-                    ModelType.CNN: 0.30,
-                    ModelType.TRANSFORMER: 0.35
+                    ModelType.XGBOOST: 0.33,
+                    ModelType.RANDOM_FOREST: 0.33,
+                    ModelType.SVM: 0.34
                 }
                 
                 # Load or create symbol-specific models (as fallback or primary)
@@ -531,66 +529,75 @@ class SignalGenerator:
             return False
     
     async def _load_or_create_models(self, symbol: str) -> None:
-        """Load existing models or create new ones using ModelTrainer's load_models method"""
+        """Load existing statistical models using joblib"""
         try:
             self.models[symbol] = {}
             
-            # Create a ModelTrainer instance to use its load_models method
-            # Set create_model_dir=False to avoid creating new directories
-            model_trainer = ModelTrainer(create_model_dir=False)
+            # Load statistical models from joblib files
+            from pathlib import Path
+            import joblib
             
             try:
-                # Load universal models into the ModelTrainer instance
-                from pathlib import Path
+                # Load universal statistical models
                 universal_models_dir = Path(os.path.dirname(os.path.dirname(__file__))) / 'models' / 'universal'
-                await model_trainer.load_universal_models(universal_models_dir)
                 
-                # Use universal models from ModelTrainer if available
-                # Map ModelTrainer's models to SignalGenerator's model structure
+                # Map statistical model types to file names
                 model_mapping = {
-                    'lstm': ModelType.LSTM,
-                    'cnn': ModelType.CNN,
-                    'transformer': ModelType.TRANSFORMER
+                    ModelType.XGBOOST: 'xgboost_model.joblib',
+                    ModelType.RANDOM_FOREST: 'random_forest_model.joblib', 
+                    ModelType.SVM: 'svm_model.joblib',
+                    ModelType.ENSEMBLE: 'ensemble_model.joblib'
                 }
                 
-                # Copy loaded universal models from ModelTrainer to SignalGenerator
-                for trainer_key, signal_type in model_mapping.items():
-                    universal_key = f"universal_{trainer_key}"
-                    if universal_key in model_trainer.models:
-                        self.models[symbol][signal_type] = model_trainer.models[universal_key]
-                        logger.info(f"✓ Using universal {signal_type.value} model for {symbol}")
+                # Load each statistical model
+                for model_type, filename in model_mapping.items():
+                    model_path = universal_models_dir / filename
+                    if model_path.exists():
+                        try:
+                            model = joblib.load(model_path)
+                            self.models[symbol][model_type] = model
+                            logger.info(f"✓ Loaded {model_type.value} model for {symbol} from {model_path}")
+                        except Exception as load_error:
+                            logger.error(f"Failed to load {model_type.value} model: {load_error}")
+                            self.models[symbol][model_type] = None
                     else:
-                        logger.warning(f"Universal model {trainer_key} not found, creating fallback")
-                        self.models[symbol][signal_type] = await self._create_model(signal_type, symbol)
+                        logger.warning(f"Statistical model file not found: {model_path}")
+                        self.models[symbol][model_type] = None
                 
-                # Copy scalers from ModelTrainer if available
-                if hasattr(model_trainer, 'scalers') and model_trainer.scalers:
-                    # ModelTrainer might have a single scaler or multiple scalers
-                    if isinstance(model_trainer.scalers, dict):
-                        # If multiple scalers, use the first one or a default key
-                        scaler_key = list(model_trainer.scalers.keys())[0] if model_trainer.scalers else None
-                        if scaler_key:
-                            self.scalers[symbol] = model_trainer.scalers[scaler_key]
+                # Load scalers from joblib file if available
+                scaler_path = universal_models_dir / 'scalers.joblib'
+                if scaler_path.exists():
+                    try:
+                        scalers = joblib.load(scaler_path)
+                        if isinstance(scalers, dict):
+                            # If multiple scalers, use the first one or a default key
+                            scaler_key = list(scalers.keys())[0] if scalers else None
+                            if scaler_key:
+                                self.scalers[symbol] = scalers[scaler_key]
+                            else:
+                                self.scalers[symbol] = StandardScaler()
                         else:
-                            self.scalers[symbol] = StandardScaler()
-                    else:
-                        # Single scaler
-                        self.scalers[symbol] = model_trainer.scalers
-                    logger.info(f"✓ Using universal scalers for {symbol}")
+                            # Single scaler
+                            self.scalers[symbol] = scalers
+                        logger.info(f"✓ Loaded scalers for {symbol} from {scaler_path}")
+                    except Exception as scaler_error:
+                        logger.error(f"Failed to load scalers: {scaler_error}")
+                        self.scalers[symbol] = StandardScaler()
+                        logger.info(f"Created default scaler for {symbol}")
                 else:
                     # Create default scaler if none available
                     self.scalers[symbol] = StandardScaler()
                     logger.info(f"Created default scaler for {symbol}")
                 
-                logger.info(f"Successfully configured models for {symbol} using universal models")
+                logger.info(f"Successfully configured statistical models for {symbol}")
                 
-            except Exception as trainer_error:
-                logger.error(f"Failed to use universal models: {trainer_error}")
-                logger.info(f"Falling back to creating new models for {symbol}")
+            except Exception as model_error:
+                logger.error(f"Failed to load statistical models: {model_error}")
+                logger.info(f"Initializing with None models for {symbol}")
                 
-                # Fallback: create new models if universal model usage fails
-                for model_type in ModelType:
-                    self.models[symbol][model_type] = await self._create_model(model_type, symbol)
+                # Fallback: set models to None if loading fails
+                for model_type in [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM, ModelType.ENSEMBLE]:
+                    self.models[symbol][model_type] = None
                 
                 # Create default scaler
                 self.scalers[symbol] = StandardScaler()
@@ -601,120 +608,18 @@ class SignalGenerator:
 
     
     async def _create_model(self, model_type: ModelType, symbol: str, feature_count: int = None) -> Any:
-        """Create a new model of specified type with dynamic feature count"""
+        """Load statistical model from joblib file"""
         try:
-            # Use provided feature_count or default to 150 to match trained models
-            if feature_count is None:
-                feature_count = 150
-                
-            if model_type == ModelType.LSTM:
-                return self._create_lstm_model(feature_count)
-            elif model_type == ModelType.CNN:
-                return self._create_cnn_model(feature_count)
-            elif model_type == ModelType.TRANSFORMER:
-                return self._create_transformer_model(feature_count)
-            else:
-                logger.error(f"Unsupported model type: {model_type}")
-                return None
+            # Statistical models are loaded from .joblib files, not created dynamically
+            # This method now serves as a placeholder for model loading
+            logger.warning(f"Statistical models should be loaded from .joblib files, not created dynamically for {model_type.value}")
+            return None
             
         except Exception as e:
             logger.error(f"Error creating {model_type.value} model: {e}")
             return None
     
-    def _create_lstm_model(self, feature_count: int = None) -> tf.keras.Model:
-        """Create LSTM model architecture with dynamic feature count"""
-        # Use provided feature_count or default to 150 to match trained models
-        if feature_count is None:
-            feature_count = 150
-            
-        model = tf.keras.Sequential([
-            tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(30, feature_count)),
-            tf.keras.layers.Dropout(0.2),
-            tf.keras.layers.LSTM(64, return_sequences=True),
-            tf.keras.layers.Dropout(0.2),
-            tf.keras.layers.LSTM(32),
-            tf.keras.layers.Dropout(0.2),
-            tf.keras.layers.Dense(16, activation='relu'),
-            tf.keras.layers.Dense(1, activation='tanh')  # Output between -1 and 1
-        ])
-        
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss='mse',
-            metrics=['mae']
-        )
-        
-        return model
-    
-    def _create_cnn_model(self, feature_count: int = None) -> tf.keras.Model:
-        """Create CNN model architecture with dynamic feature count"""
-        # Use provided feature_count or default to 150 to match trained models
-        if feature_count is None:
-            feature_count = 150
-            
-        # Create 1D CNN architecture that works better with time series data
-        # Input shape: (time_steps, features) = (30, 299)
-        model = tf.keras.Sequential([
-            tf.keras.layers.Conv1D(32, 3, activation='relu', input_shape=(30, feature_count)),
-            tf.keras.layers.MaxPooling1D(2),
-            tf.keras.layers.Conv1D(64, 3, activation='relu'),
-            tf.keras.layers.MaxPooling1D(2),
-            tf.keras.layers.Flatten(),
-            tf.keras.layers.Dense(50, activation='relu'),
-            tf.keras.layers.Dropout(0.3),
-            tf.keras.layers.Dense(1, activation='tanh')  # Use tanh for signal generation
-        ])
-        
-        model.compile(
-            optimizer=tf.keras.optimizers.RMSprop(learning_rate=0.001),
-            loss='mse',  # Use MSE for regression in signal generation
-            metrics=['mae']
-        )
-        
-        return model
-    
-    def _create_transformer_model(self, feature_count: int = None) -> tf.keras.Model:
-        """Create Transformer model architecture using TensorFlow/Keras with dynamic feature count"""
-        # Use provided feature_count or default to 150 to match trained models
-        if feature_count is None:
-            feature_count = 150
-            
-        # Create the same architecture as in model_trainer.py for consistency
-        input_layer = tf.keras.layers.Input(shape=(30, feature_count), name='input_layer')
-        
-        # Multi-head attention (2 heads, key_dim=32 to match model_trainer.py)
-        attention = tf.keras.layers.MultiHeadAttention(
-            num_heads=2, 
-            key_dim=32,
-            name='multi_head_attention'
-        )(input_layer, input_layer)
-        
-        # Layer normalization
-        norm1 = tf.keras.layers.LayerNormalization(name='layer_normalization')(attention)
-        
-        # Global average pooling
-        pooling = tf.keras.layers.GlobalAveragePooling1D(name='global_average_pooling1d')(norm1)
-        
-        # Dense layer (50 units to match model_trainer.py)
-        dense = tf.keras.layers.Dense(50, activation='relu', name='dense')(pooling)
-        
-        # Dropout (0.2 to match model_trainer.py)
-        dropout = tf.keras.layers.Dropout(0.2, name='dropout')(dense)
-        
-        # Output layer (tanh activation for signal generation)
-        output = tf.keras.layers.Dense(1, activation='tanh', name='dense_1')(dropout)
-        
-        # Create model
-        model = tf.keras.Model(inputs=input_layer, outputs=output, name='transformer_model')
-        
-        # Compile the model
-        model.compile(
-            optimizer='adam',
-            loss='mse',  # Use MSE for regression
-            metrics=['mae']
-        )
-        
-        return model
+    # Statistical model creation methods removed - models are now loaded from .joblib files
     
     async def generate_signals(self, market_data: Dict[str, pd.DataFrame]) -> List[TradeSignal]:
         """Generate trading signals for multiple symbols"""
@@ -944,221 +849,88 @@ class SignalGenerator:
             # FEATURE COUNT DEBUG: Log feature count being passed to model
             logger.info(f"[FEATURE_DEBUG] {symbol}: _get_model_prediction - {model_type.value} model receiving features with shape {features.shape}, actual_feature_count: {actual_feature_count}, requested_feature_count: {feature_count}")
             
-            # Check if this is a universal model (has 2 inputs)
-            is_universal_model = False
-            logger.info(f"[UNIVERSAL_DEBUG] Checking if {model_type.value} is universal model. is_universal_mode: {self.is_universal_mode}")
+            # Statistical models expect 2D input (n_samples, n_features)
+            # All statistical models are universal by design and work with 2D aggregated features
+            logger.info(f"[STATISTICAL_DEBUG] Processing {model_type.value} statistical model with 2D features")
             
-            if self.is_universal_mode and model_type in [ModelType.CNN, ModelType.LSTM, ModelType.TRANSFORMER]:
-                # Check if model has multiple inputs (universal models have 2 inputs)
-                model_inputs = getattr(model, 'inputs', None)
-                model_input_shape = getattr(model, 'input_shape', None)
-                model_name = getattr(model, '_name', None)
-                
-                logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} - inputs: {model_inputs}, input_shape: {model_input_shape}, name: {model_name}")
-                
-                if hasattr(model, 'inputs') and len(model.inputs) == 2:
-                    is_universal_model = True
-                    logger.info(f"[UNIVERSAL_DEBUG] Detected universal model {model_type.value} with {len(model.inputs)} inputs")
-                elif hasattr(model, 'input_shape') and isinstance(model.input_shape, list) and len(model.input_shape) == 2:
-                    is_universal_model = True
-                    logger.info(f"[UNIVERSAL_DEBUG] Detected universal model {model_type.value} with input_shape list of length {len(model.input_shape)}")
-                elif hasattr(model, '_name') and model._name and 'universal' in model._name.lower():
-                    is_universal_model = True
-                    logger.info(f"[UNIVERSAL_DEBUG] Detected universal model {model_type.value} by name: {model._name}")
-                else:
-                    logger.info(f"[UNIVERSAL_DEBUG] Model {model_type.value} not detected as universal")
+            # Ensure features are in 2D format for statistical models
+            if len(features.shape) > 2:
+                # If features are 3D, take the last time step (most recent)
+                features_2d = features[-1] if len(features.shape) == 3 else features.reshape(-1)
+            elif len(features.shape) == 1:
+                # If features are 1D, reshape to 2D
+                features_2d = features.reshape(1, -1)
             else:
-                logger.info(f"[UNIVERSAL_DEBUG] Skipping universal check for {model_type.value} - not in universal mode or not neural network model")
+                # Features are already 2D, use as is
+                features_2d = features
             
-            if is_universal_model:
-                # Universal models expect 2 inputs: [features, symbol_embedding]
-                logger.debug(f"Using universal model path for {model_type.value}")
-                
-                # Get symbol embedding
-                symbol_embedding = self.universal_feature_engineering.get_symbol_embedding(symbol)
-                
-                # Prepare feature input for universal models
-                # Universal models expect (batch_size, sequence_length, feature_dim)
-                # Model expects: (None, 30, 187) based on training architecture
-                
-                logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} input features shape: {features.shape}")
-                
-                # Expected dimensions from model architecture
-                # Updated to match actual model training dimensions (30, 299)
-                expected_sequence_length = 30
-                expected_feature_dim = 299
-                
-                if len(features.shape) == 2:
-                    # Features are in (time_steps, features) format
-                    current_time_steps, current_features = features.shape
-                    
-                    # We need to reshape to match (1, 30, 187)
-                    # Option 1: Truncate/pad time dimension to 30
-                    if current_time_steps >= expected_sequence_length:
-                        # Take the last 30 time steps
-                        time_adjusted_features = features[-expected_sequence_length:, :]
-                    else:
-                        # Pad with zeros at the beginning
-                        time_adjusted_features = np.zeros((expected_sequence_length, current_features))
-                        time_adjusted_features[-current_time_steps:, :] = features
-                    
-                    # Option 2: Handle feature dimension to match 187
-                    if current_features >= expected_feature_dim:
-                        # Truncate features to 187
-                        feature_input = time_adjusted_features[:, :expected_feature_dim]
-                    else:
-                        # Pad features with zeros to reach 187
-                        feature_input = np.zeros((expected_sequence_length, expected_feature_dim))
-                        feature_input[:, :current_features] = time_adjusted_features
-                    
-                    # Add batch dimension
-                    feature_input = feature_input.reshape(1, expected_sequence_length, expected_feature_dim)
-                    
-                else:
-                    # Features are flattened - reshape to expected dimensions
-                    total_features = features.size
-                    expected_total = expected_sequence_length * expected_feature_dim
-                    
-                    if total_features >= expected_total:
-                        # Truncate and reshape
-                        feature_input = features.flatten()[:expected_total].reshape(1, expected_sequence_length, expected_feature_dim)
-                    else:
-                        # Pad with zeros and reshape
-                        padded_features = np.zeros(expected_total)
-                        padded_features[:total_features] = features.flatten()
-                        feature_input = padded_features.reshape(1, expected_sequence_length, expected_feature_dim)
-                
-                logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} feature_input shape: {feature_input.shape}")
-                
-                # Symbol embedding as integer tensor
-                import tensorflow as tf
-                symbol_input = tf.constant([[symbol_embedding]], dtype=tf.int32)
-                
-                logger.info(f"[UNIVERSAL_DEBUG] {model_type.value} symbol_input shape: {symbol_input.shape}")
-                
-                # Pass both inputs to the universal model
-                prediction = model.predict([feature_input, symbol_input], verbose=0)[0][0]
-                
-                # Enhanced confidence for universal models - directional approach
-                # Use prediction strength without absolute value bias
-                prediction_strength = prediction * prediction  # Squared for magnitude without sign bias
-                base_confidence = 0.6 + prediction_strength * 0.3  # Higher base for universal models
-                # Apply directional adjustment - stronger confidence for clear directional signals
-                directional_bonus = 0.1 if abs(prediction) > 0.5 else 0.0
-                confidence = min(0.9, max(0.4, base_confidence + directional_bonus))
-                
-            elif model_type == ModelType.CNN:
-                # Regular CNN model - expects 4D input (batch_size, height, width, channels) for 2D CNN
-                # The trained model architecture: Conv2D(32,(3,3)) + MaxPool(2,2) + Conv2D(64,(3,3)) + MaxPool(2,2) + Flatten()
-                # Dense layer expects 14976 features = 64 * 39 * 6 (calculated from conv/pool operations)
-                # Working backwards: final size after flatten should be 64 * 39 * 6 = 14976
-                # This means input should be reshaped to (1, 80, 26, 1) to produce this output
-                
-                time_steps = features.shape[0]
-                
-                # CNN model now uses all available features (299) with dynamic input shape
-                # CNN architecture: Conv2D(32,(3,3)) -> MaxPool(2,2) -> Conv2D(64,(3,3)) -> MaxPool(2,2) -> Flatten()
-                # 
-                # Input dimensions are dynamically determined from actual feature count
-                # Input: (30, actual_feature_count, 1)
-                # Dense layer input size is calculated based on actual feature dimensions
-                # after convolution and pooling operations
-                #
-                # Use actual feature dimensions from data (no hardcoded filtering)
-                required_height = 30   # Match actual training lookback_window
-                required_width = actual_feature_count   # Use actual feature count from data
-                
-                if len(features.shape) == 2:
-                    # Features are in (time_steps, features) format
-                    # Pad or truncate to match required dimensions
-                    if time_steps >= required_height and actual_feature_count >= required_width:
-                        # Truncate to required size
-                        resized_features = features[:required_height, :required_width]
-                    else:
-                        # Pad with zeros to required size
-                        resized_features = np.zeros((required_height, required_width))
-                        h_end = min(time_steps, required_height)
-                        w_end = min(actual_feature_count, required_width)
-                        resized_features[:h_end, :w_end] = features[:h_end, :w_end]
-                    
-                    model_input = resized_features.reshape(1, required_height, required_width, 1)
-                else:
-                    # Features might be flattened, reshape to required dimensions
-                    total_features = required_height * required_width
-                    if features.size >= total_features:
-                        model_input = features.flatten()[:total_features].reshape(1, required_height, required_width, 1)
-                    else:
-                        # Pad with zeros if insufficient features
-                        padded_features = np.zeros(total_features)
-                        padded_features[:features.size] = features.flatten()
-                        model_input = padded_features.reshape(1, required_height, required_width, 1)
-                
-                logger.debug(f"CNN model input shape (4D for Conv2D): {model_input.shape}")
-                prediction = model.predict(model_input, verbose=0)[0][0]
-                
-                # Enhanced confidence calculation for CNN - directional approach
-                # Remove absolute value dependency, use squared prediction for magnitude
-                prediction_magnitude = prediction * prediction
-                base_confidence = 0.5 + prediction_magnitude * 0.4
-                
-                # Calculate model variance based on input complexity
-                input_complexity = np.std(model_input.flatten())
-                model_variance = input_complexity * 0.1 + abs(np.random.normal(0, 0.05))
-                
-                # Calculate directional confidence
-                directional_conf = DirectionalConfidence.calculate(prediction, base_confidence, model_variance)
-                
-                # Use the appropriate directional confidence based on prediction direction
-                if prediction > 0:
-                    confidence = directional_conf.buy_confidence
-                else:
-                    confidence = directional_conf.sell_confidence
-                
-                # Add small model-specific adjustment
-                confidence = min(0.9, max(0.2, confidence + input_complexity * 0.05))
-                
-            elif model_type in [ModelType.LSTM, ModelType.TRANSFORMER]:
-                # Regular LSTM/Transformer models - expect 3D input (batch_size, time_steps, features)
-                time_steps = features.shape[0]
-                
-                # Reshape features to match model expectations
-                if len(features.shape) == 2:
-                    # Features are already in (time_steps, features) format
-                    model_input = features.reshape(1, time_steps, actual_feature_count)
-                else:
-                    # Features might be flattened, reshape appropriately
-                    model_input = features.reshape(1, time_steps, -1)
-                
-                logger.debug(f"Model input shape for {model_type.value}: {model_input.shape}")
-                prediction = model.predict(model_input, verbose=0)[0][0]
-                
-                # Enhanced confidence calculation for LSTM/Transformer - directional approach
-                # Remove absolute value dependency, use squared prediction for magnitude
-                prediction_magnitude = prediction * prediction
-                base_confidence = 0.5 + prediction_magnitude * 0.4
-                
-                # Calculate model variance and sequence stability
-                sequence_stability = np.std(model_input.flatten())
-                model_variance = sequence_stability * 0.05 + abs(np.random.normal(0, 0.03))
-                
-                # Calculate directional confidence
-                directional_conf = DirectionalConfidence.calculate(prediction, base_confidence, model_variance)
-                
-                # Use the appropriate directional confidence based on prediction direction
-                if prediction > 0:
-                    confidence = directional_conf.buy_confidence
-                else:
-                    confidence = directional_conf.sell_confidence
-                
-                # Add model-specific bonuses
-                sequence_bonus = max(0, 0.05 - sequence_stability * 0.05)  # Reward stable sequences
-                model_type_bonus = 0.02 if model_type == ModelType.TRANSFORMER else 0.01
-                confidence = min(0.9, max(0.2, confidence + sequence_bonus + model_type_bonus))
-                
-
+            logger.info(f"[STATISTICAL_DEBUG] {model_type.value} input features shape: {features_2d.shape}")
             
+            # Statistical models handle predictions differently based on type
+            if model_type == ModelType.XGBOOST:
+                # XGBoost expects 2D input (n_samples, n_features)
+                prediction = model.predict(features_2d)[0]
+                
+                # XGBoost confidence based on prediction probability if available
+                if hasattr(model, 'predict_proba'):
+                    try:
+                        proba = model.predict_proba(features_2d)[0]
+                        confidence = max(proba) * 0.9  # Scale down slightly for safety
+                    except:
+                        confidence = 0.6 + abs(prediction) * 0.3
+                else:
+                    confidence = 0.6 + abs(prediction) * 0.3
+                
+            elif model_type == ModelType.RANDOM_FOREST:
+                # Random Forest expects 2D input (n_samples, n_features)
+                prediction = model.predict(features_2d)[0]
+                
+                # Random Forest confidence based on prediction probability if available
+                if hasattr(model, 'predict_proba'):
+                    try:
+                        proba = model.predict_proba(features_2d)[0]
+                        confidence = max(proba) * 0.85  # Slightly lower than XGBoost
+                    except:
+                        confidence = 0.55 + abs(prediction) * 0.35
+                else:
+                    confidence = 0.55 + abs(prediction) * 0.35
+                
+            elif model_type == ModelType.SVM:
+                # SVM expects 2D input (n_samples, n_features)
+                prediction = model.predict(features_2d)[0]
+                
+                # SVM confidence based on decision function if available
+                if hasattr(model, 'decision_function'):
+                    try:
+                        decision_score = model.decision_function(features_2d)[0]
+                        confidence = min(0.8, 0.5 + abs(decision_score) * 0.1)
+                    except:
+                        confidence = 0.5 + abs(prediction) * 0.3
+                else:
+                    confidence = 0.5 + abs(prediction) * 0.3
+                
+            elif model_type == ModelType.ENSEMBLE:
+                # Ensemble model combines multiple statistical models
+                prediction = model.predict(features_2d)[0]
+                
+                # Ensemble confidence is typically higher due to model combination
+                if hasattr(model, 'predict_proba'):
+                    try:
+                        proba = model.predict_proba(features_2d)[0]
+                        confidence = max(proba) * 0.95  # Highest confidence for ensemble
+                    except:
+                        confidence = 0.65 + abs(prediction) * 0.25
+                
             else:
-                return None
+                # Fallback for unknown model types
+                logger.warning(f"Unknown statistical model type: {model_type.value}")
+                prediction = 0.0
+                confidence = 0.3
+                
+            # Ensure confidence is within valid range
+            confidence = max(0.2, min(0.9, confidence))
+            
+            logger.info(f"[STATISTICAL_DEBUG] {model_type.value} prediction: {prediction:.4f}, confidence: {confidence:.4f}")
             
             # Calculate probability (sigmoid of prediction)
             probability = 1 / (1 + np.exp(-prediction * 5))  # Scale prediction for sigmoid
@@ -1402,53 +1174,20 @@ class SignalGenerator:
             logger.error(f"Error updating market regime from cached features: {e}")
     
     async def _prepare_features(self, symbol: str, data: pd.DataFrame, model_type: ModelType = None, feature_count: int = None) -> Optional[np.ndarray]:
-        """Prepare features for model prediction using cached engineered features with model-specific filtering"""
+        """Prepare 2D aggregated features for statistical model prediction"""
         try:
-            # Determine minimum required periods based on model type
-            if model_type == ModelType.TRANSFORMER:
-                # Transformer model requires exactly 60 timesteps
-                required_periods = 60
-                min_periods = 60
-            elif model_type == ModelType.LSTM:
-                # LSTM model requires exactly 60 timesteps
-                required_periods = 60
-                min_periods = 60
-            elif model_type == ModelType.CNN:
-                # CNN model requires exactly 30 timesteps
-                required_periods = 30
-                min_periods = 30
-            else:
-                # For other models (Random Forest, XGBoost), use adaptive minimum periods
-                min_periods = min(60, max(10, len(data)))
-                required_periods = min_periods
+            # Statistical models use 2D aggregated features, not sequential data
+            # Use the most recent data point for feature extraction
+            required_periods = 1
+            min_periods = 1
             
-            # For sequence models with padding capability, allow smaller datasets
-            if model_type not in [ModelType.TRANSFORMER, ModelType.LSTM, ModelType.CNN]:
-                if len(data) < min_periods:
-                    logger.warning(f"Insufficient data for {symbol} and {model_type}: {len(data)} < {min_periods}")
-                    return None
-            else:
-                # For sequence models, we need at least 1 row to pad from
-                if len(data) < 1:
-                    logger.warning(f"No data available for {symbol} and {model_type}")
-                    return None
+            # Statistical models only need the most recent data point
+            if len(data) < min_periods:
+                logger.warning(f"Insufficient data for {symbol} and {model_type}: {len(data)} < {min_periods}")
+                return None
             
-            # Use the available data based on model requirements
-            if model_type in [ModelType.TRANSFORMER, ModelType.LSTM, ModelType.CNN]:
-                # For sequence models, ensure we have exactly the required number of periods
-                if len(data) >= required_periods:
-                    recent_data = data.tail(required_periods).copy()
-                else:
-                    # Pad with the first available row if we don't have enough data
-                    recent_data = data.copy()
-                    first_row = recent_data.iloc[0:1]
-                    padding_needed = required_periods - len(recent_data)
-                    padding_data = pd.concat([first_row] * padding_needed, ignore_index=True)
-                    recent_data = pd.concat([padding_data, recent_data], ignore_index=True).tail(required_periods)
-                    logger.debug(f"Padded {padding_needed} rows for {model_type} model for {symbol}")
-            else:
-                # For non-sequence models, use adaptive periods
-                recent_data = data.tail(min_periods).copy()
+            # Use the most recent data point for statistical models
+            recent_data = data.tail(required_periods).copy()
             
             # Exclude non-feature columns and ensure all columns are numeric
             exclude_columns = {'timestamp'}
@@ -2154,34 +1893,53 @@ class SignalGenerator:
             return {}
     
     async def save_models(self, symbol: str) -> bool:
-        """Save trained models for a symbol"""
+        """Save trained statistical models for a symbol"""
         try:
             if symbol not in self.models:
                 return False
             
+            import joblib
+            from pathlib import Path
+            
             for model_type, model in self.models[symbol].items():
-                model_path = f"models/{model_type.value}/{symbol}_model"
+                if model is None:
+                    continue
+                    
+                # Create model directory if it doesn't exist
+                model_dir = Path(f"models/{model_type.value}")
+                model_dir.mkdir(parents=True, exist_ok=True)
+                
+                model_path = model_dir / f"{symbol}_model.joblib"
                 
                 try:
-                    if model_type in [ModelType.LSTM, ModelType.CNN, ModelType.TRANSFORMER]:
-                        # Save all neural network models as TensorFlow .h5 files
-                        model.save(f"{model_path}.h5")
-                        logger.info(f"✓ Saved {model_type.value} model for {symbol} as .h5 file")
-                    elif model_type in [ModelType.RANDOM_FOREST, ModelType.XGBOOST]:
-                        with open(f"{model_path}.pkl", 'wb') as f:
-                            pickle.dump(model, f)
-                    
-                    logger.info(f"Saved {model_type.value} model for {symbol}")
-                    
+                    # Save all statistical models as .joblib files
+                    joblib.dump(model, model_path)
+                    logger.info(f"✓ Saved {model_type.value} model for {symbol} as .joblib file")
                 except Exception as e:
                     logger.error(f"Error saving {model_type.value} model for {symbol}: {e}")
             
-            # Save ensemble weights
-            weights_path = f"models/ensemble/{symbol}_weights.json"
-            with open(weights_path, 'w') as f:
+            # Save scaler using joblib
+            if symbol in self.scalers and self.scalers[symbol] is not None:
+                scaler_dir = Path("models/scalers")
+                scaler_dir.mkdir(parents=True, exist_ok=True)
+                scaler_path = scaler_dir / f"{symbol}_scaler.joblib"
+                
+                try:
+                    joblib.dump(self.scalers[symbol], scaler_path)
+                    logger.info(f"✓ Saved scaler for {symbol} as .joblib file")
+                except Exception as e:
+                    logger.error(f"Error saving scaler for {symbol}: {e}")
+            
+            # Save model metadata
+            metadata_dir = Path("models/metadata")
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            metadata_path = metadata_dir / f"{symbol}_metadata.json"
+            
+            with open(metadata_path, 'w') as f:
                 json.dump({
-                    'weights': {k.value: v for k, v in self.ensemble_weights[symbol].items()},
-                    'performance': {k.value: v for k, v in self.model_performance[symbol].items()},
+                    'symbol': symbol,
+                    'ensemble_weights': {k.value: v for k, v in self.ensemble_weights.get(symbol, {}).items()},
+                    'performance': {k.value: v for k, v in self.model_performance.get(symbol, {}).items()},
                     'last_updated': datetime.now(timezone.utc).isoformat()
                 }, f, indent=2, default=str)
             
@@ -2196,9 +1954,9 @@ class SignalGenerator:
         try:
             logger.info("Initializing universal models...")
             
-            # Check if ModelTrainer is available
+            # Check if UniversalTrainer is available
             if not self.model_trainer:
-                logger.warning("ModelTrainer not available, cannot initialize universal models")
+                logger.warning("UniversalTrainer not available, cannot initialize universal models")
                 return False
             
             # Initialize universal components - ensure consistent data_pipeline usage
@@ -2228,7 +1986,7 @@ class SignalGenerator:
             self.universal_architectures = UniversalModelArchitectures(num_symbols=num_symbols)
             self.universal_feature_engineering = feature_engineering
             
-            # Load universal models using ModelTrainer's method
+            # Load universal models using UniversalTrainer's method
             universal_models_loaded = await self._load_universal_models()
             
             if universal_models_loaded:
@@ -2244,13 +2002,13 @@ class SignalGenerator:
             return False
     
     async def _load_universal_models(self) -> bool:
-        """Load trained universal models using ModelTrainer's universal loading method"""
+        """Load trained universal models using UniversalTrainer's universal loading method"""
         try:
             if not self.model_trainer:
-                logger.error("ModelTrainer not available for loading universal models")
+                logger.error("UniversalTrainer not available for loading universal models")
                 return False
             
-            # Use ModelTrainer's load_universal_models method
+            # Use UniversalTrainer's load_universal_models method
             from pathlib import Path
             universal_dir = Path("/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal")
             
@@ -2259,11 +2017,11 @@ class SignalGenerator:
                 logger.warning(f"Universal models directory not found: {universal_dir}")
                 return False
             
-            # Load universal models using ModelTrainer
+            # Load universal models using UniversalTrainer
             success = await self.model_trainer.load_universal_models(universal_dir)
             
             if success:
-                # Get the loaded models from ModelTrainer's universal_trainer
+                # Get the loaded models from UniversalTrainer's universal_trainer
                 if hasattr(self.model_trainer, 'universal_trainer') and self.model_trainer.universal_trainer:
                     universal_trainer = self.model_trainer.universal_trainer
                     
@@ -2304,10 +2062,10 @@ class SignalGenerator:
                     logger.info(f"Successfully loaded {len(self.universal_models)} universal models")
                     return True
                 else:
-                    logger.error("ModelTrainer's universal_trainer not available after loading")
+                    logger.error("UniversalTrainer's universal_trainer not available after loading")
                     return False
             else:
-                logger.warning("Failed to load universal models using ModelTrainer")
+                logger.warning("Failed to load universal models using UniversalTrainer")
                 return False
                 
         except Exception as e:

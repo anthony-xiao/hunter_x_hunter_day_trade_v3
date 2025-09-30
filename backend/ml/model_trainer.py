@@ -2178,24 +2178,9 @@ class ModelTrainer:
             
             # Create universal training configuration
             universal_config = UniversalTrainingConfig(
-                base_epochs=100,
-                # base_epochs=2,
-                base_batch_size=128,
-                # base_batch_size=64,
-                base_learning_rate=0.0005,
                 base_validation_split=0.2,
-                finetune_epochs=30,
-                # finetune_epochs=2,
-                finetune_batch_size=64,
-                # finetune_batch_size=32,
-                finetune_learning_rate=0.0003,
-                layers_to_unfreeze=3,
                 ensemble_validation_periods=10,
-                # ensemble_validation_periods=3,
                 ensemble_rebalance_frequency=5,
-                symbol_embedding_dim=32,
-                early_stopping_patience=10,
-                reduce_lr_patience=5,
                 min_samples_per_symbol=1000,
                 max_symbols_per_batch=50
             )
