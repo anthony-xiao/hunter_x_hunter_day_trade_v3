@@ -13,10 +13,9 @@ import pickle
 from collections import defaultdict, deque
 
 # ML libraries
-import tensorflow as tf
-from tensorflow.keras.models import load_model
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+import joblib
 
 # Technical analysis
 import talib
@@ -372,8 +371,28 @@ class SignalGenerator:
         logger.info("SignalGenerator initialized")
     
     def _load_model_configurations(self) -> None:
-        """Load model configurations from the latest training metadata"""
+        """Load model configurations from universal metadata or latest training metadata"""
         try:
+            # First, try to load from universal metadata
+            universal_metadata_path = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal/universal_metadata.json')
+            
+            if universal_metadata_path.exists():
+                with open(universal_metadata_path, 'r') as f:
+                    universal_metadata = json.load(f)
+                
+                universal_model_configs = universal_metadata.get('model_configs', {})
+                if universal_model_configs:
+                    self.model_configs = universal_model_configs
+                    logger.info(f"Loaded universal model configurations for {len(self.model_configs)} models")
+                    
+                    # Log configurations for each model
+                    for model_name, config in self.model_configs.items():
+                        logger.debug(f"{model_name} config: {config}")
+                    return
+                else:
+                    logger.warning("Universal metadata exists but no model_configs found")
+            
+            # Fall back to existing logic - load from latest training metadata
             models_dir = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models')
             latest_link = models_dir / 'latest'
             
@@ -384,7 +403,7 @@ class SignalGenerator:
                         metadata = json.load(f)
                     
                     self.model_configs = metadata.get('model_configs', {})
-                    logger.info(f"Loaded model configurations for {len(self.model_configs)} models")
+                    logger.info(f"Loaded model configurations for {len(self.model_configs)} models from latest training metadata")
                     
                     # Log feature counts for each model
                     for model_name, config in self.model_configs.items():
@@ -414,36 +433,63 @@ class SignalGenerator:
         logger.info(f"Using default model configurations with {default_feature_count} features for statistical models")
     
     async def load_feature_selection_results(self) -> bool:
-        """Load feature selection results from the latest training"""
+        """Load feature selection results from universal metadata"""
         try:
-            models_dir = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models')
-            latest_link = models_dir / 'latest'
+            # Load directly from universal metadata file (no longer using latest symlink)
+            universal_metadata_file = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal/universal_metadata.json')
             
-            if latest_link.exists() and latest_link.is_symlink():
-                # Try to load from universal metadata first
-                universal_metadata_file = latest_link / 'universal_metadata.json'
-                if universal_metadata_file.exists():
-                    with open(universal_metadata_file, 'r') as f:
-                        metadata = json.load(f)
-                    
-                    # Load selected features
-                    if 'selected_features' in metadata:
-                        self.selected_features = metadata['selected_features']
-                        self.feature_selection_metadata = metadata.get('feature_selection', {})
-                        logger.info(f"Loaded {len(self.selected_features)} selected features from universal metadata")
-                        return True
+            if universal_metadata_file.exists():
+                logger.info("Loading feature selection from universal metadata...")
+                with open(universal_metadata_file, 'r') as f:
+                    metadata = json.load(f)
                 
-                # Fallback to training metadata
-                training_metadata_file = latest_link / 'training_metadata.json'
-                if training_metadata_file.exists():
-                    with open(training_metadata_file, 'r') as f:
-                        metadata = json.load(f)
+                # Load selected features from feature_selection section
+                if 'feature_selection' in metadata:
+                    feature_selection = metadata['feature_selection']
                     
-                    if 'selected_features' in metadata:
-                        self.selected_features = metadata['selected_features']
-                        self.feature_selection_metadata = metadata.get('feature_selection', {})
-                        logger.info(f"Loaded {len(self.selected_features)} selected features from training metadata")
+                    # Load both selected_features and selected_feature_columns
+                    if 'selected_features' in feature_selection:
+                        self.selected_features = feature_selection['selected_features']
+                        self.feature_selection_metadata = feature_selection
+                        logger.info(f"✓ Loaded {len(self.selected_features)} selected features from universal metadata")
+                        logger.info(f"✓ Selected features: {self.selected_features[:5]}... (showing first 5)")
+                        
+                        # Also load selected_feature_columns if available
+                        if 'selected_feature_columns' in feature_selection:
+                            self.selected_feature_columns = feature_selection['selected_feature_columns']
+                            logger.info(f"✓ Also loaded {len(self.selected_feature_columns)} selected feature columns")
+                        
                         return True
+                    else:
+                        logger.warning("No 'selected_features' found in feature_selection section")
+                else:
+                    logger.warning("No 'feature_selection' section found in universal metadata")
+            else:
+                logger.warning(f"Universal metadata file not found: {universal_metadata_file}")
+            
+            # Fallback: Try ensemble config if universal metadata doesn't have feature selection
+            ensemble_config_file = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal/base_models/ensemble_base_ensemble/ensemble_config.json')
+            
+            if ensemble_config_file.exists():
+                logger.info("Trying ensemble config as fallback...")
+                with open(ensemble_config_file, 'r') as f:
+                    config = json.load(f)
+                
+                if 'selected_feature_columns' in config:
+                    self.selected_features = config['selected_feature_columns']
+                    self.selected_feature_columns = config['selected_feature_columns']
+                    self.feature_selection_metadata = {
+                        'selected_features': config['selected_feature_columns'],
+                        'selected_feature_columns': config['selected_feature_columns'],
+                        'selected_feature_count': config.get('selected_feature_count', len(config['selected_feature_columns']))
+                    }
+                    logger.info(f"✓ Loaded {len(self.selected_features)} selected features from ensemble config")
+                    logger.info(f"✓ Selected features: {self.selected_features[:5]}... (showing first 5)")
+                    return True
+                else:
+                    logger.warning("No 'selected_feature_columns' found in ensemble config")
+            else:
+                logger.warning(f"Ensemble config file not found: {ensemble_config_file}")
             
             logger.warning("No feature selection results found, using all features")
             return False
@@ -538,15 +584,15 @@ class SignalGenerator:
             import joblib
             
             try:
-                # Load universal statistical models
-                universal_models_dir = Path(os.path.dirname(os.path.dirname(__file__))) / 'models' / 'universal'
+                # Load universal statistical models from ensemble directory
+                universal_models_dir = Path(os.path.dirname(os.path.dirname(__file__))) / 'models' / 'universal' / 'base_models' / 'ensemble_base_ensemble'
                 
                 # Map statistical model types to file names
                 model_mapping = {
-                    ModelType.XGBOOST: 'xgboost_model.joblib',
-                    ModelType.RANDOM_FOREST: 'random_forest_model.joblib', 
-                    ModelType.SVM: 'svm_model.joblib',
-                    ModelType.ENSEMBLE: 'ensemble_model.joblib'
+                    ModelType.XGBOOST: 'xgboost.joblib',
+                    ModelType.RANDOM_FOREST: 'random_forest.joblib', 
+                    ModelType.SVM: 'svm.joblib',
+                    ModelType.ENSEMBLE: 'ensemble_config.json'  # Ensemble uses config file, not joblib
                 }
                 
                 # Load each statistical model
@@ -554,7 +600,13 @@ class SignalGenerator:
                     model_path = universal_models_dir / filename
                     if model_path.exists():
                         try:
-                            model = joblib.load(model_path)
+                            if model_type == ModelType.ENSEMBLE:
+                                # Load ensemble config as JSON
+                                with open(model_path, 'r') as f:
+                                    model = json.load(f)
+                            else:
+                                # Load statistical models with joblib
+                                model = joblib.load(model_path)
                             self.models[symbol][model_type] = model
                             logger.info(f"✓ Loaded {model_type.value} model for {symbol} from {model_path}")
                         except Exception as load_error:
@@ -1196,11 +1248,11 @@ class SignalGenerator:
             all_feature_columns = [col for col in recent_data.columns if col not in exclude_columns]
             
             # Apply feature selection if selected features are available
-            if self.selected_features:
+            if self.selected_feature_columns:
                 # Use only selected features that are available in the data
-                feature_columns = [col for col in self.selected_features if col in all_feature_columns]
-                if len(feature_columns) < len(self.selected_features):
-                    missing_features = set(self.selected_features) - set(all_feature_columns)
+                feature_columns = [col for col in self.selected_feature_columns if col in all_feature_columns]
+                if len(feature_columns) < len(self.selected_feature_columns):
+                    missing_features = set(self.selected_feature_columns) - set(all_feature_columns)
                     logger.warning(f"Some selected features not found in data for {symbol}: {missing_features}")
                 logger.info(f"[FEATURE_DEBUG] {symbol}: Using {len(feature_columns)} selected features out of {len(all_feature_columns)} available")
             else:
@@ -2021,9 +2073,9 @@ class SignalGenerator:
             success = await self.model_trainer.load_universal_models(universal_dir)
             
             if success:
-                # Get the loaded models from UniversalTrainer's universal_trainer
-                if hasattr(self.model_trainer, 'universal_trainer') and self.model_trainer.universal_trainer:
-                    universal_trainer = self.model_trainer.universal_trainer
+                # Get the loaded models from UniversalTrainer directly
+                if self.model_trainer:
+                    universal_trainer = self.model_trainer
                     
                     # Copy base models to our universal_models dict
                     if hasattr(universal_trainer, 'base_models'):
@@ -2058,11 +2110,17 @@ class SignalGenerator:
                             if converted_weights:
                                 self.default_ensemble_weights = converted_weights
                                 logger.info("✓ Updated ensemble weights from universal metadata")
+                        
+                        # Load selected features from universal metadata
+                        if not await self.load_feature_selection_results():
+                            logger.warning("⚠️  Failed to load feature selection results during universal model loading")
+                        else:
+                            logger.info(f"✓ Feature selection loaded: {len(self.selected_features) if self.selected_features else 0} features")
                     
                     logger.info(f"Successfully loaded {len(self.universal_models)} universal models")
                     return True
                 else:
-                    logger.error("UniversalTrainer's universal_trainer not available after loading")
+                    logger.error("UniversalTrainer not available after loading")
                     return False
             else:
                 logger.warning("Failed to load universal models using UniversalTrainer")
@@ -2284,18 +2342,21 @@ class SignalGenerator:
                 # Keep all features except symbol embedding columns and target
                 all_feature_columns = [col for col in individual_df.columns if col not in symbol_embedding_cols and col != 'target']
                 
-                # Apply feature selection if selected features are available
-                if self.selected_features:
-                    # Use only selected features that are available in the data
-                    feature_columns = [col for col in self.selected_features if col in all_feature_columns]
-                    if len(feature_columns) < len(self.selected_features):
-                        missing_features = set(self.selected_features) - set(all_feature_columns)
-                        logger.warning(f"[{symbol}] Some selected features not found in universal data: {missing_features}")
-                    logger.info(f"[{symbol}] Using {len(feature_columns)} selected features out of {len(all_feature_columns)} available")
+                # Apply feature selection if selected feature columns are available
+                if self.selected_feature_columns:
+                    # Use only selected feature columns that are available in the data
+                    feature_columns = [col for col in self.selected_feature_columns if col in all_feature_columns]
+                    if len(feature_columns) < len(self.selected_feature_columns):
+                        missing_features = set(self.selected_feature_columns) - set(all_feature_columns)
+                        logger.warning(f"[{symbol}] ⚠️  Some selected feature columns not found in universal data: {missing_features}")
+                        logger.warning(f"[{symbol}] ⚠️  Available features: {len(all_feature_columns)}, Selected feature columns: {len(self.selected_feature_columns)}, Found: {len(feature_columns)}")
+                    logger.info(f"[{symbol}] ✓ FEATURE_SELECTION: Using {len(feature_columns)} selected feature columns out of {len(all_feature_columns)} available")
+                    logger.info(f"[{symbol}] ✓ Selected feature column names: {feature_columns[:10]}... (showing first 10)")
                 else:
                     # Use all available features if no feature selection is applied
                     feature_columns = all_feature_columns
-                    logger.info(f"[{symbol}] No feature selection applied, using all {len(feature_columns)} features")
+                    logger.warning(f"[{symbol}] ⚠️  NO FEATURE SELECTION: Using all {len(feature_columns)} features - this may cause dimension mismatch!")
+                    logger.warning(f"[{symbol}] ⚠️  Expected features from ensemble_config: 45, Got: {len(feature_columns)}")
                 
                 symbol_df = individual_df[feature_columns]
                 
@@ -2330,18 +2391,21 @@ class SignalGenerator:
                 # Keep all features except symbol embedding columns and target
                 all_feature_columns = [col for col in symbol_df.columns if col not in symbol_embedding_cols and col != 'target']
                 
-                # Apply feature selection if selected features are available
-                if self.selected_features:
-                    # Use only selected features that are available in the data
-                    feature_columns = [col for col in self.selected_features if col in all_feature_columns]
-                    if len(feature_columns) < len(self.selected_features):
-                        missing_features = set(self.selected_features) - set(all_feature_columns)
-                        logger.warning(f"[{symbol}] Fallback: Some selected features not found: {missing_features}")
-                    logger.info(f"[{symbol}] Fallback: Using {len(feature_columns)} selected features out of {len(all_feature_columns)} available")
+                # Apply feature selection if selected feature columns are available
+                if self.selected_feature_columns:
+                    # Use only selected feature columns that are available in the data
+                    feature_columns = [col for col in self.selected_feature_columns if col in all_feature_columns]
+                    if len(feature_columns) < len(self.selected_feature_columns):
+                        missing_features = set(self.selected_feature_columns) - set(all_feature_columns)
+                        logger.warning(f"[{symbol}] Fallback: ⚠️  Some selected feature columns not found: {missing_features}")
+                        logger.warning(f"[{symbol}] Fallback: ⚠️  Available features: {len(all_feature_columns)}, Selected feature columns: {len(self.selected_feature_columns)}, Found: {len(feature_columns)}")
+                    logger.info(f"[{symbol}] Fallback: ✓ FEATURE_SELECTION: Using {len(feature_columns)} selected feature columns out of {len(all_feature_columns)} available")
+                    logger.info(f"[{symbol}] Fallback: ✓ Selected feature column names: {feature_columns[:10]}... (showing first 10)")
                 else:
                     # Use all available features if no feature selection is applied
                     feature_columns = all_feature_columns
-                    logger.info(f"[{symbol}] Fallback: No feature selection applied, using all {len(feature_columns)} features")
+                    logger.warning(f"[{symbol}] Fallback: ⚠️  NO FEATURE SELECTION: Using all {len(feature_columns)} features - this may cause dimension mismatch!")
+                    logger.warning(f"[{symbol}] Fallback: ⚠️  Expected features from ensemble_config: 45, Got: {len(feature_columns)}")
                 
                 symbol_df = symbol_df[feature_columns]
                 
@@ -2354,21 +2418,12 @@ class SignalGenerator:
             
             logger.info(f"[{symbol}] Final feature shape: {symbol_df.shape}")
             
-            # Return the last 30 rows of features for sequence creation (or all available if less than 15)
+            # Return only the latest row of features as 2D array for statistical models
             if len(symbol_df) > 0:
-                lookback_window = 30
-                if len(symbol_df) >= lookback_window:
-                    return symbol_df.iloc[-lookback_window:].values
-                else:
-                    # If we have less than 30 rows, pad with the first row repeated
-                    available_data = symbol_df.values
-                    padding_needed = lookback_window - len(available_data)
-                    if padding_needed > 0:
-                        first_row = available_data[0:1]
-                        padding = np.tile(first_row, (padding_needed, 1))
-                        return np.vstack([padding, available_data])
-                    else:
-                        return available_data
+                # Get the latest row and reshape to (1, features) for statistical models
+                latest_features = symbol_df.iloc[-1:].values  # Shape: (1, features)
+                logger.info(f"[{symbol}] Returning 2D features for statistical models: {latest_features.shape}")
+                return latest_features
             else:
                 logger.error(f"No feature data available for {symbol}")
                 return None
@@ -2378,13 +2433,10 @@ class SignalGenerator:
             return None
     
     async def _generate_universal_prediction(self, symbol: str, market_data: pd.DataFrame) -> Optional[EnsemblePrediction]:
-        """Generate prediction using universal models"""
+        """Generate prediction using universal statistical models (XGBoost, Random Forest, SVM, Ensemble)"""
         try:
             if not self.is_universal_mode or not self.universal_models:
                 return None
-
-            # Get symbol embedding
-            symbol_embedding = self.universal_feature_engineering.get_symbol_embedding(symbol)
 
             # Prepare universal features using the same process as training
             universal_features = await self._prepare_universal_features(symbol, market_data)
@@ -2392,98 +2444,60 @@ class SignalGenerator:
                 logger.error(f"Failed to prepare universal features for {symbol}")
                 return None
             
-            # universal_features is now a 2D array with shape (30, features)
-            # Reshape to (1, lookback_window, features) for batch prediction
-            feature_input = universal_features.reshape(1, universal_features.shape[0], universal_features.shape[1])
-            
-            logger.info(f"[{symbol}] Created feature sequence with shape: {feature_input.shape}")
-            
-            # Verify the shape is correct for universal models (299 features to match training)
-            expected_shape = (1, 30, 299)
-            if feature_input.shape != expected_shape:
-                logger.error(f"[{symbol}] Feature input shape {feature_input.shape} does not match expected {expected_shape}")
-                logger.error(f"[{symbol}] Shape mismatch: got sequence_length={feature_input.shape[1]}, expected=30; got features={feature_input.shape[2]}, expected=299")
-                # Try to handle the mismatch gracefully
-                if feature_input.shape[1] != 30 or feature_input.shape[2] != 299:
-                    logger.warning(f"[{symbol}] Attempting to reshape features to match expected dimensions")
-                    try:
-                        # Pad or truncate sequence length to 30
-                        if feature_input.shape[1] < 30:
-                            padding_needed = 30 - feature_input.shape[1]
-                            padding = np.zeros((1, padding_needed, feature_input.shape[2]))
-                            feature_input = np.concatenate([padding, feature_input], axis=1)
-                        elif feature_input.shape[1] > 30:
-                            feature_input = feature_input[:, -30:, :]
-                        
-                        # Pad or truncate feature dimension to 299
-                        if feature_input.shape[2] < 299:
-                            padding_needed = 299 - feature_input.shape[2]
-                            padding = np.zeros((1, 30, padding_needed))
-                            feature_input = np.concatenate([feature_input, padding], axis=2)
-                        elif feature_input.shape[2] > 299:
-                            feature_input = feature_input[:, :, :299]
-                        
-                        logger.info(f"[{symbol}] Reshaped feature input to: {feature_input.shape}")
-                    except Exception as reshape_error:
-                        logger.error(f"[{symbol}] Failed to reshape features: {reshape_error}")
-                        return None
+            # universal_features is now a 2D array with shape (1, features) for statistical models
+            logger.info(f"[{symbol}] Using 2D features for statistical models with shape: {universal_features.shape}")
             
             model_predictions = {}
             model_confidences = {}
             
-            # Generate predictions from each universal model
+            # Generate predictions from each statistical model
             for model_name, model in self.universal_models.items():
                 try:
                     model_type = ModelType(model_name)
                     
-                    if model_type in [ModelType.LSTM, ModelType.CNN, ModelType.TRANSFORMER]:
-                        # Neural network models - use the sequence input
-                        # Symbol embedding as integer tensor
-                        import tensorflow as tf
-                        symbol_input = tf.constant([[symbol_embedding]], dtype=tf.int32)
-                        
-                        # Pass both inputs to the model
-                        prediction = model.predict([feature_input, symbol_input], verbose=0)[0]
-                        
-                        # Extract prediction and calculate directional confidence
-                        if len(prediction) >= 2:
-                            pred_value = float(prediction[0])
-                            base_confidence = float(prediction[1]) if len(prediction) > 1 else 0.5
+                    # Only handle statistical models (XGBoost, Random Forest, SVM, Ensemble)
+                    if model_type in [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM, ModelType.ENSEMBLE]:
+                        if model_type == ModelType.ENSEMBLE:
+                            # Handle ensemble model (dictionary with individual models)
+                            if isinstance(model, dict) and 'models' in model:
+                                models = model['models']
+                                weights = model['weights']
+                                
+                                # Get predictions from each model in ensemble
+                                xgb_pred = models['xgboost'].predict_proba(universal_features)[0, 1] if 'xgboost' in models else 0.5
+                                rf_pred = models['random_forest'].predict_proba(universal_features)[0, 1] if 'random_forest' in models else 0.5
+                                svm_pred = models['svm'].predict_proba(universal_features)[0, 1] if 'svm' in models else 0.5
+                                
+                                # Calculate weighted ensemble prediction
+                                pred_value = (weights.get('xgboost', 0.33) * xgb_pred + 
+                                            weights.get('random_forest', 0.33) * rf_pred + 
+                                            weights.get('svm', 0.34) * svm_pred)
+                                
+                                # Calculate ensemble confidence as average of individual confidences
+                                confidence = (xgb_pred + rf_pred + svm_pred) / 3.0
+                            else:
+                                logger.warning(f"Ensemble model format not recognized for {symbol}")
+                                continue
                         else:
-                            pred_value = float(prediction[0])
-                            # Calculate base confidence using directional approach
-                            prediction_magnitude = pred_value * pred_value
-                            base_confidence = 0.5 + prediction_magnitude * 0.4
+                            # Individual statistical models
+                            if hasattr(model, 'predict_proba'):
+                                # Get probability prediction for binary classification
+                                proba = model.predict_proba(universal_features)[0]
+                                pred_value = float(proba[1])  # Probability of positive class
+                                confidence = float(np.max(proba))
+                            else:
+                                # Fallback for models without predict_proba
+                                prediction = model.predict(universal_features)[0]
+                                pred_value = float(prediction)
+                                confidence = 0.5
                         
-                        # Calculate model variance from feature input complexity
-                        input_variance = np.std(feature_input.flatten()) * 0.1
+                        model_predictions[model_type] = pred_value
+                        model_confidences[model_type] = confidence
                         
-                        # Calculate directional confidence
-                        directional_conf = DirectionalConfidence.calculate(pred_value, base_confidence, input_variance)
-                        
-                        # Use appropriate directional confidence
-                        if pred_value > 0:
-                            confidence = directional_conf.buy_confidence
-                        else:
-                            confidence = directional_conf.sell_confidence
-                            
-                    else:
-                        # Traditional ML models (Random Forest, XGBoost)
-                        prediction = model.predict(universal_features.reshape(1, -1))[0]
-                        pred_value = float(prediction)
-                        
-                        # Get prediction confidence for tree-based models
-                        if hasattr(model, 'predict_proba'):
-                            proba = model.predict_proba(universal_features.reshape(1, -1))[0]
-                            confidence = float(np.max(proba))
-                        else:
-                            confidence = 0.5
-                    
-                    model_predictions[model_type] = pred_value
-                    model_confidences[model_type] = confidence
+                        logger.debug(f"[{symbol}] {model_type.value} prediction: {pred_value:.4f}, confidence: {confidence:.4f}")
                     
                 except Exception as e:
-                    logger.error(f"Error generating prediction with universal {model_name}: {e}")
+                    logger.error(f"Error generating prediction with statistical model {model_name}: {e}")
                     continue
             
             if not model_predictions:

@@ -1145,7 +1145,9 @@ class UniversalModelArchitectures:
                 ensemble_config = {
                     'weights': model['weights'],
                     'feature_dim': model['feature_dim'],
-                    'name': model['name']
+                    'name': model['name'],
+                    'selected_feature_count': model.get('selected_feature_count', model['feature_dim']),
+                    'selected_feature_columns': model.get('selected_feature_columns', [])
                 }
                 config_path = ensemble_dir / "ensemble_config.json"
                 with open(config_path, 'w') as f:

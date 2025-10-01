@@ -157,6 +157,9 @@ class UniversalTrainingConfig:
     random_state: int = 42
     n_jobs: int = -1
     
+    # Symbol embedding configuration
+    symbol_embedding_dim: int = 32
+    
     def __post_init__(self):
         # Validate ensemble weights sum to 1.0
         total_weight = self.ensemble_xgb_weight + self.ensemble_rf_weight + self.ensemble_svm_weight
@@ -1143,11 +1146,20 @@ class UniversalTrainer:
                 logger.info(f"  - Cross-symbol features: NOT automatically included (strict selection mode)")
                 logger.info(f"  - Market regime features: NOT automatically included (strict selection mode)")
                 
+                # Store selected feature columns as instance variable for metadata saving
+                self.selected_feature_columns = selected_feature_columns
+                logger.info(f"✓ Stored {len(self.selected_feature_columns)} selected feature columns for metadata saving")
+                
                 feature_columns = selected_feature_columns
             else:
                 # Direct column name matching (fallback)
                 selected_feature_columns = [col for col in feature_columns if col in self.selected_features]
                 logger.info(f"Direct column matching: {len(feature_columns)} -> {len(selected_feature_columns)} features")
+                
+                # Store selected feature columns as instance variable for metadata saving
+                self.selected_feature_columns = selected_feature_columns
+                logger.info(f"✓ Stored {len(self.selected_feature_columns)} selected feature columns for metadata saving (fallback path)")
+                
                 feature_columns = selected_feature_columns
             
             logger.info(f"Final feature selection result: {len(feature_columns)} features")
@@ -2539,6 +2551,10 @@ class UniversalTrainer:
         start_time = datetime.now()
         
         try:
+            # Initialize symbol mappings and universal architectures BEFORE any training
+            logger.info("Initializing symbol mappings and universal architectures...")
+            await self.initialize_symbol_mappings(symbols)
+            
             # Feature Selection: Perform feature selection before training
             logger.info("Performing feature selection...")
             await self.perform_feature_selection(
@@ -2774,6 +2790,15 @@ class UniversalTrainer:
                 'id_to_symbol': self.id_to_symbol
             },
             'ensemble_weights': self.ensemble_weights,
+            'config': {
+                'symbol_embedding_dim': getattr(self.config, 'symbol_embedding_dim', 32),
+                'num_symbols': len(self.symbol_to_id) if hasattr(self, 'symbol_to_id') else 0,
+                'prediction_threshold': getattr(self.config, 'prediction_threshold', 0.55),
+                'prediction_window': getattr(self.config, 'prediction_window', 15),
+                'take_profit_pct': getattr(self.config, 'take_profit_pct', 0.003),
+                'stop_loss_pct': getattr(self.config, 'stop_loss_pct', 0.001),
+                'random_state': getattr(self.config, 'random_state', 42)
+            },
             'model_configs': {
                 'xgboost': {
                     'n_estimators': getattr(self.config, 'xgb_n_estimators', 100),
@@ -2795,7 +2820,9 @@ class UniversalTrainer:
             },
             'feature_selection': {
                 'selected_features': getattr(self, 'selected_features', None),
+                'selected_feature_columns': getattr(self, 'selected_feature_columns', None),
                 'selected_feature_indices': getattr(self, 'selected_feature_indices', None),
+                'selected_feature_count': len(getattr(self, 'selected_feature_columns', [])) if hasattr(self, 'selected_feature_columns') and self.selected_feature_columns else len(getattr(self, 'selected_features', [])) if hasattr(self, 'selected_features') and self.selected_features else 0,
                 'feature_importance': getattr(self, 'feature_importance', {}),
                 'feature_mapping': getattr(self, 'feature_mapping', {}),
                 'total_features': len(getattr(self, 'selected_features', [])) if hasattr(self, 'selected_features') and self.selected_features else 0
@@ -2930,6 +2957,10 @@ class UniversalTrainer:
             pbar.set_description(f"Training {model_type.value} SVM")
             models['svm'].fit(X_train, y_train)
             pbar.update(20)  # SVM training complete
+            
+            # Add selected feature information to ensemble model
+            ensemble['selected_feature_count'] = getattr(self, 'selected_feature_columns', None) and len(self.selected_feature_columns) or feature_dim
+            ensemble['selected_feature_columns'] = getattr(self, 'selected_feature_columns', [])
             
             model = ensemble
             

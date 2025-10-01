@@ -1101,8 +1101,8 @@ class DataPipeline:
                 logger.info(f"Downloaded {len(market_data)} market data points for {symbol} from Polygon")
                 
                 # Generate features from the downloaded market data
-                from ..ml.ml_feature_engineering import FeatureEngineering
-                from ..database import db_manager
+                from ml.ml_feature_engineering import FeatureEngineering
+                from database import db_manager
                 feature_engineer = FeatureEngineering(supabase_client=db_manager.get_supabase_client(), data_pipeline=self)
                 
                 # Engineer features from market data
