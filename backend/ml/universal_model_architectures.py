@@ -1133,21 +1133,29 @@ class UniversalModelArchitectures:
             model_path = Path(model_path)
             
             if isinstance(model, dict) and 'models' in model:
-                # Ensemble model
-                ensemble_dir = model_path.parent / f"{model_path.stem}_ensemble"
+                # Ensemble model - use standardized directory name
+                ensemble_dir = model_path.parent / "ensemble_base_ensemble"
                 ensemble_dir.mkdir(exist_ok=True)
                 
                 for model_name, individual_model in model['models'].items():
                     individual_path = ensemble_dir / f"{model_name}.joblib"
                     joblib.dump(individual_model, individual_path)
                 
-                # Save ensemble configuration
+                # Save ensemble configuration - prioritize selected features from feature selection
+                selected_feature_count = model.get('selected_feature_count', model['feature_dim'])
+                selected_feature_columns = model.get('selected_feature_columns', [])
+                
+                # Log validation information
+                logger.info(f"Saving ensemble config: selected_feature_count={selected_feature_count}, feature_dim={model['feature_dim']}")
+                if selected_feature_count != model['feature_dim']:
+                    logger.warning(f"Feature count mismatch in ensemble config: selected={selected_feature_count}, actual={model['feature_dim']}")
+                
                 ensemble_config = {
                     'weights': model['weights'],
-                    'feature_dim': model['feature_dim'],
+                    'feature_dim': selected_feature_count,  # Use selected feature count as the authoritative dimension
                     'name': model['name'],
-                    'selected_feature_count': model.get('selected_feature_count', model['feature_dim']),
-                    'selected_feature_columns': model.get('selected_feature_columns', [])
+                    'selected_feature_count': selected_feature_count,
+                    'selected_feature_columns': selected_feature_columns
                 }
                 config_path = ensemble_dir / "ensemble_config.json"
                 with open(config_path, 'w') as f:
@@ -1173,8 +1181,8 @@ class UniversalModelArchitectures:
         try:
             model_path = Path(model_path)
             
-            # Check if it's an ensemble
-            ensemble_dir = model_path.parent / f"{model_path.stem}_ensemble"
+            # Check if it's an ensemble - use standardized directory name
+            ensemble_dir = model_path.parent / "ensemble_base_ensemble"
             if ensemble_dir.exists():
                 # Load ensemble
                 models = {}

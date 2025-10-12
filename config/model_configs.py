@@ -100,8 +100,8 @@ SIGNAL_GENERATOR_CONFIG = {
     
     # Risk management
     'max_position_size': 0.1,      # 10% of portfolio per position
-    'stop_loss_pct': 0.02,         # 2% stop loss
-    'take_profit_pct': 0.04,       # 4% take profit
+    'stop_loss_pct': 0.002,        # 2% stop loss
+    'take_profit_pct': 0.005,       # 5% take profit
 }
 
 # Training Configuration

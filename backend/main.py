@@ -884,20 +884,20 @@ async def optimize_ensemble_weights():
                 # Get individual model predictions for performance calculation
                 predictions = await model_trainer._get_model_predictions(model_name, validation_features)
                 if len(predictions) > 0:
-                    # Calculate basic performance metrics
-                    accuracy = sum(1 for i, pred in enumerate(predictions) if 
-                                 (pred > 0.5 and validation_targets.iloc[i, 0] == 1) or 
-                                 (pred <= 0.5 and validation_targets.iloc[i, 0] == 0)) / len(predictions)
+                    # Calculate basic performance metrics - using profit-centric approach
+                    profit_score = sum(1 for i, pred in enumerate(predictions) if 
+                                     (pred > 0.5 and validation_targets.iloc[i, 0] == 1) or 
+                                     (pred <= 0.5 and validation_targets.iloc[i, 0] == 0)) / len(predictions)
                     
                     model_performance_metrics[model_name] = {
-                        'accuracy': float(accuracy),
+                        'profit_score': float(profit_score),
                         'predictions_count': int(len(predictions)),
                         'weight': float(optimized_weights.get(model_name, 0.0))
                     }
             except Exception as e:
                 logger.warning(f"Error calculating performance for {model_name}: {e}")
                 model_performance_metrics[model_name] = {
-                    'accuracy': 0.0,
+                    'profit_score': 0.0,
                     'predictions_count': 0,
                     'weight': float(optimized_weights.get(model_name, 0.0))
                 }
@@ -1651,8 +1651,8 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
             base_lookback_window=30,
             symbols=list(universal_data.keys()),
             start_date=start_date,
-            end_date=end_date,
-            enable_smote=True
+            end_date=end_date
+            # enable_smote=True
         )
         
         # Call train_universal_models instead of direct phase1_universal_base_training
@@ -1681,13 +1681,13 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
         # Save statistical models
         if training_result and training_result.get('models_trained', []):
             models_trained = training_result.get('models_trained', [])
-            validation_metrics = training_result.get('validation_metrics', {})
+            validation_metrics = training_result.get('phase1_results', {}).get('validation_metrics', {})
             
             # Log each statistical model's performance
             for model_name in models_trained:
                 metrics = validation_metrics.get(model_name, {})
-                accuracy = metrics.get('accuracy', 0.0)
-                logger.info(f"Saving statistical model: {model_name} with accuracy: {accuracy:.4f}")
+                total_profit_pct = metrics.get('total_profit_pct', 0.0)
+                logger.info(f"Saving statistical model: {model_name} with profit: {total_profit_pct:.4f}%")
             
             await model_trainer.save_universal_models(Path('models/universal'))
             
@@ -1698,14 +1698,14 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
                 "completion_time": datetime.now(timezone.utc).isoformat(),
                 "symbols_trained": len(universal_data),
                 "statistical_models_trained": models_trained,
-                "best_model_accuracy": max([metrics.get('accuracy', 0.0) for metrics in validation_metrics.values()]) if validation_metrics else 0.0,
+                "best_model_profit": max([metrics.get('total_profit_pct', 0.0) for metrics in validation_metrics.values()]) if validation_metrics else 0.0,
                 "training_time_total": training_result.get('training_time', 0),
                 "data_verification_summary": {
                     "symbols_downloaded_data": len(symbols_needing_data),
                     "symbols_engineered_features": len(symbols_needing_features)
                 },
                 "model_performance_summary": {
-                    model_name: f"Accuracy: {metrics.get('accuracy', 0.0):.4f}, Loss: {metrics.get('loss', 0.0):.4f}"
+                    model_name: f"Profit: {metrics.get('total_profit_pct', 0.0):.4f}%, Loss: {metrics.get('loss', 0.0):.4f}"
                     for model_name, metrics in validation_metrics.items()
                 }
             }

@@ -1,10 +1,11 @@
 {
-  "selection_timestamp": "2025-09-22T14:19:11.433359",
+  "selection_timestamp": "2025-10-02T10:44:58.118023",
   "selected_feature_count": 65,
   "target_feature_count": 65,
   "selection_method": "mutual_info",
   "category_distribution": {
-    "other": 65
+    "other": 26,
+    "technical": 39
   },
   "config": {
     "target_feature_count": 65,

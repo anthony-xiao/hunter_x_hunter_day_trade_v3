@@ -1816,8 +1816,8 @@ class ModelTrainer:
             total_trades=int(total_trades),
             returns=returns.tolist(),
             timestamp=datetime.now(timezone.utc),
-            validation_score=float(accuracy),  # Use accuracy as validation score
-            overfitting_score=float(abs(accuracy - 0.5) * 2),  # Simple overfitting measure
+            validation_score=float(profit_factor),  # Use profit_factor as validation score for profit-centric approach
+            overfitting_score=float(abs(profit_factor - 1.0) * 2),  # Profit factor overfitting measure (deviation from 1.0)
             profit_factor=float(profit_factor),
             last_updated=datetime.now(timezone.utc)
          )

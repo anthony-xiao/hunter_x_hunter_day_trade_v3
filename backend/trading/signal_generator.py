@@ -468,7 +468,7 @@ class SignalGenerator:
                 logger.warning(f"Universal metadata file not found: {universal_metadata_file}")
             
             # Fallback: Try ensemble config if universal metadata doesn't have feature selection
-            ensemble_config_file = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal/base_models/ensemble_base_ensemble/ensemble_config.json')
+            ensemble_config_file = Path(os.path.dirname(os.path.dirname(__file__))) / 'models' / 'universal' / 'base_models' / 'ensemble_base_ensemble' / 'ensemble_config.json'
             
             if ensemble_config_file.exists():
                 logger.info("Trying ensemble config as fallback...")
@@ -923,12 +923,23 @@ class SignalGenerator:
                 # XGBoost expects 2D input (n_samples, n_features)
                 prediction = model.predict(features_2d)[0]
                 
-                # XGBoost confidence based on prediction probability if available
+                # Get raw probability prediction
                 if hasattr(model, 'predict_proba'):
                     try:
                         proba = model.predict_proba(features_2d)[0]
-                        confidence = max(proba) * 0.9  # Scale down slightly for safety
-                    except:
+                        raw_confidence = proba[1]  # Probability of positive class
+                        
+                        # Apply calibration if available
+                        if hasattr(model, 'confidence_calibrator'):
+                            calibrated_confidence = model.confidence_calibrator.predict_proba(
+                                np.array([[raw_confidence]])
+                            )[0, 1]
+                            confidence = calibrated_confidence
+                            logger.debug(f"[CALIBRATION] {model_type.value} raw: {raw_confidence:.4f}, calibrated: {confidence:.4f}")
+                        else:
+                            confidence = raw_confidence
+                    except Exception as e:
+                        logger.warning(f"Error getting XGBoost probability: {e}")
                         confidence = 0.6 + abs(prediction) * 0.3
                 else:
                     confidence = 0.6 + abs(prediction) * 0.3
@@ -937,12 +948,23 @@ class SignalGenerator:
                 # Random Forest expects 2D input (n_samples, n_features)
                 prediction = model.predict(features_2d)[0]
                 
-                # Random Forest confidence based on prediction probability if available
+                # Get raw probability prediction
                 if hasattr(model, 'predict_proba'):
                     try:
                         proba = model.predict_proba(features_2d)[0]
-                        confidence = max(proba) * 0.85  # Slightly lower than XGBoost
-                    except:
+                        raw_confidence = proba[1]  # Probability of positive class
+                        
+                        # Apply calibration if available
+                        if hasattr(model, 'confidence_calibrator'):
+                            calibrated_confidence = model.confidence_calibrator.predict_proba(
+                                np.array([[raw_confidence]])
+                            )[0, 1]
+                            confidence = calibrated_confidence
+                            logger.debug(f"[CALIBRATION] {model_type.value} raw: {raw_confidence:.4f}, calibrated: {confidence:.4f}")
+                        else:
+                            confidence = raw_confidence
+                    except Exception as e:
+                        logger.warning(f"Error getting Random Forest probability: {e}")
                         confidence = 0.55 + abs(prediction) * 0.35
                 else:
                     confidence = 0.55 + abs(prediction) * 0.35
@@ -951,26 +973,73 @@ class SignalGenerator:
                 # SVM expects 2D input (n_samples, n_features)
                 prediction = model.predict(features_2d)[0]
                 
-                # SVM confidence based on decision function if available
-                if hasattr(model, 'decision_function'):
+                # Get raw probability prediction
+                if hasattr(model, 'predict_proba'):
                     try:
-                        decision_score = model.decision_function(features_2d)[0]
-                        confidence = min(0.8, 0.5 + abs(decision_score) * 0.1)
-                    except:
-                        confidence = 0.5 + abs(prediction) * 0.3
+                        proba = model.predict_proba(features_2d)[0]
+                        raw_confidence = proba[1]  # Probability of positive class
+                        
+                        # Apply calibration if available
+                        if hasattr(model, 'confidence_calibrator'):
+                            calibrated_confidence = model.confidence_calibrator.predict_proba(
+                                np.array([[raw_confidence]])
+                            )[0, 1]
+                            confidence = calibrated_confidence
+                            logger.debug(f"[CALIBRATION] {model_type.value} raw: {raw_confidence:.4f}, calibrated: {confidence:.4f}")
+                        else:
+                            confidence = raw_confidence
+                    except Exception as e:
+                        logger.warning(f"Error getting SVM probability: {e}")
+                        # Fallback to decision function
+                        if hasattr(model, 'decision_function'):
+                            try:
+                                decision_score = model.decision_function(features_2d)[0]
+                                confidence = min(0.8, 0.5 + abs(decision_score) * 0.1)
+                            except:
+                                confidence = 0.5 + abs(prediction) * 0.3
+                        else:
+                            confidence = 0.5 + abs(prediction) * 0.3
                 else:
                     confidence = 0.5 + abs(prediction) * 0.3
                 
             elif model_type == ModelType.ENSEMBLE:
                 # Ensemble model combines multiple statistical models
-                prediction = model.predict(features_2d)[0]
-                
-                # Ensemble confidence is typically higher due to model combination
-                if hasattr(model, 'predict_proba'):
-                    try:
-                        proba = model.predict_proba(features_2d)[0]
-                        confidence = max(proba) * 0.95  # Highest confidence for ensemble
-                    except:
+                if isinstance(model, dict) and 'models' in model:
+                    # Handle ensemble dictionary format
+                    models = model['models']
+                    weights = model['weights']
+                    
+                    # Get predictions from individual models
+                    xgb_pred = models['xgboost'].predict_proba(features_2d)[0, 1] if 'xgboost' in models else 0.5
+                    rf_pred = models['random_forest'].predict_proba(features_2d)[0, 1] if 'random_forest' in models else 0.5
+                    svm_pred = models['svm'].predict_proba(features_2d)[0, 1] if 'svm' in models else 0.5
+                    
+                    # Calculate weighted ensemble prediction
+                    prediction = (weights.get('xgboost', 0.33) * xgb_pred + 
+                                weights.get('random_forest', 0.33) * rf_pred + 
+                                weights.get('svm', 0.34) * svm_pred)
+                    
+                    # Apply ensemble calibration if available
+                    if 'confidence_calibrator' in model:
+                        try:
+                            calibrated_confidence = model['confidence_calibrator'].predict(np.array([prediction]))[0]
+                            confidence = calibrated_confidence
+                            logger.debug(f"[CALIBRATION] {model_type.value} raw: {prediction:.4f}, calibrated: {confidence:.4f}")
+                        except Exception as e:
+                            logger.warning(f"Error applying ensemble calibration: {e}")
+                            confidence = prediction
+                    else:
+                        confidence = prediction
+                else:
+                    # Fallback for other ensemble formats
+                    prediction = model.predict(features_2d)[0]
+                    if hasattr(model, 'predict_proba'):
+                        try:
+                            proba = model.predict_proba(features_2d)[0]
+                            confidence = max(proba) * 0.95
+                        except:
+                            confidence = 0.65 + abs(prediction) * 0.25
+                    else:
                         confidence = 0.65 + abs(prediction) * 0.25
                 
             else:
@@ -2473,8 +2542,18 @@ class SignalGenerator:
                                             weights.get('random_forest', 0.33) * rf_pred + 
                                             weights.get('svm', 0.34) * svm_pred)
                                 
-                                # Calculate ensemble confidence as average of individual confidences
-                                confidence = (xgb_pred + rf_pred + svm_pred) / 3.0
+                                # Use calibrated confidence if available
+                                if hasattr(model, 'confidence_calibrator') and model['confidence_calibrator'] is not None:
+                                    try:
+                                        # Apply ensemble calibration to the prediction
+                                        confidence = float(model['confidence_calibrator'].predict_proba([[pred_value]])[0, 1])
+                                        logger.debug(f"[{symbol}] ENSEMBLE: Applied calibrated confidence: {confidence:.4f}")
+                                    except Exception as e:
+                                        logger.warning(f"[{symbol}] ENSEMBLE: Calibration failed, using fallback: {e}")
+                                        confidence = pred_value  # Use prediction as confidence fallback
+                                else:
+                                    # Fallback: use prediction as confidence
+                                    confidence = pred_value
                             else:
                                 logger.warning(f"Ensemble model format not recognized for {symbol}")
                                 continue
@@ -2484,7 +2563,19 @@ class SignalGenerator:
                                 # Get probability prediction for binary classification
                                 proba = model.predict_proba(universal_features)[0]
                                 pred_value = float(proba[1])  # Probability of positive class
-                                confidence = float(np.max(proba))
+                                
+                                # Use calibrated confidence if available
+                                if hasattr(model, 'confidence_calibrator') and model.confidence_calibrator is not None:
+                                    try:
+                                        # Apply calibration to the raw confidence (probability of predicted class)
+                                        confidence = float(model.confidence_calibrator.predict_proba([[pred_value]])[0, 1])
+                                        logger.debug(f"[{symbol}] {model_type.value}: Applied calibrated confidence: {confidence:.4f}")
+                                    except Exception as e:
+                                        logger.warning(f"[{symbol}] {model_type.value}: Calibration failed, using fallback: {e}")
+                                        confidence = pred_value  # Use prediction as confidence fallback
+                                else:
+                                    # Fallback: use prediction as confidence (corrected from max(proba))
+                                    confidence = pred_value
                             else:
                                 # Fallback for models without predict_proba
                                 prediction = model.predict(universal_features)[0]

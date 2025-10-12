@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DriftMetrics:
-    """Concept drift detection metrics"""
-    accuracy_drift: float
+    """Concept drift detection metrics - profit-centric approach"""
+    profit_drift: float  # Renamed from accuracy_drift to align with profit-centric metrics
     precision_drift: float
     recall_drift: float
     sharpe_drift: float
@@ -405,7 +405,7 @@ class ConceptDriftDetector:
             
             # Determine if drift is detected
             drift_detected = (
-                abs(accuracy_drift) > self.thresholds['accuracy_threshold'] or
+                abs(accuracy_drift) > self.thresholds['accuracy_threshold'] or  # Still using accuracy_drift variable internally
                 abs(sharpe_drift) > self.thresholds['sharpe_threshold'] or
                 abs(return_drift) > self.thresholds['return_threshold'] or
                 abs(volatility_drift) > self.thresholds['volatility_threshold'] or
@@ -418,7 +418,7 @@ class ConceptDriftDetector:
             confidence_level = min(confidence_level, 1.0)
             
             return DriftMetrics(
-                accuracy_drift=accuracy_drift,
+                profit_drift=accuracy_drift,  # Renamed from accuracy_drift to profit_drift
                 precision_drift=precision_drift,
                 recall_drift=recall_drift,
                 sharpe_drift=sharpe_drift,
@@ -526,8 +526,8 @@ class ConceptDriftDetector:
         
         # Identify affected metrics
         affected_metrics = []
-        if abs(drift_metrics.accuracy_drift) > self.thresholds['accuracy_threshold']:
-            affected_metrics.append('accuracy')
+        if abs(drift_metrics.profit_drift) > self.thresholds['accuracy_threshold']:
+            affected_metrics.append('profit')  # Updated from 'accuracy' to 'profit'
         if abs(drift_metrics.sharpe_drift) > self.thresholds['sharpe_threshold']:
             affected_metrics.append('sharpe_ratio')
         if abs(drift_metrics.return_drift) > self.thresholds['return_threshold']:
@@ -540,7 +540,7 @@ class ConceptDriftDetector:
             affected_metrics.append('predictions')
         
         # Determine drift type
-        if 'accuracy' in affected_metrics or 'sharpe_ratio' in affected_metrics:
+        if 'profit' in affected_metrics or 'sharpe_ratio' in affected_metrics:
             drift_type = 'PERFORMANCE_DRIFT'
         elif 'features' in affected_metrics:
             drift_type = 'FEATURE_DRIFT'
@@ -558,7 +558,7 @@ class ConceptDriftDetector:
             affected_metrics=affected_metrics,
             recommended_action=recommended_action,
             details={
-                'accuracy_drift': drift_metrics.accuracy_drift,
+                'profit_drift': drift_metrics.profit_drift,  # Updated from 'accuracy_drift' to 'profit_drift'
                 'sharpe_drift': drift_metrics.sharpe_drift,
                 'return_drift': drift_metrics.return_drift,
                 'volatility_drift': drift_metrics.volatility_drift,
@@ -631,7 +631,7 @@ class ConceptDriftDetector:
     def _get_empty_drift_metrics(self) -> DriftMetrics:
         """Get empty drift metrics for error cases"""
         return DriftMetrics(
-            accuracy_drift=0.0,
+            profit_drift=0.0,  # Updated from accuracy_drift to profit_drift
             precision_drift=0.0,
             recall_drift=0.0,
             sharpe_drift=0.0,

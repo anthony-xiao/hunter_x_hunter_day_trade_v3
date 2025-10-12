@@ -766,8 +766,8 @@ class RiskManager:
         """Calculate stop-loss and take-profit levels optimized for statistical models"""
         try:
             # Base stop-loss and take-profit percentages
-            base_stop_loss_pct = 0.001  # 0.1% 
-            base_take_profit_pct = 0.003  # 0.3% 
+            base_stop_loss_pct = 0.002  # 0.2% 
+            base_take_profit_pct = 0.005  # 0.5% 
             
             # Adjust based on model confidence
             confidence_adjustment = self._get_confidence_multiplier(signal.confidence, model_type)

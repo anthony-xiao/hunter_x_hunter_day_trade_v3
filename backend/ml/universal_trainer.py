@@ -6,10 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import time
+import hashlib
 from datetime import datetime, timezone, timedelta
 from loguru import logger
 import tensorflow as tf
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import KFold
+from scipy.optimize import minimize
+import joblib
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, Callback
 from tensorflow.keras.models import Model
 from tqdm import tqdm
@@ -64,7 +69,7 @@ class ModelConfig:
 @dataclass
 class ModelPerformance:
     model_name: str
-    accuracy: float
+    total_profit_pct: float  # Primary profit-centric metric (was accuracy)
     precision: float
     recall: float
     sharpe_ratio: float
@@ -73,7 +78,7 @@ class ModelPerformance:
     total_trades: int
     returns: List[float]
     timestamp: datetime
-    validation_score: float
+    validation_score: float  # Now represents profit score
     overfitting_score: float
     profit_factor: float = 0.0
     last_updated: datetime = None
@@ -83,7 +88,9 @@ class UniversalTrainingConfig:
     """Configuration for universal statistical model training phases"""
     # Phase 1: Universal Base Model Training
     base_training_window: int = 12  # months of training data
+    # base_training_window: int = 1  # months of training data
     base_validation_window: int = 3  # months of validation data
+    # base_validation_window: int = 0.5  # months of validation data
     base_lookback_window: int = 30  # minutes of lookback for features
     base_validation_split: float = 0.2
     
@@ -116,8 +123,8 @@ class UniversalTrainingConfig:
     xgboost_learning_rate: float = 0.15
     xgboost_subsample: float = 0.8
     xgboost_colsample_bytree: float = 0.8
-    xgboost_reg_alpha: float = 0.1
-    xgboost_reg_lambda: float = 0.1
+    xgboost_reg_alpha: float = 0.2
+    xgboost_reg_lambda: float = 0.2
     
     # Random Forest Configuration
     rf_n_estimators: int = 500
@@ -128,7 +135,7 @@ class UniversalTrainingConfig:
     
     # SVM Configuration
     svm_kernel: str = 'rbf'
-    svm_C: float = 1.0
+    svm_C: float = 10.0
     svm_gamma: str = 'scale'
     svm_class_weight: str = 'balanced'
     
@@ -138,9 +145,10 @@ class UniversalTrainingConfig:
     ensemble_svm_weight: float = 0.20
     
     # Dual Exit Target Configuration
-    prediction_window: int = 15  # Maximum prediction window in minutes (periods)
-    take_profit_pct: float = 0.003
-    stop_loss_pct: float = 0.001
+    prediction_window: int = 15  # Maximum prediction window in minutes (periods) - increased for better balance
+
+    take_profit_pct: float = 0.005  # 0.5% take profit - increased for realistic market movements
+    stop_loss_pct: float = 0.002    # 0.2% stop loss - increased proportionally
     
     # Class Imbalance Mitigation Configuration
     enable_imbalance_mitigation: bool = True
@@ -152,7 +160,8 @@ class UniversalTrainingConfig:
     
     # General settings
     prediction_threshold: float = 0.55
-    min_samples_per_symbol: int = 1000
+    min_samples_per_symbol: int = 100
+    # min_samples_per_symbol: int = 1000
     max_symbols_per_batch: int = 50
     random_state: int = 42
     n_jobs: int = -1
@@ -171,24 +180,26 @@ class UniversalTrainingConfig:
 
 @dataclass
 class UniversalTrainingResult:
-    """Results from universal training process"""
+    """Results from universal training process optimized for profit maximization"""
     phase: str
     model_name: str
     symbols_trained: List[str]
-    base_model_performance: Dict[str, float]
-    symbol_performances: Dict[str, Dict[str, float]]
+    base_model_performance: Dict[str, float]  # Contains profit-centric metrics
+    symbol_performances: Dict[str, Dict[str, float]]  # Profit metrics per symbol
     ensemble_weights: Dict[str, float]
     training_time: float
     total_samples: int
-    validation_accuracy: float
+    validation_profit_pct: float  # Primary profit validation metric (was validation_accuracy)
     metadata: Dict[str, Any]
 
 class UniversalTrainer:
     """
-    Universal training system implementing 3-phase training strategy:
-    1. Universal base model training on all symbols
-    2. Symbol-specific fine-tuning
-    3. Ensemble optimization
+    Universal training system implementing 3-phase profit-optimized training strategy:
+    1. Universal base model training on all symbols (profit maximization)
+    2. Symbol-specific fine-tuning (profit-centric optimization)
+    3. Ensemble optimization (profit-weighted ensemble)
+    
+    Primary optimization target: total_profit_pct (trading profitability)
     """
     
     def __init__(
@@ -314,6 +325,54 @@ class UniversalTrainer:
 
 
         logger.info("Initialized UniversalTrainer with 3-phase training strategy")
+    
+    def _calculate_model_weight_hash(self, model) -> str:
+        """
+        Calculate a hash of the model weights for fingerprinting.
+        This helps identify if models have identical weights.
+        """
+        try:
+            if hasattr(model, 'get_weights'):
+                # For Keras/TensorFlow models
+                weights = model.get_weights()
+                if weights:
+                    # Concatenate all weights into a single array
+                    weight_data = np.concatenate([w.flatten() for w in weights])
+                    # Calculate hash of the weight data
+                    weight_hash = hashlib.md5(weight_data.tobytes()).hexdigest()[:8]
+                    return weight_hash
+            elif hasattr(model, 'coef_') or hasattr(model, 'feature_importances_'):
+                # For sklearn models
+                weight_data = []
+                if hasattr(model, 'coef_'):
+                    weight_data.append(model.coef_.flatten())
+                if hasattr(model, 'intercept_'):
+                    weight_data.append(np.array([model.intercept_]).flatten())
+                if hasattr(model, 'feature_importances_'):
+                    weight_data.append(model.feature_importances_.flatten())
+                
+                if weight_data:
+                    combined_weights = np.concatenate(weight_data)
+                    weight_hash = hashlib.md5(combined_weights.tobytes()).hexdigest()[:8]
+                    return weight_hash
+            elif isinstance(model, dict) and 'models' in model:
+                # For ensemble models
+                ensemble_hashes = []
+                for component_name, component_model in model['models'].items():
+                    component_hash = self._calculate_model_weight_hash(component_model)
+                    ensemble_hashes.append(f"{component_name}:{component_hash}")
+                
+                # Hash the combination of component hashes
+                ensemble_str = "|".join(sorted(ensemble_hashes))
+                weight_hash = hashlib.md5(ensemble_str.encode()).hexdigest()[:8]
+                return weight_hash
+            
+            # Fallback: use model object ID
+            return f"id_{id(model) % 100000000:08d}"
+            
+        except Exception as e:
+            logger.warning(f"Failed to calculate weight hash: {e}")
+            return f"err_{id(model) % 100000000:08d}"
     
     async def initialize_symbol_mappings(self, symbols: List[str]) -> None:
         """
@@ -848,6 +907,192 @@ class UniversalTrainer:
         
         return targets
     
+    def _calculate_trading_profits(self, predictions: np.ndarray, targets: np.ndarray, 
+                                 prediction_threshold: float = 0.5) -> Dict[str, float]:
+        """
+        Calculate actual trading profits based on model predictions and dual exit targets.
+        
+        This method calculates profits using the dual exit strategy:
+        - True Positives (correct buy signals): +0.5% profit when take profit is hit
+        - False Positives (wrong buy signals): -0.2% loss when stop loss is hit
+        - True Negatives (correct hold signals): 0% (no trade)
+        - False Negatives (missed opportunities): 0% (opportunity cost, no actual loss)
+        
+        Args:
+            predictions: Model prediction probabilities (0-1)
+            targets: True binary targets (1 for take profit, 0 for stop loss/no exit)
+            prediction_threshold: Threshold for converting probabilities to binary predictions
+            
+        Returns:
+            Dictionary containing comprehensive trading metrics
+        """
+        # DEBUG: Log input data characteristics
+        logger.debug(f"=== PROFIT CALCULATION DEBUG ===")
+        logger.debug(f"Predictions shape: {predictions.shape}, dtype: {predictions.dtype}")
+        logger.debug(f"Targets shape: {targets.shape}, dtype: {targets.dtype}")
+        logger.debug(f"Prediction threshold: {prediction_threshold}")
+        logger.debug(f"Take profit %: {self.config.take_profit_pct}")
+        logger.debug(f"Stop loss %: {self.config.stop_loss_pct}")
+        logger.debug(f"Predictions range: [{np.min(predictions):.6f}, {np.max(predictions):.6f}]")
+        logger.debug(f"Predictions mean: {np.mean(predictions):.6f}")
+        logger.debug(f"Targets unique values: {np.unique(targets)}")
+        logger.debug(f"Targets distribution: {np.bincount(targets.astype(int))}")
+        
+        # Convert probabilities to binary predictions
+        binary_predictions = (predictions >= prediction_threshold).astype(int)
+        logger.debug(f"Binary predictions distribution: {np.bincount(binary_predictions)}")
+        logger.debug(f"Trades to be made: {np.sum(binary_predictions)}")
+        
+        # Calculate confusion matrix components
+        true_positives = np.sum((binary_predictions == 1) & (targets == 1))
+        false_positives = np.sum((binary_predictions == 1) & (targets == 0))
+        true_negatives = np.sum((binary_predictions == 0) & (targets == 0))
+        false_negatives = np.sum((binary_predictions == 0) & (targets == 1))
+        
+        # Calculate profits based on dual exit strategy
+        tp_profit = true_positives * self.config.take_profit_pct  # +0.5% per correct buy
+        fp_loss = false_positives * self.config.stop_loss_pct     # -0.2% per wrong buy
+        tn_profit = 0.0  # No trades, no profit/loss
+        fn_profit = 0.0  # Missed opportunities, no actual loss
+        
+        # Total profit calculation
+        total_profit_pct = tp_profit - fp_loss
+        total_trades = true_positives + false_positives
+        profitable_trades = true_positives
+        
+        # DEBUG: Log profit calculation details
+        logger.debug(f"TP profit: {tp_profit:.6f}, FP loss: {fp_loss:.6f}")
+        logger.debug(f"Total profit %: {total_profit_pct:.6f}")
+        logger.debug(f"Total trades: {total_trades}, Profitable trades: {profitable_trades}")
+        
+        # Calculate win rate
+        win_rate = profitable_trades / total_trades if total_trades > 0 else 0.0
+        
+        # Calculate profit factor (total profits / total losses)
+        total_profits = tp_profit
+        total_losses = fp_loss
+        profit_factor = total_profits / total_losses if total_losses > 0 else float('inf')
+        
+        # Calculate average profit per trade
+        avg_profit_per_trade = total_profit_pct / total_trades if total_trades > 0 else 0.0
+        
+        # Calculate maximum drawdown (simplified version)
+        # For a more accurate calculation, we'd need sequential trade data
+        max_consecutive_losses = self._calculate_max_consecutive_losses(binary_predictions, targets)
+        max_drawdown = max_consecutive_losses * self.config.stop_loss_pct
+        
+        # Calculate Sharpe ratio approximation for trading performance
+        # Using profit per trade as returns and estimating volatility
+        if total_trades > 1:
+            trade_returns = []
+            for i in range(len(binary_predictions)):
+                if binary_predictions[i] == 1:  # Only for trades we made
+                    if targets[i] == 1:  # Take profit hit
+                        trade_returns.append(self.config.take_profit_pct)
+                    else:  # Stop loss hit
+                        trade_returns.append(-self.config.stop_loss_pct)
+            
+            if len(trade_returns) > 1:
+                returns_array = np.array(trade_returns)
+                mean_return = np.mean(returns_array)
+                std_return = np.std(returns_array)
+                sharpe_ratio = mean_return / std_return if std_return > 0 else 0.0
+            else:
+                sharpe_ratio = 0.0
+        else:
+            sharpe_ratio = 0.0
+        
+        # Calculate risk-adjusted returns
+        risk_adjusted_return = total_profit_pct / max_drawdown if max_drawdown > 0 else total_profit_pct
+        
+        return {
+            'total_profit_pct': total_profit_pct,
+            'total_trades': int(total_trades),
+            'profitable_trades': int(profitable_trades),
+            'win_rate': win_rate,
+            'profit_factor': profit_factor,
+            'avg_profit_per_trade': avg_profit_per_trade,
+            'max_drawdown': max_drawdown,
+            'max_consecutive_losses': max_consecutive_losses,
+            'sharpe_ratio': sharpe_ratio,
+            'risk_adjusted_return': risk_adjusted_return,
+            'true_positives': int(true_positives),
+            'false_positives': int(false_positives),
+            'true_negatives': int(true_negatives),
+            'false_negatives': int(false_negatives),
+            'profit_score': (true_positives + true_negatives) / len(targets),  # Renamed from accuracy to profit_score
+            'precision': true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0.0,
+            'recall': true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0.0
+        }
+    
+    def _calculate_max_consecutive_losses(self, predictions: np.ndarray, targets: np.ndarray) -> int:
+        """
+        Calculate the maximum number of consecutive losing trades.
+        
+        Args:
+            predictions: Binary predictions (1 for buy, 0 for hold)
+            targets: True binary targets (1 for take profit, 0 for stop loss/no exit)
+            
+        Returns:
+            Maximum number of consecutive losses
+        """
+        consecutive_losses = 0
+        max_consecutive_losses = 0
+        
+        for i in range(len(predictions)):
+            if predictions[i] == 1:  # We made a trade
+                if targets[i] == 0:  # It was a loss (stop loss hit or no exit)
+                    consecutive_losses += 1
+                    max_consecutive_losses = max(max_consecutive_losses, consecutive_losses)
+                else:  # It was a win (take profit hit)
+                    consecutive_losses = 0
+        
+        return max_consecutive_losses
+    
+    def _evaluate_model_profitability(self, model, X_val: np.ndarray, y_val: np.ndarray, 
+                                    model_name: str = "Unknown") -> Dict[str, float]:
+        """
+        Evaluate a model's profitability using the dual exit strategy.
+        
+        Args:
+            model: Trained model
+            X_val: Validation features
+            y_val: Validation targets
+            model_name: Name of the model for logging
+            
+        Returns:
+            Dictionary containing profit-based evaluation metrics
+        """
+        # Get model predictions
+        if hasattr(model, 'predict_proba'):
+            predictions = model.predict_proba(X_val)[:, 1]  # Get probability of positive class
+        elif hasattr(model, 'decision_function'):
+            # For SVM, convert decision function to probabilities
+            decision_scores = model.decision_function(X_val)
+            predictions = 1 / (1 + np.exp(-decision_scores))  # Sigmoid transformation
+        else:
+            predictions = model.predict(X_val).astype(float)
+        
+        # Calculate trading profits and metrics
+        profit_metrics = self._calculate_trading_profits(predictions, y_val, self.config.prediction_threshold)
+        
+        # Log detailed results
+        logger.info(f"\n=== Profitability Analysis for {model_name} ===")
+        logger.info(f"Total Profit: {profit_metrics['total_profit_pct']*100:.3f}%")
+        logger.info(f"Total Trades: {profit_metrics['total_trades']}")
+        logger.info(f"Profitable Trades: {profit_metrics['profitable_trades']}")
+        logger.info(f"Win Rate: {profit_metrics['win_rate']*100:.2f}%")
+        logger.info(f"Profit Factor: {profit_metrics['profit_factor']:.3f}")
+        logger.info(f"Avg Profit per Trade: {profit_metrics['avg_profit_per_trade']*100:.4f}%")
+        logger.info(f"Max Drawdown: {profit_metrics['max_drawdown']*100:.3f}%")
+        logger.info(f"Sharpe Ratio: {profit_metrics['sharpe_ratio']:.3f}")
+        logger.info(f"Risk-Adjusted Return: {profit_metrics['risk_adjusted_return']:.3f}")
+        logger.info(f"Profit Score: {profit_metrics['profit_score']*100:.2f}%")
+        logger.info(f"Precision: {profit_metrics['precision']*100:.2f}%")
+        logger.info(f"Recall: {profit_metrics['recall']*100:.2f}%")
+        
+        return profit_metrics
+    
     def _extract_targets_from_market_data(self, market_data: pd.DataFrame, threshold: float = 0.001) -> np.ndarray:
         """
         Extract binary targets from market data using dual exit conditions.
@@ -1087,7 +1332,8 @@ class UniversalTrainer:
         
         # Store original feature columns for later use
         original_feature_columns = feature_columns.copy()
-        
+        self.original_feature_columns = original_feature_columns
+
         # Apply feature selection if available
         if self.selected_features is not None and len(self.selected_features) > 0:
             logger.info(f"Feature selection available: {len(self.selected_features)} selected features")
@@ -2038,7 +2284,133 @@ class UniversalTrainer:
             logger.error(f"self.symbol_models empty: {len(self.symbol_models) == 0}")
         logger.info("=== END DEBUG models_to_use ===")
         
-        for model_type in models_to_use.keys():
+        # CRITICAL FIX: Load FULL comprehensive dataset WITHOUT feature selection (like perform_feature_selection does)
+        # This ensures we get the same ~290 feature count that was available during early training stages
+        logger.info("Loading FULL comprehensive dataset WITHOUT feature selection (like perform_feature_selection)")
+        
+        # Create a clean config WITHOUT any feature selection applied (like perform_feature_selection does)
+        # This bypasses any existing feature selection to get the full comprehensive dataset
+        full_dataset_config = UniversalTrainingConfig(
+            symbols=symbols,  # ALL symbols at once
+            start_date=validation_start,
+            end_date=validation_end,
+            force_2d_for_statistical=True,  # Ensure 2D data for statistical models
+            enable_smote=False  # No SMOTE needed for validation
+        )
+        
+        # Temporarily clear feature selection to load the full comprehensive dataset
+        # Store current feature selection state
+        original_selected_features = self.selected_features
+        original_selected_feature_indices = self.selected_feature_indices
+        
+        # Clear feature selection to get full dataset (like perform_feature_selection does)
+        self.selected_features = None
+        self.selected_feature_indices = None
+        
+        logger.info("Temporarily cleared feature selection to load full comprehensive dataset")
+        
+        # Load FULL comprehensive dataset for all symbols (same approach as perform_feature_selection)
+        X_data_full, y_data_full, _, _ = await self.prepare_universal_dataset(
+            symbols=symbols,  # ALL symbols at once
+            start_date=validation_start,
+            end_date=validation_end,
+            config=full_dataset_config
+        )
+        
+        # Restore original feature selection state
+        self.selected_features = original_selected_features
+        self.selected_feature_indices = original_selected_feature_indices
+        
+        logger.info("Restored original feature selection state")
+        
+        # Unpack the returned FULL data (features and symbol_ids)
+        if len(X_data_full) == 2:
+            X_all_features_full, symbol_ids_all = X_data_full
+            y_all = y_data_full
+        else:
+            # Fallback if format is different
+            X_all_features_full = X_data_full
+            y_all = y_data_full
+            symbol_ids_all = None
+        
+        logger.info(f"Loaded FULL comprehensive dataset for ALL symbols: {X_all_features_full.shape} features")
+        logger.info(f"Total samples across all symbols: {len(X_all_features_full)}")
+        logger.info(f"FULL feature count (should match early stages ~290): {X_all_features_full.shape[1]} features")
+        
+        # Now apply feature selection manually using the same logic as prepare_universal_dataset (lines 1173-1189)
+        if self.selected_features is not None and len(self.selected_features) > 0:
+            logger.info(f"Applying feature selection using selected_features: {len(self.selected_features)} features")
+            logger.info(f"Selected features: {self.selected_features[:5]}... (showing first 5)")
+            
+            # Extract feature indices from temporal aggregation names (same logic as prepare_universal_dataset)
+            selected_indices = set()
+            for feat_name in self.selected_features:
+                try:
+                    # Parse feature names like 'feature_5_max', 'feature_39_min', etc.
+                    if feat_name.startswith('feature_'):
+                        parts = feat_name.split('_')
+                        if len(parts) >= 3:  # feature_X_aggregation
+                            idx = int(parts[1])
+                            selected_indices.add(idx)
+                except (ValueError, IndexError):
+                    logger.warning(f"Could not parse feature index from: {feat_name}")
+                    continue
+            
+            logger.info(f"Extracted {len(selected_indices)} unique feature indices from selected features")
+            logger.info(f"Feature indices: {sorted(list(selected_indices))[:10]}... (showing first 10)")
+            
+            if len(selected_indices) > 0:
+                # Convert to sorted list for consistent ordering
+                sorted_indices = sorted(list(selected_indices))
+                
+                # Log detailed feature mapping similar to prepare_universal_dataset
+                # Map indices back to actual column names using the same approach as Phase 1
+                if hasattr(self, 'original_feature_columns') and self.original_feature_columns:
+                    original_feature_columns = self.original_feature_columns
+                else:
+                    # Fallback: try to reconstruct original feature columns if not available
+                    logger.warning("original_feature_columns not available, using fallback approach")
+                    original_feature_columns = [f'feature_{i}' for i in range(X_all_features_full.shape[1])]
+                
+                logger.info(f"Mapping {len(sorted_indices)} selected indices to column names:")
+                for idx in sorted_indices:
+                    if idx < len(original_feature_columns):
+                        col_name = original_feature_columns[idx]
+                        logger.info(f"  Index {idx} -> '{col_name}'")
+                    else:
+                        logger.warning(f"Feature index {idx} exceeds available original features ({len(original_feature_columns)})")
+                
+                # Apply feature selection using the extracted indices
+                if X_all_features_full.shape[1] > max(sorted_indices):
+                    X_all_features = X_all_features_full[:, sorted_indices]
+                    logger.info(f"After feature selection: {X_all_features.shape} features")
+                    logger.info(f"Feature selection applied: {X_all_features_full.shape[1]} -> {X_all_features.shape[1]} features")
+                    
+                    # Store the indices for consistency
+                    self.selected_feature_indices = sorted_indices
+                else:
+                    logger.error(f"Feature indices exceed available features: max index {max(sorted_indices)} >= {X_all_features_full.shape[1]}")
+                    logger.warning("Using full feature set due to index mismatch")
+                    X_all_features = X_all_features_full
+            else:
+                logger.warning("No valid feature indices extracted from selected_features, using full feature set")
+                X_all_features = X_all_features_full
+        else:
+            logger.warning("No selected_features available, using full feature set")
+            X_all_features = X_all_features_full
+        
+        # Now iterate through models and symbols, filtering the comprehensive dataset by symbol
+        # CRITICAL FIX: Exclude ENSEMBLE model type from ensemble optimization
+        # Ensemble optimization should only calculate weights for base model types (XGBoost, Random Forest, SVM)
+        # not for an ensemble model itself, which would create circular dependency
+        base_model_types = [model_type for model_type in models_to_use.keys() 
+                           if model_type != ModelType.ENSEMBLE]
+        
+        logger.info(f"Filtering out ENSEMBLE model type from ensemble optimization")
+        logger.info(f"Original model types: {list(models_to_use.keys())}")
+        logger.info(f"Base model types for ensemble optimization: {base_model_types}")
+        
+        for model_type in base_model_types:
             model_predictions[model_type] = {}
             
             for symbol in symbols:
@@ -2052,166 +2424,37 @@ class UniversalTrainer:
                     model = models_to_use[model_type][symbol]
                 
                 try:
-                    # Load validation data
-                    # Convert dates to timezone-aware UTC datetime objects
-                    if isinstance(validation_start, str):
-                        validation_start_dt = datetime.strptime(validation_start, '%Y-%m-%d').replace(tzinfo=timezone.utc)
-                    elif isinstance(validation_start, datetime):
-                        validation_start_dt = validation_start.replace(tzinfo=timezone.utc) if validation_start.tzinfo is None else validation_start.astimezone(timezone.utc)
-                    else:
-                        raise TypeError(f"validation_start must be str or datetime, got {type(validation_start)}")
+                    # Filter the comprehensive dataset by symbol
+                    if symbol_ids_all is not None:
+                        # Convert symbol string to integer ID for filtering
+                        if symbol not in self.symbol_to_id:
+                            logger.error(f"Symbol {symbol} not found in symbol_to_id mapping")
+                            continue
                         
-                    if isinstance(validation_end, str):
-                        validation_end_dt = datetime.strptime(validation_end, '%Y-%m-%d').replace(tzinfo=timezone.utc)
-                    elif isinstance(validation_end, datetime):
-                        validation_end_dt = validation_end.replace(tzinfo=timezone.utc) if validation_end.tzinfo is None else validation_end.astimezone(timezone.utc)
-                    else:
-                        raise TypeError(f"validation_end must be str or datetime, got {type(validation_end)}")
-                    
-                    validation_data = await self.data_pipeline.load_market_data(
-                        symbol=symbol,
-                        start_date=validation_start_dt,
-                        end_date=validation_end_dt
-                    )
-                    
-                    # Get comprehensive features using the same DataFrame approach as phase1
-                    # This ensures we have the full feature set with actual column names
-                    logger.info(f"Loading comprehensive feature set for {symbol} using phase1 DataFrame approach")
-                    
-                    # Use the same data loading approach as phase1_universal_base_training
-                    # Step 1: Load universal data
-                    universal_data = await self.data_pipeline.load_universal_data(
-                        symbols=[symbol],
-                        start_date=validation_start_dt,
-                        end_date=validation_end_dt
-                    )
-                    
-                    # Step 2: Engineer universal features
-                    universal_features = await self.feature_engineering.engineer_universal_features(
-                        symbols=[symbol],
-                        start_date=validation_start_dt,
-                        end_date=validation_end_dt,
-                        training_mode=True
-                    )
-                    
-                    # Step 3: Get universal training data (returns DataFrame with actual column names)
-                    X, y = await self.feature_engineering.prepare_universal_training_data(
-                        universal_features=universal_features,
-                        target_column='target'
-                    )
-                    
-                    if X.empty or y.empty:
-                        logger.warning(f"No validation data available for {symbol}")
-                        continue
-                    
-                    logger.info(f"Loaded DataFrame for {symbol}: {X.shape} with actual column names")
-                    logger.info(f"Sample column names: {list(X.columns)[:10]}...")
-                    
-                    # Extract symbol IDs and validate
-                    symbol_ids = X['symbol_id'].values.astype(np.int32)
-                    
-                    # Define symbol embedding columns to exclude (same as phase1)
-                    symbol_embedding_cols = [col for col in X.columns if (
-                        col == 'symbol_id' or (
-                            col.startswith('symbol_') and not any([
-                                col.startswith('corr_'),
-                                col.startswith('beta_'),
-                                col.startswith('relative_strength_'),
-                                col.startswith('market_dispersion_'),
-                                col.startswith('market_volatility'),
-                                col.startswith('vol_regime_'),
-                                col.startswith('vol_trend'),
-                                col.startswith('vol_correlation')
-                            ])
-                        )
-                    )]
-                    
-                    # Keep all features except symbol embedding columns (same as phase1)
-                    feature_columns = [col for col in X.columns if col not in symbol_embedding_cols]
-                    original_feature_columns = feature_columns.copy()
-                    
-                    logger.info(f"Feature columns for {symbol}: {len(feature_columns)} (excluding {len(symbol_embedding_cols)} symbol embedding cols)")
-                    
-                    # Apply feature selection using the same approach as phase1_universal_base_training
-                    if hasattr(self, 'selected_features') and self.selected_features is not None:
-                        logger.info(f"Phase3: Applying selected features for {symbol}: {len(self.selected_features)} features")
-                        logger.info(f"Selected features format: {self.selected_features[:5]}... (showing first 5)")
-                        logger.info(f"DataFrame columns format: {feature_columns[:5]}... (showing first 5)")
+                        symbol_id = self.symbol_to_id[symbol]
+                        logger.debug(f"Converting symbol {symbol} to ID {symbol_id} for filtering")
                         
-                        # Check if selected features are in temporal aggregation format (feature_X_aggregation)
-                        # If so, we need to map them back to original feature indices
-                        if any('_' in feat and feat.startswith('feature_') for feat in self.selected_features):
-                            logger.info("Detected temporal aggregation format in selected features")
-                            
-                            # Extract feature indices from temporal aggregation names
-                            # e.g., 'feature_5_max' -> index 5
-                            selected_indices = set()
-                            for feat_name in self.selected_features:
-                                if feat_name.startswith('feature_') and '_' in feat_name:
-                                    try:
-                                        # Extract the number between 'feature_' and the aggregation type
-                                        parts = feat_name.split('_')
-                                        if len(parts) >= 3:  # feature_X_aggregation
-                                            idx = int(parts[1])
-                                            selected_indices.add(idx)
-                                    except (ValueError, IndexError):
-                                        logger.warning(f"Could not parse feature index from: {feat_name}")
-                                        continue
-                            
-                            logger.info(f"Extracted {len(selected_indices)} unique feature indices: {sorted(list(selected_indices))[:10]}...")
-                            
-                            # Map indices back to actual column names using original_feature_columns
-                            logger.info(f"Original feature columns for mapping: {len(original_feature_columns)} (comprehensive feature set matching phase1)")
-                            
-                            # Select features based on the indices using the original full column list
-                            selected_feature_columns = []
-                            sorted_indices = sorted(list(selected_indices))
-                            
-                            logger.info(f"Mapping {len(sorted_indices)} selected indices to column names:")
-                            for idx in sorted_indices:
-                                if idx < len(original_feature_columns):
-                                    col_name = original_feature_columns[idx]
-                                    selected_feature_columns.append(col_name)
-                                    logger.info(f"  Index {idx} -> '{col_name}'")
-                                else:
-                                    logger.warning(f"Feature index {idx} exceeds available original features ({len(original_feature_columns)})")
-                            
-                            # STRICT FEATURE SELECTION: Only use the selected features, no additional features
-                            logger.info(f"Strictly using only {len(selected_feature_columns)} selected features (no additional cross-symbol/market regime features)")
-                            
-                            logger.info(f"Mapped to {len(selected_feature_columns)} actual columns (strictly selected features only):")
-                            logger.info(f"  - Selected features used: {len(selected_feature_columns)}")
-                            
-                            feature_columns = selected_feature_columns
+                        # Use symbol_ids to filter
+                        symbol_mask = symbol_ids_all == symbol_id
+                        X_features = X_all_features[symbol_mask]
+                        y = y_all[symbol_mask]
+                        
+                        logger.debug(f"Symbol mask for {symbol} (ID {symbol_id}): {np.sum(symbol_mask)} matches out of {len(symbol_mask)} total")
+                    else:
+                        # If no symbol_ids, assume all data is for the current symbol (single symbol case)
+                        if len(symbols) == 1:
+                            X_features = X_all_features
+                            y = y_all
                         else:
-                            # Direct column name matching (fallback)
-                            selected_feature_columns = [col for col in feature_columns if col in self.selected_features]
-                            logger.info(f"Direct column matching: {len(feature_columns)} -> {len(selected_feature_columns)} features")
-                            feature_columns = selected_feature_columns
-                        
-                        logger.info(f"Final feature selection result: {len(feature_columns)} features")
+                            logger.warning(f"No symbol_ids available to filter data for {symbol}")
+                            continue
                     
-                    # Extract features using the selected column names (same as phase1)
-                    features = X[feature_columns]
-                    logger.info(f"Selected features for {symbol}: {features.shape} with actual column names")
-                    logger.info(f"Feature column names: {list(features.columns)[:10]}... (showing first 10)")
-                    
-                    # Convert to numpy array for model input
-                    X_features = features.values.astype(np.float32)
-                    
-                    # Use targets from DataFrame
-                    y = y.values.astype(np.float32)
-                    
-                    # Ensure features and targets are aligned
-                    min_length = min(len(X_features), len(y))
-                    X_features = X_features[:min_length]
-                    y = y[:min_length]
-                    
-                    if len(X_features) == 0:
-                        logger.warning(f"No validation data available for {symbol}")
+                    if len(X_features) == 0 or len(y) == 0:
+                        logger.warning(f"No validation data available for {symbol} after filtering")
                         continue
                     
-                    logger.info(f"Validation data for {symbol}: {len(X_features)} samples with {X_features.shape[1]} features")
+                    logger.info(f"Filtered data for {symbol}: {len(X_features)} samples with {X_features.shape[1]} features")
+                    logger.info(f"Feature count consistent with early stages: {X_features.shape[1]} features")
                     
                     # === STATISTICAL MODEL DEBUGGING ===
                     logger.info(f"\n=== DEBUGGING {model_type.upper()}-{symbol} STATISTICAL MODEL ===")
@@ -2251,17 +2494,31 @@ class UniversalTrainer:
                         for component_name, component_model in ensemble_models.items():
                             logger.info(f"Getting predictions from ensemble component: {component_name}")
                             
-                            if hasattr(component_model, 'predict_proba'):
-                                # For models that support probability prediction
-                                comp_predictions_proba = component_model.predict_proba(X_features)
-                                if comp_predictions_proba.shape[1] > 1:
-                                    comp_predictions = comp_predictions_proba[:, 1]  # Probability of positive class
+                            # Handle SVM with feature scaling
+                            if component_name == 'svm' and hasattr(component_model, 'feature_scaler') and component_model.feature_scaler is not None:
+                                X_features_scaled = component_model.feature_scaler.transform(X_features)
+                                if hasattr(component_model, 'predict_proba'):
+                                    comp_predictions_proba = component_model.predict_proba(X_features_scaled)
+                                    if comp_predictions_proba.shape[1] > 1:
+                                        comp_predictions = comp_predictions_proba[:, 1]  # Probability of positive class
+                                    else:
+                                        comp_predictions = comp_predictions_proba.flatten()
                                 else:
-                                    comp_predictions = comp_predictions_proba.flatten()
+                                    comp_predictions_binary = component_model.predict(X_features_scaled)
+                                    comp_predictions = comp_predictions_binary.astype(float)
                             else:
-                                # For models that only support binary prediction
-                                comp_predictions_binary = component_model.predict(X_features)
-                                comp_predictions = comp_predictions_binary.astype(float)
+                                # For other models (XGBoost, Random Forest) or SVM without scaling
+                                if hasattr(component_model, 'predict_proba'):
+                                    # For models that support probability prediction
+                                    comp_predictions_proba = component_model.predict_proba(X_features)
+                                    if comp_predictions_proba.shape[1] > 1:
+                                        comp_predictions = comp_predictions_proba[:, 1]  # Probability of positive class
+                                    else:
+                                        comp_predictions = comp_predictions_proba.flatten()
+                                else:
+                                    # For models that only support binary prediction
+                                    comp_predictions_binary = component_model.predict(X_features)
+                                    comp_predictions = comp_predictions_binary.astype(float)
                             
                             component_predictions.append(comp_predictions)
                             logger.info(f"Component {component_name} predictions shape: {comp_predictions.shape}")
@@ -2296,16 +2553,21 @@ class UniversalTrainer:
                     logger.info(f"Predictions shape: {predictions_flat.shape}")
                     logger.info(f"First 10 raw predictions: {predictions_flat[:10]}")
                     
-                    # 6. Calculate accuracy
-                    binary_predictions = (predictions_flat > 0.5).astype(int)
-                    accuracy = accuracy_score(y, binary_predictions)
+                    # 6. Calculate profit-based metrics using dual exit strategy
+                    profit_metrics = self._calculate_trading_profits(predictions_flat, y)
                     
                     # Additional metrics for debugging
                     unique_predictions = np.unique(predictions_flat)
+                    binary_predictions = (predictions_flat > 0.5).astype(int)
                     unique_binary_predictions = np.unique(binary_predictions)
                     unique_targets = np.unique(y)
                     
-                    logger.info(f"Accuracy: {accuracy:.6f}")
+                    logger.info(f"Total Profit: {profit_metrics['total_profit_pct']:.6f}%")
+                    logger.info(f"Trading Win Rate: {profit_metrics['win_rate']:.6f}")
+                    logger.info(f"Profit Factor: {profit_metrics['profit_factor']:.6f}")
+                    logger.info(f"Sharpe Ratio: {profit_metrics['sharpe_ratio']:.6f}")
+                    logger.info(f"Max Drawdown: {profit_metrics['max_drawdown']:.6f}%")
+                    logger.info(f"Total Trades: {profit_metrics['total_trades']}")
                     logger.info(f"Unique raw predictions count: {len(unique_predictions)}")
                     logger.info(f"Unique binary predictions: {unique_binary_predictions}")
                     logger.info(f"Unique targets: {unique_targets}")
@@ -2317,13 +2579,24 @@ class UniversalTrainer:
                     
                     logger.info(f"=== END DEBUGGING {model_type.upper()}-{symbol} ===")
                     
-                    # Store prediction results
+                    # Calculate weight hash for model fingerprinting
+                    weight_hash = self._calculate_model_weight_hash(model)
+                    
+                    # Store prediction results with profit-based metrics
                     model_predictions[model_type][symbol] = {
                         'predictions': predictions_flat,
                         'targets': y,
-                        'accuracy': accuracy,
+                        'total_profit_pct': profit_metrics['total_profit_pct'],
+                        'trading_win_rate': profit_metrics['win_rate'],
+                        'profit_factor': profit_metrics['profit_factor'],
+                        'sharpe_ratio': profit_metrics['sharpe_ratio'],
+                        'max_drawdown': profit_metrics['max_drawdown'],
+                        'total_trades': profit_metrics['total_trades'],
+                        'profitable_trades': profit_metrics['profitable_trades'],
+                        'max_consecutive_losses': profit_metrics['max_consecutive_losses'],
                         'model_id': model_id,
-                        'model_class': model_class
+                        'model_class': model_class,
+                        'weight_hash': weight_hash
                     }
                     
                 except Exception as e:
@@ -2353,21 +2626,21 @@ class UniversalTrainer:
         for symbol in symbols_with_all_models:
             logger.info(f"\nSymbol {symbol} predictions comparison:")
             symbol_predictions = {}
-            symbol_accuracies = {}
+            symbol_profits = {}
             
             for model_type in model_predictions.keys():
                 if symbol in model_predictions[model_type]:
                     pred_data = model_predictions[model_type][symbol]
                     predictions = pred_data['predictions'][:5]  # First 5 predictions
-                    accuracy = pred_data['accuracy']
+                    total_profit = pred_data['total_profit_pct']
                     symbol_predictions[model_type] = predictions
-                    symbol_accuracies[model_type] = accuracy
-                    logger.info(f"  {model_type}: accuracy={accuracy:.6f}, first_5_preds={predictions}")
+                    symbol_profits[model_type] = total_profit  # Using profit as primary metric
+                    logger.info(f"  {model_type}: profit={total_profit:.6f}%, first_5_preds={predictions}")
             
-            # Check if all accuracies are identical
-            unique_accuracies = set(symbol_accuracies.values())
-            if len(unique_accuracies) == 1:
-                logger.error(f"  WARNING: All model types have IDENTICAL accuracy ({list(unique_accuracies)[0]:.6f}) for {symbol}!")
+            # Check if all profit values are identical
+            unique_profits = set(symbol_profits.values())
+            if len(unique_profits) == 1:
+                logger.error(f"  WARNING: All model types have IDENTICAL profit ({list(unique_profits)[0]:.6f}%) for {symbol}!")
             
             # Check if all predictions are identical
             if len(symbol_predictions) > 1:
@@ -2376,55 +2649,68 @@ class UniversalTrainer:
                     logger.error(f"  WARNING: All model types have IDENTICAL predictions for {symbol}!")
         
         # 3. Overall statistics
-        logger.info("\n--- OVERALL ACCURACY STATISTICS ---")
-        all_accuracies = []
+        logger.info("\n--- OVERALL PROFIT STATISTICS ---")
+        all_profits = []
         for model_type in model_predictions.keys():
             for symbol, pred_data in model_predictions[model_type].items():
-                all_accuracies.append(pred_data['accuracy'])
+                all_profits.append(pred_data['total_profit_pct'])
         
-        # Check if we have any accuracies to analyze
-        if not all_accuracies:
+        # Check if we have any profit values to analyze
+        if not all_profits:
             logger.error("CRITICAL: No model predictions available for ensemble optimization!")
             logger.error("This indicates that no models were successfully trained in Phase 1.")
             logger.error("Returning empty ensemble weights.")
             return {}
         
-        unique_accuracy_values = set(all_accuracies)
-        logger.info(f"Total models evaluated: {len(all_accuracies)}")
-        logger.info(f"Unique accuracy values: {len(unique_accuracy_values)}")
-        logger.info(f"Accuracy range: {min(all_accuracies):.6f} to {max(all_accuracies):.6f}")
+        unique_profit_values = set(all_profits)
+        logger.info(f"Total models evaluated: {len(all_profits)}")
+        logger.info(f"Unique profit values: {len(unique_profit_values)}")
+        logger.info(f"Profit range: {min(all_profits):.6f}% to {max(all_profits):.6f}%")
         
-        if len(unique_accuracy_values) == 1:
-            logger.error(f"CRITICAL: ALL MODELS HAVE IDENTICAL ACCURACY ({list(unique_accuracy_values)[0]:.6f})!")
-        elif len(unique_accuracy_values) < len(all_accuracies) * 0.1:  # Less than 10% unique values
-            logger.warning(f"WARNING: Very few unique accuracy values ({len(unique_accuracy_values)}) for {len(all_accuracies)} models!")
+        if len(unique_profit_values) == 1:
+            logger.error(f"CRITICAL: ALL MODELS HAVE IDENTICAL PROFIT ({list(unique_profit_values)[0]:.6f}%)!")
+        elif len(unique_profit_values) < len(all_profits) * 0.1:  # Less than 10% unique values
+            logger.warning(f"WARNING: Very few unique profit values ({len(unique_profit_values)}) for {len(all_profits)} models!")
         
         logger.info("=== END CROSS-MODEL COMPARISON ANALYSIS ===")
         
-        # Log individual model predictions and accuracies
+        # Log individual model predictions and profit metrics
         for model_type in model_predictions.keys():
             logger.info(f"\n--- {model_type.upper()} MODEL PERFORMANCE ---")
             for symbol, pred_data in model_predictions[model_type].items():
-                accuracy = pred_data['accuracy']
+                total_profit = pred_data['total_profit_pct']
+                trading_win_rate = pred_data['trading_win_rate']
+                profit_factor = pred_data['profit_factor']
                 num_predictions = len(pred_data['predictions'])
-                logger.info(f"  {symbol}: accuracy={accuracy:.4f}, predictions={num_predictions}")
+                logger.info(f"  {symbol}: profit={total_profit:.4f}%, win_rate={trading_win_rate:.4f}, profit_factor={profit_factor:.4f}, predictions={num_predictions}")
         
         model_scores = {}
         for model_type in model_predictions.keys():
-            accuracies = [pred['accuracy'] for pred in model_predictions[model_type].values()]
-            avg_accuracy = np.mean(accuracies) if accuracies else 0.0
-            model_scores[model_type] = float(avg_accuracy)  # Convert to Python float
-            logger.info(f"{model_type} average accuracy: {avg_accuracy:.4f} (from {len(accuracies)} symbols)")
+            # Use total_profit_pct as the primary scoring metric
+            profit_scores = [pred['total_profit_pct'] for pred in model_predictions[model_type].values()]
+            avg_profit = np.mean(profit_scores) if profit_scores else 0.0
+            model_scores[model_type] = float(avg_profit)  # Convert to Python float
+            logger.info(f"{model_type} average profit: {avg_profit:.4f}% (from {len(profit_scores)} symbols)")
         
-        logger.info(f"\nModel scores summary: {model_scores}")
+        logger.info(f"\nModel profit scores summary: {model_scores}")
         
-        # Normalize weights
-        total_score = sum(model_scores.values())
+        # Normalize weights based on profit scores
+        # For profit-based scoring, we need to handle negative profits properly
+        # Shift all scores to positive range if any are negative
+        min_score = min(model_scores.values()) if model_scores else 0.0
+        if min_score < 0:
+            # Shift all scores to positive range
+            adjusted_scores = {model: score - min_score + 0.01 for model, score in model_scores.items()}
+            logger.info(f"Adjusted scores (shifted by {-min_score + 0.01:.4f}): {adjusted_scores}")
+        else:
+            adjusted_scores = model_scores
+        
+        total_score = sum(adjusted_scores.values())
         logger.info(f"Total score for normalization: {total_score:.4f}")
         
         if total_score > 0:
-            self.ensemble_weights = {model: float(score / total_score) for model, score in model_scores.items()}
-            logger.info("Weights calculated using performance-based normalization")
+            self.ensemble_weights = {model: float(score / total_score) for model, score in adjusted_scores.items()}
+            logger.info("Weights calculated using profit-based normalization")
         else:
             # Equal weights if no valid scores
             num_models = len(model_scores)
@@ -2436,6 +2722,81 @@ class UniversalTrainer:
             logger.info(f"  {model_type}: {weight:.6f}")
         
         logger.info("=== END PHASE 3 ENSEMBLE WEIGHT CALCULATION DEBUG ===")
+        
+        # CRITICAL FIX: Create ensemble model using optimized weights from Phase 3
+        # This is where the ensemble should be created - after weight optimization, not during Phase 1
+        if self.ensemble_weights and len(self.ensemble_weights) > 0:
+            logger.info("Creating ensemble model using optimized weights from Phase 3...")
+            
+            # Initialize universal architectures if not already done
+            if self.universal_architectures is None:
+                self.universal_architectures = UniversalModelArchitectures()
+            
+            # Get feature dimension from one of the base models
+            feature_dim = None
+            for model_type, model in self.base_models.items():
+                if hasattr(model, 'n_features_in_'):
+                    feature_dim = model.n_features_in_
+                    break
+                elif hasattr(model, 'feature_importances_'):
+                    feature_dim = len(model.feature_importances_)
+                    break
+            
+            if feature_dim is None:
+                logger.warning("Could not determine feature dimension from base models, using default")
+                feature_dim = 262  # Default feature count
+            
+            # Create ensemble configuration using optimized weights
+            # Log the weights being passed to create_ensemble_model
+            xgb_weight = self.ensemble_weights.get(ModelType.XGBOOST, 0.0)
+            rf_weight = self.ensemble_weights.get(ModelType.RANDOM_FOREST, 0.0)
+            svm_weight = self.ensemble_weights.get(ModelType.SVM, 0.0)
+            
+            logger.info(f"Passing optimized weights to create_ensemble_model:")
+            logger.info(f"  xgb_weight: {xgb_weight:.6f}")
+            logger.info(f"  rf_weight: {rf_weight:.6f}")
+            logger.info(f"  svm_weight: {svm_weight:.6f}")
+            
+            ensemble_config = {
+                'xgb_weight': xgb_weight,
+                'rf_weight': rf_weight,
+                'svm_weight': svm_weight,
+                'xgboost': {},
+                'random_forest': {},
+                'svm': {}
+            }
+            
+            # Create the ensemble model using the optimized weights
+            ensemble_model = self.universal_architectures.create_ensemble_model(
+                feature_dim=feature_dim,
+                config=ensemble_config,
+                model_name="phase3_optimized_ensemble"
+            )
+            
+            # Replace the individual models in the ensemble with our trained base models
+            if ModelType.XGBOOST in self.base_models:
+                ensemble_model['models']['xgboost'] = self.base_models[ModelType.XGBOOST]
+            if ModelType.RANDOM_FOREST in self.base_models:
+                ensemble_model['models']['random_forest'] = self.base_models[ModelType.RANDOM_FOREST]
+            if ModelType.SVM in self.base_models:
+                ensemble_model['models']['svm'] = self.base_models[ModelType.SVM]
+            
+            # Update ensemble weights with optimized values
+            ensemble_model['weights'] = {
+                'xgboost': self.ensemble_weights.get(ModelType.XGBOOST, 0.0),
+                'random_forest': self.ensemble_weights.get(ModelType.RANDOM_FOREST, 0.0),
+                'svm': self.ensemble_weights.get(ModelType.SVM, 0.0)
+            }
+            
+            # Store the ensemble model in base_models for saving and future use
+            self.base_models[ModelType.ENSEMBLE] = ensemble_model
+            
+            logger.info(f"Successfully created ensemble model with optimized weights:")
+            for model_name, weight in ensemble_model['weights'].items():
+                logger.info(f"  {model_name}: {weight:.6f}")
+        else:
+            logger.warning("No ensemble weights calculated, skipping ensemble model creation")
+        
         logger.info(f"Phase 3 completed: Ensemble weights = {self.ensemble_weights}")
         return self.ensemble_weights
     
@@ -2633,10 +2994,10 @@ class UniversalTrainer:
                 
                 # Trading-Specific Metrics for Minute-to-Minute System
                 'trading_performance': {
-                    'avg_model_accuracy': np.mean([metrics.get('accuracy', 0) for metrics in phase1_results.get('validation_metrics', {}).values()]) if phase1_results.get('validation_metrics') else 0.0,
-                    'best_performing_model': max(phase1_results.get('validation_metrics', {}).items(), key=lambda x: x[1].get('accuracy', 0))[0] if phase1_results.get('validation_metrics') else 'none',
+                    'avg_model_profit': np.mean([metrics.get('total_profit_pct', 0) for metrics in phase1_results.get('validation_metrics', {}).values()]) if phase1_results.get('validation_metrics') else 0.0,
+                    'best_performing_model': max(phase1_results.get('validation_metrics', {}).items(), key=lambda x: x[1].get('total_profit_pct', 0))[0] if phase1_results.get('validation_metrics') else 'none',
                     'model_consistency': {
-                        'accuracy_std': np.std([metrics.get('accuracy', 0) for metrics in phase1_results.get('validation_metrics', {}).values()]) if phase1_results.get('validation_metrics') else 0.0,
+                        'profit_std': np.std([metrics.get('total_profit_pct', 0) for metrics in phase1_results.get('validation_metrics', {}).values()]) if phase1_results.get('validation_metrics') else 0.0,
                         'loss_std': np.std([metrics.get('loss', 0) for metrics in phase1_results.get('validation_metrics', {}).values()]) if phase1_results.get('validation_metrics') else 0.0
                     },
                     'prediction_readiness': {
@@ -2795,27 +3156,32 @@ class UniversalTrainer:
                 'num_symbols': len(self.symbol_to_id) if hasattr(self, 'symbol_to_id') else 0,
                 'prediction_threshold': getattr(self.config, 'prediction_threshold', 0.55),
                 'prediction_window': getattr(self.config, 'prediction_window', 15),
-                'take_profit_pct': getattr(self.config, 'take_profit_pct', 0.003),
-                'stop_loss_pct': getattr(self.config, 'stop_loss_pct', 0.001),
+                'take_profit_pct': getattr(self.config, 'take_profit_pct', 0.005),
+                'stop_loss_pct': getattr(self.config, 'stop_loss_pct', 0.002),
                 'random_state': getattr(self.config, 'random_state', 42)
             },
             'model_configs': {
                 'xgboost': {
-                    'n_estimators': getattr(self.config, 'xgb_n_estimators', 100),
-                    'max_depth': getattr(self.config, 'xgb_max_depth', 6),
-                    'learning_rate': getattr(self.config, 'xgb_learning_rate', 0.1),
-                    'subsample': getattr(self.config, 'xgb_subsample', 0.8)
+                    'n_estimators': getattr(self.config, 'xgboost_n_estimators', 1000),
+                    'max_depth': getattr(self.config, 'xgboost_max_depth', 7),
+                    'learning_rate': getattr(self.config, 'xgboost_learning_rate', 0.15),
+                    'subsample': getattr(self.config, 'xgboost_subsample', 0.8),
+                    'colsample_bytree': getattr(self.config, 'xgboost_colsample_bytree', 0.8),
+                    'reg_alpha': getattr(self.config, 'xgboost_reg_alpha', 0.2),
+                    'reg_lambda': getattr(self.config, 'xgboost_reg_lambda', 0.2)
                 },
                 'random_forest': {
-                    'n_estimators': getattr(self.config, 'rf_n_estimators', 100),
-                    'max_depth': getattr(self.config, 'rf_max_depth', 10),
-                    'min_samples_split': getattr(self.config, 'rf_min_samples_split', 2),
-                    'min_samples_leaf': getattr(self.config, 'rf_min_samples_leaf', 1)
+                    'n_estimators': getattr(self.config, 'rf_n_estimators', 500),
+                    'max_depth': getattr(self.config, 'rf_max_depth', 12),
+                    'min_samples_split': getattr(self.config, 'rf_min_samples_split', 10),
+                    'min_samples_leaf': getattr(self.config, 'rf_min_samples_leaf', 5),
+                    'max_features': getattr(self.config, 'rf_max_features', 'sqrt')
                 },
                 'svm': {
-                    'C': getattr(self.config, 'svm_C', 1.0),
+                    'C': getattr(self.config, 'svm_C', 10.0),
                     'kernel': getattr(self.config, 'svm_kernel', 'rbf'),
-                    'gamma': getattr(self.config, 'svm_gamma', 'scale')
+                    'gamma': getattr(self.config, 'svm_gamma', 'scale'),
+                    'class_weight': getattr(self.config, 'svm_class_weight', 'balanced')
                 }
             },
             'feature_selection': {
@@ -2825,14 +3191,20 @@ class UniversalTrainer:
                 'selected_feature_count': len(getattr(self, 'selected_feature_columns', [])) if hasattr(self, 'selected_feature_columns') and self.selected_feature_columns else len(getattr(self, 'selected_features', [])) if hasattr(self, 'selected_features') and self.selected_features else 0,
                 'feature_importance': getattr(self, 'feature_importance', {}),
                 'feature_mapping': getattr(self, 'feature_mapping', {}),
-                'total_features': len(getattr(self, 'selected_features', [])) if hasattr(self, 'selected_features') and self.selected_features else 0
+                'total_features': len(getattr(self, 'selected_features', [])) if hasattr(self, 'selected_features') and self.selected_features else 0,
+                # Add validation metadata to track consistency
+                'validation_metadata': {
+                    'universal_metadata_feature_count': len(getattr(self, 'selected_feature_columns', [])) if hasattr(self, 'selected_feature_columns') and self.selected_feature_columns else 0,
+                    'feature_selection_timestamp': datetime.now().isoformat(),
+                    'feature_selection_method': 'mutual_info_regression'
+                }
             },
             'model_performance': {
-                'validation_accuracy': getattr(self, 'best_validation_accuracy', 0.0),
+                'validation_profit_pct': getattr(self, 'best_validation_profit_pct', 0.0),  # Primary profit metric
                 'validation_precision': getattr(self, 'best_validation_precision', 0.0),
                 'validation_recall': getattr(self, 'best_validation_recall', 0.0),
                 'validation_f1': getattr(self, 'best_validation_f1', 0.0),
-                'ensemble_accuracy': getattr(self, 'ensemble_accuracy', 0.0),
+                'ensemble_profit_pct': getattr(self, 'ensemble_profit_pct', 0.0),  # Ensemble profit performance
                 'prediction_confidence_threshold': getattr(self.config, 'prediction_confidence_threshold', 0.6)
             },
             'training_data_stats': {
@@ -2870,6 +3242,357 @@ class UniversalTrainer:
         
         logger.info(f"Saved universal models to {save_dir}")
     
+    def _train_with_cross_validation(self, model_type: ModelType, X_train: np.ndarray, y_train: np.ndarray,
+                                   config: ModelConfig, n_folds: int = 5) -> Tuple[object, float, Dict[str, float]]:
+        """
+        Train a model using k-fold cross-validation for improved robustness.
+        
+        Args:
+            model_type: Type of model to train
+            X_train: Training features
+            y_train: Training targets
+            config: Model configuration
+            n_folds: Number of cross-validation folds
+            
+        Returns:
+            Tuple of (trained_model, validation_score, metrics)
+        """
+        logger.info(f"Training {model_type.value} model with {X_train.shape[1]} aggregated features using {n_folds}-fold cross-validation")
+        
+        # Create progress bar for cross-validation training
+        pbar = tqdm(total=100, desc=f"CV Training {model_type.value}", unit="%")
+        pbar.update(5)  # Initial setup complete
+        
+        kf = KFold(n_splits=n_folds, shuffle=True, random_state=self.config.random_state)
+        
+        cv_scores = []
+        cv_models = []
+        cv_predictions = np.zeros(len(X_train))
+        
+        feature_dim = X_train.shape[1]
+        fold_progress_step = 60 // n_folds  # Allocate 60% of progress to CV folds
+        
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+            pbar.set_description(f"CV Training {model_type.value} - Fold {fold + 1}/{n_folds}")
+            X_fold_train, X_fold_val = X_train[train_idx], X_train[val_idx]
+            y_fold_train, y_fold_val = y_train[train_idx], y_train[val_idx]
+            
+            # Create and train model for this fold - match regular training logic
+            if model_type == ModelType.XGBOOST:
+                fold_model = self.universal_architectures.create_universal_xgboost(
+                    feature_dim=feature_dim,
+                    config=config.parameters,
+                    model_name=f"universal_{model_type.value}_fold_{fold}"
+                )
+                eval_set = [(X_fold_train, y_fold_train), (X_fold_val, y_fold_val)]
+                fold_model.fit(X_fold_train, y_fold_train, eval_set=eval_set, verbose=False)
+                
+            elif model_type == ModelType.RANDOM_FOREST:
+                fold_model = self.universal_architectures.create_universal_random_forest(
+                    feature_dim=feature_dim,
+                    config=config.parameters,
+                    model_name=f"universal_{model_type.value}_fold_{fold}"
+                )
+                fold_model.fit(X_fold_train, y_fold_train)
+                
+            elif model_type == ModelType.SVM:
+                fold_model = self.universal_architectures.create_universal_svm(
+                    feature_dim=feature_dim,
+                    config=config.parameters,
+                    model_name=f"universal_{model_type.value}_fold_{fold}"
+                )
+                # Apply feature scaling for SVM - match regular training logic
+                scaler = StandardScaler()
+                X_fold_train_scaled = scaler.fit_transform(X_fold_train)
+                X_fold_val_scaled = scaler.transform(X_fold_val)
+                fold_model.fit(X_fold_train_scaled, y_fold_train)
+                # Store scaler with the model for inference
+                fold_model.feature_scaler = scaler
+                logger.info(f"Fold {fold + 1} - Applied StandardScaler for SVM - feature range: [{X_fold_train_scaled.min():.3f}, {X_fold_train_scaled.max():.3f}]")
+                
+            elif model_type == ModelType.ENSEMBLE:
+                # Create ensemble for this fold - match regular training logic
+                ensemble = self.universal_architectures.create_ensemble_model(
+                    feature_dim=feature_dim,
+                    config=config.parameters,
+                    model_name=f"universal_{model_type.value}_fold_{fold}"
+                )
+                
+                # Train individual models in ensemble
+                models = ensemble['models']
+                
+                # Train XGBoost
+                eval_set = [(X_fold_train, y_fold_train), (X_fold_val, y_fold_val)]
+                models['xgboost'].fit(X_fold_train, y_fold_train, eval_set=eval_set, verbose=False)
+                
+                # Train Random Forest  
+                models['random_forest'].fit(X_fold_train, y_fold_train)
+                
+                # Train SVM with feature scaling
+                svm_scaler = StandardScaler()
+                X_fold_train_scaled = svm_scaler.fit_transform(X_fold_train)
+                X_fold_val_scaled = svm_scaler.transform(X_fold_val)
+                models['svm'].fit(X_fold_train_scaled, y_fold_train)
+                # Store scaler with the SVM model for inference (not in models dict to avoid prediction errors)
+                models['svm'].feature_scaler = svm_scaler
+                
+                # Optimize ensemble weights using validation loss minimization
+                optimized_weights = self._optimize_ensemble_weights(models, X_fold_val, y_fold_val)
+                ensemble['weights'] = optimized_weights
+                
+                # Add selected feature information to ensemble model
+                if hasattr(self, 'selected_feature_columns') and self.selected_feature_columns:
+                    ensemble['selected_feature_count'] = len(self.selected_feature_columns)
+                    ensemble['selected_feature_columns'] = self.selected_feature_columns
+                else:
+                    ensemble['selected_feature_count'] = feature_dim
+                    ensemble['selected_feature_columns'] = []
+                
+                fold_model = ensemble
+                
+            # Get out-of-fold predictions - match regular training logic
+            if model_type == ModelType.ENSEMBLE:
+                # Ensemble predictions
+                models = fold_model['models']
+                weights = fold_model['weights']
+                
+                xgb_pred = models['xgboost'].predict_proba(X_fold_val)[:, 1]
+                rf_pred = models['random_forest'].predict_proba(X_fold_val)[:, 1]
+                # Use scaled data for SVM predictions
+                if hasattr(models['svm'], 'feature_scaler'):
+                    X_fold_val_scaled = models['svm'].feature_scaler.transform(X_fold_val)
+                    svm_pred = models['svm'].predict_proba(X_fold_val_scaled)[:, 1]
+                else:
+                    svm_pred = models['svm'].predict_proba(X_fold_val)[:, 1]
+                
+                fold_predictions = (weights['xgboost'] * xgb_pred + 
+                                  weights['random_forest'] * rf_pred + 
+                                  weights['svm'] * svm_pred)
+            elif model_type == ModelType.SVM and hasattr(fold_model, 'feature_scaler'):
+                X_fold_val_scaled = fold_model.feature_scaler.transform(X_fold_val)
+                fold_predictions = fold_model.predict_proba(X_fold_val_scaled)[:, 1]
+            else:
+                fold_predictions = fold_model.predict_proba(X_fold_val)[:, 1]
+            
+            cv_predictions[val_idx] = fold_predictions
+            
+            # Calculate fold score
+            fold_score = roc_auc_score(y_fold_val, fold_predictions) if len(np.unique(y_fold_val)) > 1 else 0.0
+            cv_scores.append(fold_score)
+            cv_models.append(fold_model)
+            
+            logger.info(f"Fold {fold + 1}/{n_folds} - AUC: {fold_score:.4f}")
+            pbar.update(fold_progress_step)
+        
+        # Calculate overall CV score
+        cv_score = np.mean(cv_scores)
+        cv_std = np.std(cv_scores)
+        
+        logger.info(f"Cross-validation complete - Mean AUC: {cv_score:.4f} ± {cv_std:.4f}")
+        
+        # Train final model on full training data - match regular training logic exactly
+        pbar.set_description(f"Training final {model_type.value} model")
+        if model_type == ModelType.XGBOOST:
+            final_model = self.universal_architectures.create_universal_xgboost(
+                feature_dim=feature_dim,
+                config=config.parameters,
+                model_name=f"universal_{model_type.value}_final"
+            )
+            final_model.fit(X_train, y_train, verbose=False)
+            
+        elif model_type == ModelType.RANDOM_FOREST:
+            final_model = self.universal_architectures.create_universal_random_forest(
+                feature_dim=feature_dim,
+                config=config.parameters,
+                model_name=f"universal_{model_type.value}_final"
+            )
+            final_model.fit(X_train, y_train)
+            
+        elif model_type == ModelType.SVM:
+            final_model = self.universal_architectures.create_universal_svm(
+                feature_dim=feature_dim,
+                config=config.parameters,
+                model_name=f"universal_{model_type.value}_final"
+            )
+            # Apply feature scaling for SVM - match regular training logic
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            final_model.fit(X_train_scaled, y_train)
+            # Store scaler with the model for inference
+            final_model.feature_scaler = scaler
+            logger.info(f"Applied StandardScaler for final SVM - feature range: [{X_train_scaled.min():.3f}, {X_train_scaled.max():.3f}]")
+            
+        elif model_type == ModelType.ENSEMBLE:
+            # Create final ensemble - match regular training logic exactly
+            ensemble = self.universal_architectures.create_ensemble_model(
+                feature_dim=feature_dim,
+                config=config.parameters,
+                model_name=f"universal_{model_type.value}_final"
+            )
+            
+            # Train individual models
+            models = ensemble['models']
+            
+            # Train XGBoost
+            models['xgboost'].fit(X_train, y_train, verbose=False)
+            
+            # Train Random Forest  
+            models['random_forest'].fit(X_train, y_train)
+            
+            # Train SVM with feature scaling
+            svm_scaler = StandardScaler()
+            X_train_scaled = svm_scaler.fit_transform(X_train)
+            models['svm'].fit(X_train_scaled, y_train)
+            # Store scaler with the SVM model for inference (not in models dict to avoid prediction errors)
+            models['svm'].feature_scaler = svm_scaler
+            
+            # For ensemble CV, we can use the CV predictions to optimize weights or use a simple validation approach
+            # Here we'll use the average weights from CV folds as a starting point
+            if len(cv_models) > 0 and model_type == ModelType.ENSEMBLE:
+                # Average the weights from CV folds
+                avg_weights = {'xgboost': 0.0, 'random_forest': 0.0, 'svm': 0.0}
+                for cv_model in cv_models:
+                    if isinstance(cv_model, dict) and 'weights' in cv_model:
+                        for key in avg_weights:
+                            avg_weights[key] += cv_model['weights'][key] / len(cv_models)
+                ensemble['weights'] = avg_weights
+                logger.info(f"Using averaged CV weights for final ensemble: {avg_weights}")
+            else:
+                # Fallback to equal weights if no CV weights available
+                ensemble['weights'] = {'xgboost': 1/3, 'random_forest': 1/3, 'svm': 1/3}
+            
+            # Add selected feature information to ensemble model
+            if hasattr(self, 'selected_feature_columns') and self.selected_feature_columns:
+                ensemble['selected_feature_count'] = len(self.selected_feature_columns)
+                ensemble['selected_feature_columns'] = self.selected_feature_columns
+                logger.info(f"Ensemble using original selected features: {len(self.selected_feature_columns)} features")
+                
+                # Log warning if there's a discrepancy between selected features and actual training features
+                if len(self.selected_feature_columns) != feature_dim:
+                    logger.warning(f"Feature count discrepancy detected: Selected features={len(self.selected_feature_columns)}, Training features={feature_dim}")
+                    logger.warning(f"This may indicate feature filtering during data processing")
+            else:
+                # Fallback to current feature dimensions if no selected features available
+                ensemble['selected_feature_count'] = feature_dim
+                ensemble['selected_feature_columns'] = []
+                logger.warning(f"No selected features available, using current feature dimensions: {feature_dim}")
+            
+            final_model = ensemble
+            
+        pbar.update(15)  # Final model training complete
+        
+        # Add confidence calibration after training - match regular training logic
+        pbar.set_description(f"Calibrating {model_type.value} confidence")
+        calibrated_model = self._add_confidence_calibration(final_model, model_type, X_train, y_train, cv_predictions)
+        if calibrated_model is not None:
+            final_model = calibrated_model
+        pbar.update(10)  # Calibration complete
+        
+        # Calculate comprehensive metrics using out-of-fold predictions - match regular training logic
+        cv_predictions_binary = (cv_predictions > 0.5).astype(int)
+        
+        # Basic metrics
+        val_accuracy = accuracy_score(y_train, cv_predictions_binary)
+        val_precision = precision_score(y_train, cv_predictions_binary, zero_division=0)
+        val_recall = recall_score(y_train, cv_predictions_binary, zero_division=0)
+        val_f1 = f1_score(y_train, cv_predictions_binary, zero_division=0)
+        val_roc_auc = cv_score
+        val_loss = -np.mean(y_train * np.log(cv_predictions + 1e-15) + (1 - y_train) * np.log(1 - cv_predictions + 1e-15))
+        
+        # PROFIT-BASED EVALUATION: Calculate trading profits using dual exit strategy
+        profit_metrics = self._calculate_trading_profits(cv_predictions, y_train, prediction_threshold=0.5)
+        
+        # DEBUG: Log profit metrics to verify they are calculated correctly
+        logger.info(f"DEBUG - Profit metrics calculated for {model_type.value} CV:")
+        logger.info(f"  win_rate: {profit_metrics.get('win_rate', 'MISSING')}")
+        logger.info(f"  risk_adjusted_return: {profit_metrics.get('risk_adjusted_return', 'MISSING')}")
+        logger.info(f"  avg_profit_per_trade: {profit_metrics.get('avg_profit_per_trade', 'MISSING')}")
+        
+        # Use total profit percentage as primary validation score instead of loss
+        val_profit_score = profit_metrics['total_profit_pct']
+        
+        # High confidence accuracy (predictions > 0.7)
+        high_conf_mask = cv_predictions > 0.7
+        high_conf_accuracy = 0.0
+        if np.sum(high_conf_mask) > 0:
+            high_conf_predictions = cv_predictions_binary[high_conf_mask]
+            high_conf_targets = y_train[high_conf_mask]
+            high_conf_accuracy = accuracy_score(high_conf_targets, high_conf_predictions)
+        
+        # Win rate by confidence levels - match regular training logic format
+        confidence_intervals = [(0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0)]
+        win_rates_by_confidence = {}
+        
+        for low, high in confidence_intervals:
+            mask = (cv_predictions >= low) & (cv_predictions < high)
+            if np.sum(mask) > 0:
+                conf_predictions = cv_predictions_binary[mask]
+                conf_targets = y_train[mask]
+                win_rate = accuracy_score(conf_targets, conf_predictions)
+                win_rates_by_confidence[f"{low:.1f}-{high:.1f}"] = win_rate
+            else:
+                win_rates_by_confidence[f"{low:.1f}-{high:.1f}"] = 0.0
+        
+        # Compile all metrics including profit-based metrics - match regular training logic
+        metrics = {
+            'accuracy': val_accuracy,
+            'precision': val_precision,
+            'recall': val_recall,
+            'f1_score': val_f1,
+            'roc_auc': val_roc_auc,
+            'cv_std': cv_std,
+            'high_confidence_accuracy': high_conf_accuracy,
+            'win_rate_0.5-0.6': win_rates_by_confidence.get('0.5-0.6', 0.0),
+            'win_rate_0.6-0.7': win_rates_by_confidence.get('0.6-0.7', 0.0),
+            'win_rate_0.7-0.8': win_rates_by_confidence.get('0.7-0.8', 0.0),
+            'win_rate_0.8-0.9': win_rates_by_confidence.get('0.8-0.9', 0.0),
+            'win_rate_0.9-1.0': win_rates_by_confidence.get('0.9-1.0', 0.0),
+            # Add profit-based metrics with correct keys for phase1_universal_base_training logging
+            'total_profit_pct': profit_metrics['total_profit_pct'],
+            'trading_win_rate': profit_metrics['win_rate'],
+            'profit_factor': profit_metrics['profit_factor'],
+            'max_drawdown': profit_metrics['max_drawdown'],
+            'sharpe_ratio': profit_metrics['sharpe_ratio'],
+            'total_trades': profit_metrics['total_trades'],
+            'profitable_trades': profit_metrics['profitable_trades'],
+            'max_consecutive_losses': profit_metrics['max_consecutive_losses'],
+            # Add the missing keys that phase1_universal_base_training expects
+            'win_rate': profit_metrics['win_rate'],  # This is the key that phase1 logging expects
+            'risk_adjusted_return': profit_metrics['risk_adjusted_return'],  # Missing key
+            'avg_profit_per_trade': profit_metrics['avg_profit_per_trade']  # Missing key
+        }
+        
+        # DEBUG: Log final metrics dictionary to verify all keys are present
+        logger.info(f"DEBUG - Final metrics dictionary for {model_type.value} CV:")
+        logger.info(f"  win_rate: {metrics.get('win_rate', 'MISSING')}")
+        logger.info(f"  risk_adjusted_return: {metrics.get('risk_adjusted_return', 'MISSING')}")
+        logger.info(f"  avg_profit_per_trade: {metrics.get('avg_profit_per_trade', 'MISSING')}")
+        
+        pbar.update(10)  # Evaluation complete
+        
+        # Close progress bar
+        pbar.close()
+        
+        # Log results - match regular training logic
+        logger.info(f"Completed {model_type.value} CV training:")
+        logger.info(f"  - Profit Score: {val_profit_score:.4f}%, Classification Score: {val_accuracy:.4f}")
+        logger.info(f"  - Precision: {val_precision:.4f}, Recall: {val_recall:.4f}, F1: {val_f1:.4f}")
+        logger.info(f"  - ROC-AUC: {val_roc_auc:.4f} ± {cv_std:.4f}, High Conf Profit Score: {high_conf_accuracy:.4f}")
+        logger.info(f"  - Win Rates: 0.5-0.6: {win_rates_by_confidence.get('0.5-0.6', 0.0):.3f}, 0.7-0.8: {win_rates_by_confidence.get('0.7-0.8', 0.0):.3f}, 0.9-1.0: {win_rates_by_confidence.get('0.9-1.0', 0.0):.3f}")
+        # Log profit-based metrics
+        logger.info(f"  💰 PROFIT METRICS - Total Profit: {profit_metrics['total_profit_pct']:.4f}%, Trading Win Rate: {profit_metrics['win_rate']:.4f}")
+        logger.info(f"  📈 Profit Factor: {profit_metrics['profit_factor']:.4f}, Sharpe Ratio: {profit_metrics['sharpe_ratio']:.4f}, Max Drawdown: {profit_metrics['max_drawdown']:.4f}%")
+        logger.info(f"  🎯 Total Trades: {profit_metrics['total_trades']}, Profitable: {profit_metrics['profitable_trades']}, Max Consecutive Losses: {profit_metrics['max_consecutive_losses']}")
+        
+        # Log confidence calibration status
+        if hasattr(final_model, 'confidence_calibrator') and final_model.confidence_calibrator is not None:
+            logger.info(f"  ✅ Confidence calibration: {final_model.confidence_calibrator.__class__.__name__} applied")
+        else:
+            logger.warning(f"  ⚠️  Confidence calibration: Not applied or failed")
+        
+        # Return profit score as validation score instead of loss (higher is better for profit)
+        return final_model, val_profit_score, metrics
+
     async def train_statistical_model(self, model_type: ModelType, X_train: np.ndarray, y_train: np.ndarray,
                                      X_val: np.ndarray, y_val: np.ndarray, config: ModelConfig) -> Tuple[object, float, Dict[str, float]]:
         """
@@ -2877,6 +3600,16 @@ class UniversalTrainer:
         Returns model, validation loss, and comprehensive metrics dictionary.
         """
         logger.info(f"Training {model_type.value} model with {X_train.shape[1]} aggregated features")
+        
+        # Check if cross-validation is enabled for base models (not ensemble)
+        use_cv = (hasattr(self.config, 'ensemble_cross_validation_folds') and 
+                  self.config.ensemble_cross_validation_folds > 1 and 
+                  model_type != ModelType.ENSEMBLE)
+        
+        if use_cv:
+            logger.info(f"Using cross-validation for {model_type.value} training")
+            return self._train_with_cross_validation(model_type, X_train, y_train, config, 
+                                                   self.config.ensemble_cross_validation_folds)
         
         # Create progress bar for model training
         pbar = tqdm(total=100, desc=f"Training {model_type.value}", unit="%")
@@ -2923,11 +3656,22 @@ class UniversalTrainer:
                 config=config.parameters,
                 model_name=f"universal_{model_type.value}"
             )
-            pbar.update(20)  # Model creation complete
+            pbar.update(15)  # Model creation complete
+            
+            # Add feature scaling for SVM to resolve identical predictions issue
+            pbar.set_description(f"Scaling features for {model_type.value}")
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_val_scaled = scaler.transform(X_val)
+            
+            # Store scaler with the model for inference
+            model.feature_scaler = scaler
+            logger.info(f"Applied StandardScaler for SVM - feature range: [{X_train_scaled.min():.3f}, {X_train_scaled.max():.3f}]")
+            pbar.update(10)  # Scaling complete
             
             pbar.set_description(f"Training {model_type.value} model")
-            model.fit(X_train, y_train)
-            pbar.update(60)  # Training complete
+            model.fit(X_train_scaled, y_train)
+            pbar.update(55)  # Training complete
             
         elif model_type == ModelType.ENSEMBLE:
             pbar.set_description(f"Creating {model_type.value} model")
@@ -2940,7 +3684,7 @@ class UniversalTrainer:
             
             # Train individual models
             models = ensemble['models']
-            weights = ensemble['weights']
+            weights = ensemble['weights']  # Initial weights, will be optimized later
             
             # Train XGBoost
             pbar.set_description(f"Training {model_type.value} XGBoost")
@@ -2953,21 +3697,45 @@ class UniversalTrainer:
             models['random_forest'].fit(X_train, y_train)
             pbar.update(20)  # Random Forest training complete
             
-            # Train SVM
+            # Train SVM with feature scaling
             pbar.set_description(f"Training {model_type.value} SVM")
-            models['svm'].fit(X_train, y_train)
+            svm_scaler = StandardScaler()
+            X_train_scaled = svm_scaler.fit_transform(X_train)
+            X_val_scaled = svm_scaler.transform(X_val)
+            models['svm'].fit(X_train_scaled, y_train)
+            # Store scaler with the SVM model for inference (not in models dict to avoid prediction errors)
+            models['svm'].feature_scaler = svm_scaler
             pbar.update(20)  # SVM training complete
             
-            # Add selected feature information to ensemble model
-            ensemble['selected_feature_count'] = getattr(self, 'selected_feature_columns', None) and len(self.selected_feature_columns) or feature_dim
-            ensemble['selected_feature_columns'] = getattr(self, 'selected_feature_columns', [])
+            # Optimize ensemble weights using validation loss minimization
+            pbar.set_description(f"Optimizing {model_type.value} weights")
+            optimized_weights = self._optimize_ensemble_weights(models, X_val, y_val)
+            ensemble['weights'] = optimized_weights
+            logger.info(f"Optimized ensemble weights: {optimized_weights}")
+            pbar.update(10)  # Weight optimization complete
+            
+            # Add selected feature information to ensemble model - use original selected features from feature selection
+            if hasattr(self, 'selected_feature_columns') and self.selected_feature_columns:
+                ensemble['selected_feature_count'] = len(self.selected_feature_columns)
+                ensemble['selected_feature_columns'] = self.selected_feature_columns
+                logger.info(f"Ensemble using original selected features: {len(self.selected_feature_columns)} features")
+                
+                # Log warning if there's a discrepancy between selected features and actual training features
+                if len(self.selected_feature_columns) != feature_dim:
+                    logger.warning(f"Feature count discrepancy detected: Selected features={len(self.selected_feature_columns)}, Training features={feature_dim}")
+                    logger.warning(f"This may indicate feature filtering during data processing")
+            else:
+                # Fallback to current feature dimensions if no selected features available
+                ensemble['selected_feature_count'] = feature_dim
+                ensemble['selected_feature_columns'] = []
+                logger.warning(f"No selected features available, using current feature dimensions: {feature_dim}")
             
             model = ensemble
             
         else:
             raise ValueError(f"Unsupported statistical model type: {model_type}")
         
-        # Evaluate model
+        # Evaluate model and add confidence calibration
         pbar.set_description(f"Evaluating {model_type.value} model")
         if model_type == ModelType.ENSEMBLE:
             # Ensemble predictions
@@ -2976,13 +3744,27 @@ class UniversalTrainer:
             
             xgb_pred = models['xgboost'].predict_proba(X_val)[:, 1]
             rf_pred = models['random_forest'].predict_proba(X_val)[:, 1]
-            svm_pred = models['svm'].predict_proba(X_val)[:, 1]
+            # Use scaled data for SVM predictions
+            X_val_scaled = models['svm'].feature_scaler.transform(X_val)
+            svm_pred = models['svm'].predict_proba(X_val_scaled)[:, 1]
             
             val_predictions = (weights['xgboost'] * xgb_pred + 
                               weights['random_forest'] * rf_pred + 
                               weights['svm'] * svm_pred)
         else:
-            val_predictions = model.predict_proba(X_val)[:, 1]
+            # Handle SVM with feature scaling
+            if model_type == ModelType.SVM and hasattr(model, 'feature_scaler'):
+                X_val_scaled = model.feature_scaler.transform(X_val)
+                val_predictions = model.predict_proba(X_val_scaled)[:, 1]
+            else:
+                val_predictions = model.predict_proba(X_val)[:, 1]
+        
+        # Add confidence calibration after training
+        pbar.set_description(f"Calibrating {model_type.value} confidence")
+        calibrated_model = self._add_confidence_calibration(model, model_type, X_val, y_val, val_predictions)
+        if calibrated_model is not None:
+            model = calibrated_model
+        pbar.update(5)  # Calibration complete
         
         # Calculate comprehensive metrics
         val_predictions_binary = (val_predictions > 0.5).astype(int)
@@ -2994,6 +3776,18 @@ class UniversalTrainer:
         val_f1 = f1_score(y_val, val_predictions_binary, zero_division=0)
         val_roc_auc = roc_auc_score(y_val, val_predictions) if len(np.unique(y_val)) > 1 else 0.0
         val_loss = -np.mean(y_val * np.log(val_predictions + 1e-15) + (1 - y_val) * np.log(1 - val_predictions + 1e-15))
+        
+        # PROFIT-BASED EVALUATION: Calculate trading profits using dual exit strategy
+        profit_metrics = self._calculate_trading_profits(val_predictions, y_val, prediction_threshold=0.5)
+        
+        # DEBUG: Log profit metrics to verify they are calculated correctly
+        logger.info(f"DEBUG - Profit metrics calculated for {model_type.value}:")
+        logger.info(f"  win_rate: {profit_metrics.get('win_rate', 'MISSING')}")
+        logger.info(f"  risk_adjusted_return: {profit_metrics.get('risk_adjusted_return', 'MISSING')}")
+        logger.info(f"  avg_profit_per_trade: {profit_metrics.get('avg_profit_per_trade', 'MISSING')}")
+        
+        # Use total profit percentage as primary validation score instead of accuracy
+        val_profit_score = profit_metrics['total_profit_pct']
         
         # High confidence accuracy (predictions > 0.7)
         high_conf_mask = val_predictions > 0.7
@@ -3017,7 +3811,7 @@ class UniversalTrainer:
             else:
                 win_rates_by_confidence[f"{low:.1f}-{high:.1f}"] = 0.0
         
-        # Compile all metrics
+        # Compile all metrics including profit-based metrics
         metrics = {
             'accuracy': val_accuracy,
             'precision': val_precision,
@@ -3029,8 +3823,27 @@ class UniversalTrainer:
             'win_rate_0.6-0.7': win_rates_by_confidence.get('0.6-0.7', 0.0),
             'win_rate_0.7-0.8': win_rates_by_confidence.get('0.7-0.8', 0.0),
             'win_rate_0.8-0.9': win_rates_by_confidence.get('0.8-0.9', 0.0),
-            'win_rate_0.9-1.0': win_rates_by_confidence.get('0.9-1.0', 0.0)
+            'win_rate_0.9-1.0': win_rates_by_confidence.get('0.9-1.0', 0.0),
+            # Add profit-based metrics with correct keys for phase1_universal_base_training logging
+            'total_profit_pct': profit_metrics['total_profit_pct'],
+            'trading_win_rate': profit_metrics['win_rate'],
+            'profit_factor': profit_metrics['profit_factor'],
+            'max_drawdown': profit_metrics['max_drawdown'],
+            'sharpe_ratio': profit_metrics['sharpe_ratio'],
+            'total_trades': profit_metrics['total_trades'],
+            'profitable_trades': profit_metrics['profitable_trades'],
+            'max_consecutive_losses': profit_metrics['max_consecutive_losses'],
+            # Add the missing keys that phase1_universal_base_training expects
+            'win_rate': profit_metrics['win_rate'],  # This is the key that phase1 logging expects
+            'risk_adjusted_return': profit_metrics['risk_adjusted_return'],  # Missing key
+            'avg_profit_per_trade': profit_metrics['avg_profit_per_trade']  # Missing key
         }
+        
+        # DEBUG: Log final metrics dictionary to verify all keys are present
+        logger.info(f"DEBUG - Final metrics dictionary for {model_type.value}:")
+        logger.info(f"  win_rate: {metrics.get('win_rate', 'MISSING')}")
+        logger.info(f"  risk_adjusted_return: {metrics.get('risk_adjusted_return', 'MISSING')}")
+        logger.info(f"  avg_profit_per_trade: {metrics.get('avg_profit_per_trade', 'MISSING')}")
         
         pbar.update(10)  # Evaluation complete
         
@@ -3038,12 +3851,242 @@ class UniversalTrainer:
         pbar.close()
         
         logger.info(f"Completed {model_type.value} training:")
-        logger.info(f"  - Loss: {val_loss:.4f}, Accuracy: {val_accuracy:.4f}")
+        logger.info(f"  - Profit Score: {val_profit_score:.4f}%, Classification Score: {val_accuracy:.4f}")
         logger.info(f"  - Precision: {val_precision:.4f}, Recall: {val_recall:.4f}, F1: {val_f1:.4f}")
-        logger.info(f"  - ROC-AUC: {val_roc_auc:.4f}, High Conf Accuracy: {high_conf_accuracy:.4f}")
+        logger.info(f"  - ROC-AUC: {val_roc_auc:.4f}, High Conf Profit Score: {high_conf_accuracy:.4f}")
         logger.info(f"  - Win Rates: 0.5-0.6: {win_rates_by_confidence.get('0.5-0.6', 0.0):.3f}, 0.7-0.8: {win_rates_by_confidence.get('0.7-0.8', 0.0):.3f}, 0.9-1.0: {win_rates_by_confidence.get('0.9-1.0', 0.0):.3f}")
+        # Log profit-based metrics
+        logger.info(f"  💰 PROFIT METRICS - Total Profit: {profit_metrics['total_profit_pct']:.4f}%, Trading Win Rate: {profit_metrics['win_rate']:.4f}")
+        logger.info(f"  📈 Profit Factor: {profit_metrics['profit_factor']:.4f}, Sharpe Ratio: {profit_metrics['sharpe_ratio']:.4f}, Max Drawdown: {profit_metrics['max_drawdown']:.4f}%")
+        logger.info(f"  🎯 Total Trades: {profit_metrics['total_trades']}, Profitable: {profit_metrics['profitable_trades']}, Max Consecutive Losses: {profit_metrics['max_consecutive_losses']}")
         
-        return model, val_loss, metrics
+        # Log confidence calibration status
+        if hasattr(model, 'confidence_calibrator') and model.confidence_calibrator is not None:
+            logger.info(f"  ✅ Confidence calibration: {model.confidence_calibrator.__class__.__name__} applied")
+        else:
+            logger.warning(f"  ⚠️  Confidence calibration: Not applied or failed")
+        
+        # Return profit score as validation score instead of loss (higher is better for profit)
+        return model, val_profit_score, metrics
+    
+    def _add_confidence_calibration(self, model, model_type: ModelType, X_val: np.ndarray, y_val: np.ndarray, val_predictions: np.ndarray):
+        """
+        Add confidence calibration to trained models using Platt scaling or isotonic regression.
+        This ensures confidence scores properly reflect prediction profitability and trading success.
+        """
+        try:
+            from sklearn.calibration import CalibratedClassifierCV
+            from sklearn.isotonic import IsotonicRegression
+            from sklearn.linear_model import LogisticRegression
+            import pickle
+            
+            logger.info(f"Adding confidence calibration for {model_type.value}")
+            
+            # For ensemble models, we need to handle calibration differently
+            if model_type == ModelType.ENSEMBLE:
+                # Create a wrapper for ensemble prediction
+                class EnsembleWrapper:
+                    def __init__(self, ensemble_model):
+                        self.ensemble_model = ensemble_model
+                        self.models = ensemble_model['models']
+                        self.weights = ensemble_model['weights']
+                    
+                    def predict_proba(self, X):
+                        xgb_pred = self.models['xgboost'].predict_proba(X)[:, 1]
+                        rf_pred = self.models['random_forest'].predict_proba(X)[:, 1]
+                        svm_pred = self.models['svm'].predict_proba(X)[:, 1]
+                        
+                        ensemble_pred = (self.weights['xgboost'] * xgb_pred + 
+                                       self.weights['random_forest'] * rf_pred + 
+                                       self.weights['svm'] * svm_pred)
+                        
+                        # Return as 2D array with [1-prob, prob] format
+                        return np.column_stack([1 - ensemble_pred, ensemble_pred])
+                    
+                    def predict(self, X):
+                        proba = self.predict_proba(X)
+                        return (proba[:, 1] > 0.5).astype(int)
+                
+                wrapper = EnsembleWrapper(model)
+                
+                # Use isotonic regression for ensemble calibration (more robust for complex models)
+                calibrator = IsotonicRegression(out_of_bounds='clip')
+                calibrator.fit(val_predictions, y_val)
+                
+                # Store calibration info in the model
+                model['confidence_calibrator'] = calibrator
+                model['calibration_method'] = 'isotonic'
+                
+                logger.info(f"✓ Added isotonic regression calibration to {model_type.value}")
+                
+            else:
+                # For individual models, use Platt scaling (logistic regression)
+                calibrator = LogisticRegression()
+                
+                # Reshape predictions for sklearn
+                val_predictions_reshaped = val_predictions.reshape(-1, 1)
+                calibrator.fit(val_predictions_reshaped, y_val)
+                
+                # Store calibration info with the model
+                if not hasattr(model, '__dict__'):
+                    # For sklearn models, we need to add attributes
+                    model.confidence_calibrator = calibrator
+                    model.calibration_method = 'platt'
+                else:
+                    model.__dict__['confidence_calibrator'] = calibrator
+                    model.__dict__['calibration_method'] = 'platt'
+                
+                logger.info(f"✓ Added Platt scaling calibration to {model_type.value}")
+            
+            # Test calibration effectiveness
+            if model_type == ModelType.ENSEMBLE:
+                calibrated_probs = model['confidence_calibrator'].predict(val_predictions)
+            else:
+                calibrated_probs = model.confidence_calibrator.predict_proba(val_predictions.reshape(-1, 1))[:, 1]
+            
+            # Calculate calibration improvement
+            original_reliability = self._calculate_reliability_score(val_predictions, y_val)
+            calibrated_reliability = self._calculate_reliability_score(calibrated_probs, y_val)
+            
+            logger.info(f"📊 Calibration effectiveness for {model_type.value}:")
+            logger.info(f"  - Original reliability score: {original_reliability:.4f}")
+            logger.info(f"  - Calibrated reliability score: {calibrated_reliability:.4f}")
+            logger.info(f"  - Improvement: {calibrated_reliability - original_reliability:.4f}")
+            
+            return model
+            
+        except Exception as e:
+            logger.error(f"Error adding confidence calibration to {model_type.value}: {e}")
+            return None
+    
+    def _optimize_ensemble_weights(self, models: Dict, X_val: np.ndarray, y_val: np.ndarray) -> Dict[str, float]:
+        """
+        Optimize ensemble weights using profit maximization instead of loss minimization.
+        
+        Args:
+            models: Dictionary containing trained models
+            X_val: Validation features
+            y_val: Validation targets
+            
+        Returns:
+            Dictionary with optimized weights for each model
+        """
+        try:
+            # Get predictions from each model
+            xgb_pred = models['xgboost'].predict_proba(X_val)[:, 1]
+            rf_pred = models['random_forest'].predict_proba(X_val)[:, 1]
+            
+            # Handle SVM with scaling
+            if hasattr(models['svm'], 'feature_scaler') and models['svm'].feature_scaler is not None:
+                X_val_scaled = models['svm'].feature_scaler.transform(X_val)
+                svm_pred = models['svm'].predict_proba(X_val_scaled)[:, 1]
+            else:
+                svm_pred = models['svm'].predict_proba(X_val)[:, 1]
+            
+            # Stack predictions for optimization
+            predictions = np.column_stack([xgb_pred, rf_pred, svm_pred])
+            
+            # PROFIT-BASED OPTIMIZATION: Define objective function to maximize total profit
+            def objective(weights):
+                # Ensure weights sum to 1 and are non-negative
+                weights = np.abs(weights)
+                weights = weights / np.sum(weights)
+                
+                # Calculate ensemble predictions
+                ensemble_pred = np.dot(predictions, weights)
+                
+                # Calculate profit using dual exit strategy
+                profit_metrics = self._calculate_trading_profits(ensemble_pred, y_val, prediction_threshold=0.5)
+                
+                # Return negative profit percentage (since minimize function minimizes)
+                return -profit_metrics['total_profit_pct']
+            
+            # Initial weights (equal weighting)
+            initial_weights = np.array([1/3, 1/3, 1/3])
+            
+            # Constraints: weights sum to 1
+            constraints = {'type': 'eq', 'fun': lambda w: np.sum(np.abs(w)) - 1}
+            
+            # Bounds: weights between 0 and 1
+            bounds = [(0, 1) for _ in range(3)]
+            
+            # Optimize weights for maximum profit
+            result = minimize(
+                objective,
+                initial_weights,
+                method='SLSQP',
+                bounds=bounds,
+                constraints=constraints,
+                options={'maxiter': 1000, 'ftol': 1e-9}
+            )
+            
+            if result.success:
+                optimized_weights = np.abs(result.x)
+                optimized_weights = optimized_weights / np.sum(optimized_weights)
+                
+                # Calculate final profit with optimized weights
+                final_ensemble_pred = np.dot(predictions, optimized_weights)
+                final_profit_metrics = self._calculate_trading_profits(final_ensemble_pred, y_val, prediction_threshold=0.5)
+                
+                logger.info(f"Profit-based weight optimization successful:")
+                logger.info(f"  💰 Optimized Total Profit: {final_profit_metrics['total_profit_pct']:.4f}%")
+                logger.info(f"  📊 Optimized Weights - XGB: {optimized_weights[0]:.3f}, RF: {optimized_weights[1]:.3f}, SVM: {optimized_weights[2]:.3f}")
+                logger.info(f"  🎯 Trading Win Rate: {final_profit_metrics['win_rate']:.4f}, Profit Factor: {final_profit_metrics['profit_factor']:.4f}")
+                
+                return {
+                    'xgboost': float(optimized_weights[0]),
+                    'random_forest': float(optimized_weights[1]),
+                    'svm': float(optimized_weights[2])
+                }
+            else:
+                logger.warning(f"Profit-based weight optimization failed: {result.message}. Using default weights.")
+                return {
+                    'xgboost': self.config.ensemble_xgb_weight,
+                    'random_forest': self.config.ensemble_rf_weight,
+                    'svm': self.config.ensemble_svm_weight
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in profit-based ensemble weight optimization: {e}")
+            return {
+                'xgboost': self.config.ensemble_xgb_weight,
+                'random_forest': self.config.ensemble_rf_weight,
+                'svm': self.config.ensemble_svm_weight
+            }
+
+    def _calculate_reliability_score(self, predictions: np.ndarray, true_labels: np.ndarray, n_bins: int = 10) -> float:
+        """
+        Calculate reliability score (calibration metric) using binning approach.
+        Lower scores indicate better calibration.
+        """
+        try:
+            # Create bins for predictions
+            bin_boundaries = np.linspace(0, 1, n_bins + 1)
+            bin_lowers = bin_boundaries[:-1]
+            bin_uppers = bin_boundaries[1:]
+            
+            reliability_score = 0.0
+            total_samples = len(predictions)
+            
+            for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+                # Find predictions in this bin
+                in_bin = (predictions > bin_lower) & (predictions <= bin_upper)
+                prop_in_bin = in_bin.mean()
+                
+                if prop_in_bin > 0:
+                    # Calculate accuracy in this bin
+                    accuracy_in_bin = true_labels[in_bin].mean()
+                    # Average confidence in this bin
+                    avg_confidence_in_bin = predictions[in_bin].mean()
+                    
+                    # Reliability score is weighted squared difference
+                    reliability_score += prop_in_bin * (avg_confidence_in_bin - accuracy_in_bin) ** 2
+            
+            return reliability_score
+            
+        except Exception as e:
+            logger.error(f"Error calculating reliability score: {e}")
+            return 1.0  # Return worst possible score on error
     
     async def load_universal_models(self, load_dir: Path) -> bool:
         """
@@ -3104,6 +4147,15 @@ class UniversalTrainer:
                                 if hasattr(loaded_model, 'n_features_in_'):
                                     dummy_input = np.random.random((1, loaded_model.n_features_in_))
                                     dummy_output = loaded_model.predict_proba(dummy_input) if hasattr(loaded_model, 'predict_proba') else loaded_model.predict(dummy_input)
+                                    
+                                    # Check for confidence calibrator
+                                    if hasattr(loaded_model, 'confidence_calibrator'):
+                                        if loaded_model.confidence_calibrator is not None:
+                                            logger.info(f"  - Confidence calibrator: {loaded_model.confidence_calibrator.__class__.__name__}")
+                                        else:
+                                            logger.info(f"  - Confidence calibrator: None")
+                                    else:
+                                        logger.info(f"  - Confidence calibrator: Not available")
                                     logger.info(f"  - Post-load prediction test: PASSED (output shape: {dummy_output.shape})")
                                 else:
                                     logger.info(f"  - Post-load prediction test: SKIPPED (no feature info)")
@@ -3254,14 +4306,17 @@ class UniversalTrainer:
             
             # Step 5: Training → phase1_universal_base_training applies selections
             logger.info("Step 5: Training - Training statistical models with selected features...")
-            statistical_models = [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM, ModelType.ENSEMBLE]
+            # CRITICAL FIX: Remove ENSEMBLE from Phase 1 base model training
+            # Ensemble should only be created during Phase 3 using optimized weights from base models
+            # Training ensemble as a base model creates circular dependency in Phase 3 optimization
+            statistical_models = [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM]
             
             for model_type in statistical_models:
                 try:
                     logger.info(f"Training {model_type.value} model...")
                     
                     # Train model
-                    model, val_loss, metrics = await self.train_statistical_model(
+                    model, val_profit_score, metrics = await self.train_statistical_model(
                         model_type=model_type,
                         X_train=X_train_features,
                         y_train=y_train,
@@ -3276,7 +4331,7 @@ class UniversalTrainer:
                     # Record results
                     results['models_trained'].append(model_type.value)
                     results['validation_metrics'][model_type.value] = {
-                        'loss': val_loss,
+                        'profit_score': val_profit_score,
                         **metrics  # Include all comprehensive metrics
                     }
                     
@@ -3297,10 +4352,26 @@ class UniversalTrainer:
                         except Exception as e:
                             logger.warning(f"Could not extract feature importance for {model_type.value}: {e}")
                     
-                    logger.info(f"✓ {model_type.value} training completed: val_loss={val_loss:.4f}, val_accuracy={metrics['accuracy']:.4f}")
+                    logger.info(f"✓ {model_type.value} training completed: profit_score={val_profit_score:.4f}%, total_profit={metrics['total_profit_pct']:.4f}%")
                     logger.info(f"  📊 Trading Metrics - Precision: {metrics['precision']:.4f}, Recall: {metrics['recall']:.4f}, F1: {metrics['f1_score']:.4f}")
-                    logger.info(f"  🎯 ROC-AUC: {metrics['roc_auc']:.4f}, High Confidence Accuracy (>0.7): {metrics['high_confidence_accuracy']:.4f}")
-                    logger.info(f"  💰 Win Rates by Confidence - 0.5-0.6: {metrics['win_rate_0.5-0.6']:.3f}, 0.7-0.8: {metrics['win_rate_0.7-0.8']:.3f}, 0.9-1.0: {metrics['win_rate_0.9-1.0']:.3f}")
+                    logger.info(f"  🎯 ROC-AUC: {metrics['roc_auc']:.4f}, High Confidence Profit Score (>0.7): {metrics['high_confidence_accuracy']:.4f}")
+                    
+                    # Comprehensive Profit Metrics Logging
+                    logger.info(f"  💰 Profit Analysis:")
+                    logger.info(f"    - Total Profit: {metrics.get('total_profit_pct', 0):.4f}%")
+                    logger.info(f"    - Win Rate: {metrics.get('win_rate', 0)*100:.2f}%")
+                    logger.info(f"    - Profit Factor: {metrics.get('profit_factor', 0):.3f}")
+                    logger.info(f"    - Sharpe Ratio: {metrics.get('sharpe_ratio', 0):.3f}")
+                    logger.info(f"    - Max Drawdown: {metrics.get('max_drawdown', 0)*100:.3f}%")
+                    logger.info(f"    - Risk-Adjusted Return: {metrics.get('risk_adjusted_return', 0):.3f}")
+                    
+                    logger.info(f"  📈 Trading Volume:")
+                    logger.info(f"    - Total Trades: {metrics.get('total_trades', 0)}")
+                    logger.info(f"    - Profitable Trades: {metrics.get('profitable_trades', 0)}")
+                    logger.info(f"    - Max Consecutive Losses: {metrics.get('max_consecutive_losses', 0)}")
+                    logger.info(f"    - Avg Profit per Trade: {metrics.get('avg_profit_per_trade', 0)*100:.4f}%")
+                    
+                    logger.info(f"  🎲 Win Rates by Confidence - 0.5-0.6: {metrics['win_rate_0.5-0.6']:.3f}, 0.7-0.8: {metrics['win_rate_0.7-0.8']:.3f}, 0.9-1.0: {metrics['win_rate_0.9-1.0']:.3f}")
                     
                 except Exception as e:
                     logger.error(f"Failed to train {model_type.value} model: {e}")
