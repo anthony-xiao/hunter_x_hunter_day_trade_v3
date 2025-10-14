@@ -1181,35 +1181,39 @@ class UniversalModelArchitectures:
         try:
             model_path = Path(model_path)
             
-            # Check if it's an ensemble - use standardized directory name
-            ensemble_dir = model_path.parent / "ensemble_base_ensemble"
-            if ensemble_dir.exists():
-                # Load ensemble
-                models = {}
-                for model_file in ensemble_dir.glob("*.joblib"):
-                    model_name = model_file.stem
-                    models[model_name] = joblib.load(model_file)
-                
-                # Load ensemble configuration
-                config_path = ensemble_dir / "ensemble_config.json"
-                with open(config_path, 'r') as f:
-                    ensemble_config = json.load(f)
-                
-                ensemble = {
-                    'models': models,
-                    'weights': ensemble_config['weights'],
-                    'feature_dim': ensemble_config['feature_dim'],
-                    'name': ensemble_config['name']
-                }
-                
-                logger.info(f"Loaded ensemble model from {ensemble_dir}")
-                return ensemble
+            # Check if this is specifically an ensemble model request
+            # Only load ensemble if the model_path itself indicates it's an ensemble
+            if "ensemble" in model_path.name.lower():
+                ensemble_dir = model_path.parent / "ensemble_base_ensemble"
+                if ensemble_dir.exists():
+                    # Load ensemble
+                    models = {}
+                    for model_file in ensemble_dir.glob("*.joblib"):
+                        model_name = model_file.stem
+                        models[model_name] = joblib.load(model_file)
+                    
+                    # Load ensemble configuration
+                    config_path = ensemble_dir / "ensemble_config.json"
+                    with open(config_path, 'r') as f:
+                        ensemble_config = json.load(f)
+                    
+                    ensemble = {
+                        'models': models,
+                        'weights': ensemble_config['weights'],
+                        'feature_dim': ensemble_config['feature_dim'],
+                        'name': ensemble_config['name']
+                    }
+                    
+                    logger.info(f"Loaded ensemble model from {ensemble_dir}")
+                    return ensemble
+                else:
+                    raise FileNotFoundError(f"Ensemble directory not found at {ensemble_dir}")
             else:
                 # Individual statistical model
                 joblib_path = str(model_path).replace('.h5', '.joblib')
                 if Path(joblib_path).exists():
                     model = joblib.load(joblib_path)
-                    logger.info(f"Loaded statistical model from {joblib_path}")
+                    logger.info(f"Loaded individual statistical model from {joblib_path}")
                     return model
                 else:
                     raise FileNotFoundError(f"Statistical model not found at {joblib_path}")

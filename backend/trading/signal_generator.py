@@ -198,6 +198,11 @@ class SignalGenerator:
         self.universal_feature_engineering: Optional[UniversalFeatureEngineering] = None
         self.is_universal_mode: bool = False
         self.universal_models: Dict[str, Any] = {}  # Store loaded universal models
+        
+        # Feature selection attributes - Initialize to None, will be loaded by load_feature_selection_results
+        self.selected_features: Optional[List[str]] = None
+        self.selected_feature_columns: Optional[List[str]] = None
+        self.feature_selection_metadata: Optional[Dict] = None
         self.universal_symbol_models: Dict[str, Dict[str, Any]] = {}  # Store symbol-specific universal models
         self.universal_metadata: Dict[str, Any] = {}  # Store universal metadata
         
@@ -457,7 +462,14 @@ class SignalGenerator:
                         # Also load selected_feature_columns if available
                         if 'selected_feature_columns' in feature_selection:
                             self.selected_feature_columns = feature_selection['selected_feature_columns']
-                            logger.info(f"✓ Also loaded {len(self.selected_feature_columns)} selected feature columns")
+                            logger.info(f"✓ FEATURE_SELECTION_LOADED: {len(self.selected_feature_columns)} selected feature columns from universal_metadata.json")
+                            logger.info(f"✓ FEATURE_COLUMNS_PREVIEW: {self.selected_feature_columns[:10]}... (showing first 10 of {len(self.selected_feature_columns)})")
+                            logger.info(f"✓ FEATURE_COLUMNS_VALIDATION: Expected 51 features, loaded {len(self.selected_feature_columns)} features")
+                        
+                        # Load selected_feature_indices for generic feature filtering
+                        if 'selected_feature_indices' in feature_selection:
+                            self.selected_feature_indices = feature_selection['selected_feature_indices']
+                            logger.info(f"✓ Also loaded {len(self.selected_feature_indices)} selected feature indices")
                         
                         return True
                     else:
@@ -743,7 +755,14 @@ class SignalGenerator:
             
             # FEATURE COUNT DEBUG: Log DataFrame shape after conversion
             logger.info(f"[FEATURE_DEBUG] {symbol}: generate_signals_from_features - DataFrame after conversion: shape {features_df.shape}, columns: {len(features_df.columns)}")
-            logger.debug(f"[FEATURE_DEBUG] {symbol}: DataFrame columns: {list(features_df.columns)[:10]}...")  # Show first 10 columns
+            logger.info(f"[FEATURE_DEBUG] {symbol}: DataFrame columns sample: {list(features_df.columns)[:10]}...")  # Show first 10 columns
+            
+            # FEATURE SELECTION DEBUG: Check if we have selected_feature_columns loaded
+            if hasattr(self, 'selected_feature_columns') and self.selected_feature_columns:
+                logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ selected_feature_columns loaded: {len(self.selected_feature_columns)} features")
+                logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ Selected features sample: {self.selected_feature_columns[:5]}...")
+            else:
+                logger.warning(f"[FEATURE_DEBUG] {symbol}: ⚠️  NO selected_feature_columns loaded - will use all features!")
             
             # Update market regime using cached features (simplified)
             await self._update_market_regime_from_features({symbol: features_df})
@@ -900,6 +919,12 @@ class SignalGenerator:
             
             # FEATURE COUNT DEBUG: Log feature count being passed to model
             logger.info(f"[FEATURE_DEBUG] {symbol}: _get_model_prediction - {model_type.value} model receiving features with shape {features.shape}, actual_feature_count: {actual_feature_count}, requested_feature_count: {feature_count}")
+            
+            # FEATURE SELECTION DEBUG: Log if feature selection was applied
+            if hasattr(self, 'selected_feature_columns') and self.selected_feature_columns:
+                logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ Model prediction using {actual_feature_count} features (selected from {len(self.selected_feature_columns)} selected_feature_columns)")
+            else:
+                logger.warning(f"[FEATURE_DEBUG] {symbol}: ⚠️  Model prediction using {actual_feature_count} features (NO FEATURE SELECTION APPLIED)")
             
             # Statistical models expect 2D input (n_samples, n_features)
             # All statistical models are universal by design and work with 2D aggregated features
@@ -1211,6 +1236,10 @@ class SignalGenerator:
             # DEBUG: Log DataFrame creation details
             logger.debug(f"[DEBUG] {symbol}: Created DataFrame with {len(df)} rows and {len(df.columns)} columns")
             logger.debug(f"[DEBUG] {symbol}: Column names: {list(df.columns)[:20]}...")
+            
+            # CRITICAL DEBUG: Log exact column names for MSFT to identify the 7 columns
+            if symbol == "MSFT":
+                logger.error(f"[CRITICAL_DEBUG] MSFT: Exact column names ({len(df.columns)} total): {list(df.columns)}")
 
             # Ensure all columns are numeric (convert to float, coerce errors to NaN)
             numeric_conversion_failures = []
@@ -1318,16 +1347,42 @@ class SignalGenerator:
             
             # Apply feature selection if selected features are available
             if self.selected_feature_columns:
-                # Use only selected features that are available in the data
-                feature_columns = [col for col in self.selected_feature_columns if col in all_feature_columns]
-                if len(feature_columns) < len(self.selected_feature_columns):
-                    missing_features = set(self.selected_feature_columns) - set(all_feature_columns)
-                    logger.warning(f"Some selected features not found in data for {symbol}: {missing_features}")
-                logger.info(f"[FEATURE_DEBUG] {symbol}: Using {len(feature_columns)} selected features out of {len(all_feature_columns)} available")
+                # Check if we're dealing with generic feature names (feature_0, feature_1, etc.)
+                has_generic_features = any(col.startswith('feature_') and col.split('_')[1].isdigit() 
+                                         for col in all_feature_columns if '_' in col)
+                
+                if has_generic_features and hasattr(self, 'selected_feature_indices') and self.selected_feature_indices:
+                    # Use feature indices for generic feature names
+                    logger.info(f"[FEATURE_DEBUG] {symbol}: Detected generic feature names, using selected_feature_indices for filtering")
+                    feature_columns = []
+                    for idx in self.selected_feature_indices:
+                        if idx < len(all_feature_columns):
+                            feature_columns.append(all_feature_columns[idx])
+                        else:
+                            logger.warning(f"Feature index {idx} exceeds available features ({len(all_feature_columns)})")
+                    
+                    logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ FEATURE_SELECTION_BY_INDICES - Using {len(feature_columns)} selected features out of {len(all_feature_columns)} available")
+                    logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ Selected feature indices: {len(self.selected_feature_indices)} total")
+                    logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ Feature filtering: {len(all_feature_columns)} -> {len(feature_columns)} features")
+                else:
+                    # Use feature column names for human-readable feature names
+                    feature_columns = [col for col in self.selected_feature_columns if col in all_feature_columns]
+                    if len(feature_columns) < len(self.selected_feature_columns):
+                        missing_features = set(self.selected_feature_columns) - set(all_feature_columns)
+                        logger.warning(f"[FEATURE_DEBUG] {symbol}: ⚠️  MISSING_SELECTED_FEATURES: {len(missing_features)} features not found in generated data")
+                        logger.warning(f"[FEATURE_DEBUG] {symbol}: ⚠️  Missing features: {list(missing_features)[:10]}... (showing first 10)")
+                        logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ Available features that match selection: {len(feature_columns)}/{len(self.selected_feature_columns)}")
+                    else:
+                        logger.info(f"[FEATURE_DEBUG] {symbol}: ✅ ALL_SELECTED_FEATURES_FOUND: {len(feature_columns)}/{len(self.selected_feature_columns)} selected features available")
+                    
+                    logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ FEATURE_SELECTION_BY_NAMES - Using {len(feature_columns)} selected features out of {len(all_feature_columns)} available")
+                    logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ Selected feature columns loaded: {len(self.selected_feature_columns)} total")
+                    logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ Feature filtering: {len(all_feature_columns)} -> {len(feature_columns)} features")
             else:
                 # Use all available features if no feature selection is applied
                 feature_columns = all_feature_columns
-                logger.info(f"[FEATURE_DEBUG] {symbol}: No feature selection applied, using all {len(feature_columns)} features")
+                logger.warning(f"[FEATURE_DEBUG] {symbol}: ⚠️  NO_FEATURE_SELECTION - selected_feature_columns is None/empty, using all {len(feature_columns)} features")
+                logger.warning(f"[FEATURE_DEBUG] {symbol}: ⚠️  This may cause model prediction failures due to feature dimension mismatch!")
             
             # FEATURE COUNT DEBUG: Log initial feature count
             logger.info(f"[FEATURE_DEBUG] {symbol}: _prepare_features - Input data has {len(recent_data.columns)} total columns, {len(feature_columns)} feature columns")
@@ -2146,11 +2201,27 @@ class SignalGenerator:
                 if self.model_trainer:
                     universal_trainer = self.model_trainer
                     
-                    # Copy base models to our universal_models dict
+                    # Copy base models to our universal_models dict with proper ModelType enum keys
                     if hasattr(universal_trainer, 'base_models'):
-                        for model_type, model in universal_trainer.base_models.items():
-                            self.universal_models[model_type] = model
-                            logger.info(f"✓ Loaded universal base {model_type} model")
+                        for model_type_str, model in universal_trainer.base_models.items():
+                            try:
+                                # Convert string key to ModelType enum
+                                model_type_enum = ModelType(model_type_str)
+                                self.universal_models[model_type_enum] = model
+                                logger.info(f"✓ Loaded universal base {model_type_str} model (type: {type(model).__name__})")
+                                
+                                # Validate that the model has predict method
+                                if hasattr(model, 'predict'):
+                                    logger.debug(f"✓ Model {model_type_str} has predict method")
+                                else:
+                                    logger.warning(f"⚠ Model {model_type_str} missing predict method")
+                                    
+                            except ValueError as e:
+                                logger.error(f"✗ Failed to convert model type '{model_type_str}' to ModelType enum: {e}")
+                                continue
+                            except Exception as e:
+                                logger.error(f"✗ Error loading model {model_type_str}: {e}")
+                                continue
                     
                     # Store symbol-specific models if available
                     if hasattr(universal_trainer, 'symbol_models'):
@@ -2417,10 +2488,14 @@ class SignalGenerator:
                     feature_columns = [col for col in self.selected_feature_columns if col in all_feature_columns]
                     if len(feature_columns) < len(self.selected_feature_columns):
                         missing_features = set(self.selected_feature_columns) - set(all_feature_columns)
-                        logger.warning(f"[{symbol}] ⚠️  Some selected feature columns not found in universal data: {missing_features}")
-                        logger.warning(f"[{symbol}] ⚠️  Available features: {len(all_feature_columns)}, Selected feature columns: {len(self.selected_feature_columns)}, Found: {len(feature_columns)}")
-                    logger.info(f"[{symbol}] ✓ FEATURE_SELECTION: Using {len(feature_columns)} selected feature columns out of {len(all_feature_columns)} available")
-                    logger.info(f"[{symbol}] ✓ Selected feature column names: {feature_columns[:10]}... (showing first 10)")
+                        logger.warning(f"[FEATURE_DEBUG] {symbol}: ⚠️  MISSING_UNIVERSAL_FEATURES: {len(missing_features)} selected features not found in universal data")
+                        logger.warning(f"[FEATURE_DEBUG] {symbol}: ⚠️  Missing features: {list(missing_features)[:10]}... (showing first 10)")
+                        logger.warning(f"[FEATURE_DEBUG] {symbol}: ⚠️  Available: {len(all_feature_columns)}, Selected: {len(self.selected_feature_columns)}, Found: {len(feature_columns)}")
+                    else:
+                        logger.info(f"[FEATURE_DEBUG] {symbol}: ✅ ALL_UNIVERSAL_FEATURES_FOUND: {len(feature_columns)}/{len(self.selected_feature_columns)} selected features available")
+                    
+                    logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ UNIVERSAL_FEATURE_SELECTION: Using {len(feature_columns)} selected feature columns out of {len(all_feature_columns)} available")
+                    logger.info(f"[FEATURE_DEBUG] {symbol}: ✓ Selected feature column names: {feature_columns[:10]}... (showing first 10)")
                 else:
                     # Use all available features if no feature selection is applied
                     feature_columns = all_feature_columns
@@ -2520,9 +2595,12 @@ class SignalGenerator:
             model_confidences = {}
             
             # Generate predictions from each statistical model
-            for model_name, model in self.universal_models.items():
+            for model_type, model in self.universal_models.items():
                 try:
-                    model_type = ModelType(model_name)
+                    # model_type is already a ModelType enum from the fixed loading process
+                    if not isinstance(model_type, ModelType):
+                        logger.error(f"Invalid model type: {model_type} (type: {type(model_type)})")
+                        continue
                     
                     # Only handle statistical models (XGBoost, Random Forest, SVM, Ensemble)
                     if model_type in [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM, ModelType.ENSEMBLE]:
@@ -2588,7 +2666,10 @@ class SignalGenerator:
                         logger.debug(f"[{symbol}] {model_type.value} prediction: {pred_value:.4f}, confidence: {confidence:.4f}")
                     
                 except Exception as e:
-                    logger.error(f"Error generating prediction with statistical model {model_name}: {e}")
+                    logger.error(f"Error generating prediction with statistical model {model_type.value}: {e}")
+                    logger.error(f"Model type: {type(model)}, Model object: {model}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
                     continue
             
             if not model_predictions:

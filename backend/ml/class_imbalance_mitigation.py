@@ -75,7 +75,7 @@ class ClassImbalanceMitigator:
         # Initialize temporal aggregator for consistent 3D data handling
         self.temporal_aggregator = TemporalAggregator(AggregationConfig())
         
-        logger.info(f"Initialized ClassImbalanceMitigator with config: {self.config}")
+        # logger.info(f"Initialized ClassImbalanceMitigator with config: {self.config}")
     
     def analyze_class_distribution(self, y: np.ndarray) -> Dict[str, Any]:
         """

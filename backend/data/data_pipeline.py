@@ -879,9 +879,9 @@ class DataPipeline:
                 self.feature_cache[symbol] = {}
             
             # Debug: Log what's being cached (only for first batch to avoid spam)
-            if len(self.feature_cache[symbol]) < 3:
-                sample_features = next(iter(features_dict.values()))
-                logger.info(f"[CACHE_DEBUG] {symbol}: Batch caching {len(features_dict)} timestamps with {len(sample_features)} features each: {list(sample_features.keys())[:10]}...")
+            # if len(self.feature_cache[symbol]) < 3:
+            #     sample_features = next(iter(features_dict.values()))
+            #     logger.info(f"[CACHE_DEBUG] {symbol}: Batch caching {len(features_dict)} timestamps with {len(sample_features)} features each: {list(sample_features.keys())[:10]}...")
             
             # Add all features to cache in batch
             for timestamp, features in features_dict.items():
@@ -893,19 +893,19 @@ class DataPipeline:
                 most_recent_timestamp = max(self.feature_cache[symbol].keys())
                 cutoff_time = most_recent_timestamp - timedelta(hours=self.cache_duration_hours)
                 
-                # Debug logging for cache cleaning
-                logger.debug(f"Batch cache cleaning for {symbol}: most_recent={most_recent_timestamp}, cutoff={cutoff_time}, cache_size_before={len(self.feature_cache[symbol])}")
-                
+                # Clean old cache entries
                 timestamps_to_remove = [
                     ts for ts in self.feature_cache[symbol].keys() 
                     if ts < cutoff_time
                 ]
                 
+                cache_size_before = len(self.feature_cache[symbol])
                 for ts in timestamps_to_remove:
                     del self.feature_cache[symbol][ts]
                 
+                # Consolidated cache cleaning log
                 if timestamps_to_remove:
-                    logger.debug(f"Removed {len(timestamps_to_remove)} old features for {symbol}, cache_size_after={len(self.feature_cache[symbol])}")
+                    logger.debug(f"Cache cleaned for {symbol}: removed {len(timestamps_to_remove)} old entries ({cache_size_before} → {len(self.feature_cache[symbol])})")
             
             # Limit cache size per symbol
             if len(self.feature_cache[symbol]) > self.cache_max_size:
@@ -996,9 +996,9 @@ class DataPipeline:
             if symbol not in self.feature_cache:
                 self.feature_cache[symbol] = {}
             
-            # Debug: Log what's being cached (only for first few entries to avoid spam)
-            if len(self.feature_cache[symbol]) < 3:
-                logger.info(f"[CACHE_DEBUG] {symbol}: Caching {len(features)} features at {timestamp}: {list(features.keys())[:10]}...")
+            # # Debug: Log what's being cached (only for first few entries to avoid spam)
+            # if len(self.feature_cache[symbol]) < 3:
+            #     logger.info(f"[CACHE_DEBUG] {symbol}: Caching {len(features)} features at {timestamp}: {list(features.keys())[:10]}...")
             
             # Add features to cache
             self.feature_cache[symbol][timestamp] = features.copy()
@@ -1010,19 +1010,19 @@ class DataPipeline:
                 most_recent_timestamp = max(self.feature_cache[symbol].keys())
                 cutoff_time = most_recent_timestamp - timedelta(hours=self.cache_duration_hours)
                 
-                # Debug logging for cache cleaning
-                logger.debug(f"Cache cleaning for {symbol}: most_recent={most_recent_timestamp}, cutoff={cutoff_time}, cache_size_before={len(self.feature_cache[symbol])}")
-                
+                # Clean old cache entries
                 timestamps_to_remove = [
                     ts for ts in self.feature_cache[symbol].keys() 
                     if ts < cutoff_time
                 ]
                 
+                cache_size_before = len(self.feature_cache[symbol])
                 for ts in timestamps_to_remove:
                     del self.feature_cache[symbol][ts]
                 
+                # Consolidated cache cleaning log
                 if timestamps_to_remove:
-                    logger.debug(f"Removed {len(timestamps_to_remove)} old features for {symbol}, cache_size_after={len(self.feature_cache[symbol])}")
+                    logger.debug(f"Cache cleaned for {symbol}: removed {len(timestamps_to_remove)} old entries ({cache_size_before} → {len(self.feature_cache[symbol])})")
             
             # Limit cache size per symbol
             if len(self.feature_cache[symbol]) > self.cache_max_size:
@@ -1033,7 +1033,10 @@ class DataPipeline:
                 for ts in sorted_timestamps[:excess_count]:
                     del self.feature_cache[symbol][ts]
             
-            logger.debug(f"Cached features for {symbol}, cache size: {len(self.feature_cache[symbol])}")
+            # Only log cache summary periodically to reduce noise
+            cache_size = len(self.feature_cache[symbol])
+            if cache_size % 50 == 0 or cache_size <= 5:  # Log every 50 entries or first 5
+                logger.debug(f"Cached features for {symbol}, cache size: {cache_size}")
             
         except Exception as e:
             logger.error(f"Failed to cache features for {symbol}: {e}")
@@ -1162,7 +1165,7 @@ class DataPipeline:
                 logger.info(f"Generated {len(features_df)} features for {symbol} from downloaded data")
                 
                 # Cache the newly generated features
-                logger.info(f"[BOOTSTRAP_DEBUG] {symbol}: features_df has {len(features_df.columns)} columns: {list(features_df.columns)[:10]}...")
+                # logger.info(f"[BOOTSTRAP_DEBUG] {symbol}: features_df has {len(features_df.columns)} columns: {list(features_df.columns)[:10]}...")
                 
                 for timestamp, row in features_df.iterrows():
                     # Convert row to dictionary, excluding NaN values

@@ -652,33 +652,33 @@ class UniversalFeatureEngineering(FeatureEngineering):
                     logger.info(f"SECTOR_DEBUG: Found features for {symbol}")
                     
                     if hasattr(features, 'technical_features') and len(features.technical_features) > 0:
-                        logger.info(f"SECTOR_DEBUG: {symbol} has {len(features.technical_features)} technical features with {len(features.technical_features.columns)} columns")
+                        # logger.info(f"SECTOR_DEBUG: {symbol} has {len(features.technical_features)} technical features with {len(features.technical_features.columns)} columns")
                         
                         if sector_features.empty:
                             sector_features = pd.DataFrame(index=features.technical_features.index)
-                            logger.info(f"SECTOR_DEBUG: Initialized sector_features with {len(sector_features)} rows from {symbol}")
+                            # logger.info(f"SECTOR_DEBUG: Initialized sector_features with {len(sector_features)} rows from {symbol}")
                         
                         # Add sector-specific features based on actual data
                         close_prices = features.technical_features.get('close', pd.Series())
-                        logger.info(f"SECTOR_DEBUG: {symbol} close_prices - empty: {close_prices.empty}, length: {len(close_prices)}")
+                        # logger.info(f"SECTOR_DEBUG: {symbol} close_prices - empty: {close_prices.empty}, length: {len(close_prices)}")
                         
                         if not close_prices.empty:
-                            logger.info(f"SECTOR_DEBUG: {symbol} close_prices range: {close_prices.min():.4f} to {close_prices.max():.4f}")
-                            logger.info(f"SECTOR_DEBUG: {symbol} close_prices first 5 values: {close_prices.head().tolist()}")
-                            logger.info(f"SECTOR_DEBUG: {symbol} close_prices last 5 values: {close_prices.tail().tolist()}")
+                            # logger.info(f"SECTOR_DEBUG: {symbol} close_prices range: {close_prices.min():.4f} to {close_prices.max():.4f}")
+                            # logger.info(f"SECTOR_DEBUG: {symbol} close_prices first 5 values: {close_prices.head().tolist()}")
+                            # logger.info(f"SECTOR_DEBUG: {symbol} close_prices last 5 values: {close_prices.tail().tolist()}")
                             
                             # Calculate momentum as 20-day price change percentage
-                            logger.info(f"SECTOR_DEBUG: Calculating 20-day momentum for {symbol}")
+                            # logger.info(f"SECTOR_DEBUG: Calculating 20-day momentum for {symbol}")
                             momentum_raw = close_prices.pct_change(20)
                             momentum_nan_count = momentum_raw.isnull().sum()
-                            logger.info(f"SECTOR_DEBUG: {symbol} momentum - raw NaN count: {momentum_nan_count} out of {len(momentum_raw)} values")
+                            # logger.info(f"SECTOR_DEBUG: {symbol} momentum - raw NaN count: {momentum_nan_count} out of {len(momentum_raw)} values")
                             
                             if momentum_nan_count > 0:
-                                logger.warning(f"SECTOR_DEBUG: {symbol} momentum has {momentum_nan_count} NaN values before fillna")
+                                # logger.warning(f"SECTOR_DEBUG: {symbol} momentum has {momentum_nan_count} NaN values before fillna")
                                 # Log first few NaN positions
                                 nan_positions = momentum_raw.isnull()
                                 first_nan_indices = nan_positions[nan_positions].head(10).index.tolist()
-                                logger.warning(f"SECTOR_DEBUG: {symbol} first 10 NaN positions in momentum: {first_nan_indices}")
+                                # logger.warning(f"SECTOR_DEBUG: {symbol} first 10 NaN positions in momentum: {first_nan_indices}")
                                 
                                 # Check if we have enough data for 20-day calculation
                                 if len(close_prices) < 20:
@@ -688,35 +688,35 @@ class UniversalFeatureEngineering(FeatureEngineering):
                             
                             momentum = momentum_raw.fillna(0)
                             sector_features[f'sector_{symbol}_momentum'] = momentum
-                            logger.info(f"SECTOR_DEBUG: {symbol} momentum after fillna - NaN count: {momentum.isnull().sum()}")
+                            # logger.info(f"SECTOR_DEBUG: {symbol} momentum after fillna - NaN count: {momentum.isnull().sum()}")
                             
                             # Calculate volatility as 20-day rolling standard deviation of returns
-                            logger.info(f"SECTOR_DEBUG: Calculating volatility for {symbol}")
+                            # logger.info(f"SECTOR_DEBUG: Calculating volatility for {symbol}")
                             returns = close_prices.pct_change()
                             returns_nan_count = returns.isnull().sum()
-                            logger.info(f"SECTOR_DEBUG: {symbol} returns - NaN count: {returns_nan_count} out of {len(returns)} values")
+                            # logger.info(f"SECTOR_DEBUG: {symbol} returns - NaN count: {returns_nan_count} out of {len(returns)} values")
                             
                             returns_filled = returns.fillna(0)
                             volatility_raw = returns_filled.rolling(20).std()
                             volatility_nan_count = volatility_raw.isnull().sum()
-                            logger.info(f"SECTOR_DEBUG: {symbol} volatility - raw NaN count: {volatility_nan_count} out of {len(volatility_raw)} values")
+                            # logger.info(f"SECTOR_DEBUG: {symbol} volatility - raw NaN count: {volatility_nan_count} out of {len(volatility_raw)} values")
                             
                             if volatility_nan_count > 0:
-                                logger.warning(f"SECTOR_DEBUG: {symbol} volatility has {volatility_nan_count} NaN values before fillna")
+                                # logger.warning(f"SECTOR_DEBUG: {symbol} volatility has {volatility_nan_count} NaN values before fillna")
                                 # Log first few NaN positions
                                 nan_positions = volatility_raw.isnull()
                                 first_nan_indices = nan_positions[nan_positions].head(10).index.tolist()
-                                logger.warning(f"SECTOR_DEBUG: {symbol} first 10 NaN positions in volatility: {first_nan_indices}")
+                                # logger.warning(f"SECTOR_DEBUG: {symbol} first 10 NaN positions in volatility: {first_nan_indices}")
                                 
                                 # Check if we have enough data for 20-day rolling calculation
                                 if len(returns_filled) < 20:
                                     logger.warning(f"SECTOR_DEBUG: {symbol} insufficient data for 20-day volatility: only {len(returns_filled)} data points")
                                 else:
-                                    logger.info(f"SECTOR_DEBUG: {symbol} has sufficient data ({len(returns_filled)} points) but still getting NaNs")
+                                    logger.info(f"SECTOR_DEBUG: {symbol} has sufficient data ({len(returns_filled)} points) but still getting NaNs")  
                             
                             volatility = volatility_raw.fillna(0)
                             sector_features[f'sector_{symbol}_volatility'] = volatility
-                            logger.info(f"SECTOR_DEBUG: {symbol} volatility after fillna - NaN count: {volatility.isnull().sum()}")
+                            # logger.info(f"SECTOR_DEBUG: {symbol} volatility after fillna - NaN count: {volatility.isnull().sum()}")
                             
                         else:
                             logger.warning(f"SECTOR_DEBUG: {symbol} has empty close_prices, using fallback zeros")
@@ -730,7 +730,7 @@ class UniversalFeatureEngineering(FeatureEngineering):
             
             # Generate extended sector features if we have multiple symbols
             if len(symbols) > 1 and not sector_features.empty:
-                logger.info(f"SECTOR_DEBUG: Generating extended sector features for {len(symbols)} symbols")
+                # logger.info(f"SECTOR_DEBUG: Generating extended sector features for {len(symbols)} symbols")
                 
                 # Calculate sector relative momentum
                 momentum_cols = [col for col in sector_features.columns if '_momentum' in col]
@@ -738,11 +738,11 @@ class UniversalFeatureEngineering(FeatureEngineering):
                     # Calculate average momentum across all symbols
                     avg_momentum = sector_features[momentum_cols].mean(axis=1)
                     sector_features['sector_relative_momentum'] = avg_momentum
-                    logger.info(f"SECTOR_DEBUG: Generated sector_relative_momentum")
+                    # logger.info(f"SECTOR_DEBUG: Generated sector_relative_momentum")    
                 elif len(momentum_cols) == 1:
                     # Single symbol case - use the momentum directly
                     sector_features['sector_relative_momentum'] = sector_features[momentum_cols[0]]
-                    logger.info(f"SECTOR_DEBUG: Generated sector_relative_momentum from single symbol")
+                    # logger.info(f"SECTOR_DEBUG: Generated sector_relative_momentum from single symbol")
                 else:
                     sector_features['sector_relative_momentum'] = 0
                     logger.warning(f"SECTOR_DEBUG: No momentum columns found, using zero")
@@ -778,20 +778,20 @@ class UniversalFeatureEngineering(FeatureEngineering):
                             sector_features['sector_correlation_strength'] = 0
                     else:
                         sector_features['sector_correlation_strength'] = 0
-                    logger.info(f"SECTOR_DEBUG: Generated sector_correlation_strength")
+                    # logger.info(f"SECTOR_DEBUG: Generated sector_correlation_strength")
                 elif len(volatility_cols) == 1:
                     # Single symbol case - use normalized volatility
                     vol_col = volatility_cols[0]
                     vol_mean = sector_features[vol_col].rolling(50).mean()
                     sector_features['sector_correlation_strength'] = sector_features[vol_col] / (vol_mean + 1e-8)
                     sector_features['sector_correlation_strength'] = sector_features['sector_correlation_strength'].fillna(0)
-                    logger.info(f"SECTOR_DEBUG: Generated sector_correlation_strength from single symbol")
+                    # logger.info(f"SECTOR_DEBUG: Generated sector_correlation_strength from single symbol")
                 else:
                     sector_features['sector_correlation_strength'] = 0
                     logger.warning(f"SECTOR_DEBUG: No volatility columns found, using zero")
             else:
                 # Single symbol or empty case - generate fallback features
-                logger.info(f"SECTOR_DEBUG: Generating fallback sector features for single symbol case")
+                # logger.info(f"SECTOR_DEBUG: Generating fallback sector features for single symbol case")
                 if not sector_features.empty:
                     momentum_cols = [col for col in sector_features.columns if '_momentum' in col]
                     volatility_cols = [col for col in sector_features.columns if '_volatility' in col]
@@ -816,13 +816,13 @@ class UniversalFeatureEngineering(FeatureEngineering):
                     })
             
             # Final validation of sector features
-            logger.info(f"SECTOR_DEBUG: Final sector_features shape: {sector_features.shape}")
+            # logger.info(f"SECTOR_DEBUG: Final sector_features shape: {sector_features.shape}")
             for col in sector_features.columns:
                 nan_count = sector_features[col].isnull().sum()
-                if nan_count > 0:
-                    logger.warning(f"SECTOR_DEBUG: Final check - {col} has {nan_count} NaN values")
-                else:
-                    logger.info(f"SECTOR_DEBUG: Final check - {col} has no NaN values")
+                # if nan_count > 0:
+                #     logger.warning(f"SECTOR_DEBUG: Final check - {col} has {nan_count} NaN values")
+                # else:
+                #     logger.info(f"SECTOR_DEBUG: Final check - {col} has no NaN values")
             
             logger.info(f"Generated {len(sector_features.columns)} sector features")
             return sector_features

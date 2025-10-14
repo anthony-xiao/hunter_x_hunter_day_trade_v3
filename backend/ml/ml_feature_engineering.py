@@ -233,6 +233,10 @@ class FeatureEngineering:
     def _get_market_data(self, symbol: str, start_date: datetime, end_date: datetime) -> Optional[pd.DataFrame]:
         """Get market data for feature engineering using Supabase client with pagination"""
         try:
+            # CRITICAL DEBUG: Log market data query for MSFT
+            if symbol == "MSFT":
+                logger.error(f"[CRITICAL_DEBUG] MSFT: _get_market_data called with start_date={start_date}, end_date={end_date}")
+            
             # Special handling for SPY - ensure data is available before querying
             if symbol == 'SPY':
                 self.data_pipeline.ensure_spy_data_available(start_date, end_date)
@@ -251,6 +255,10 @@ class FeatureEngineering:
             else:
                 end_date_utc = end_date.astimezone(timezone.utc)
             
+            # CRITICAL DEBUG: Log query parameters for MSFT
+            if symbol == "MSFT":
+                logger.error(f"[CRITICAL_DEBUG] MSFT: Querying market_data table with current_start={current_start}, end_date_utc={end_date_utc}")
+            
             while current_start < end_date_utc:
                 # Query market data using timestamp-based pagination
                 response = self.supabase.table('market_data').select(
@@ -260,6 +268,13 @@ class FeatureEngineering:
                 ).lte(
                     'timestamp', end_date_utc.isoformat()
                 ).order('timestamp').limit(page_size).execute()
+                
+                # CRITICAL DEBUG: Log query response for MSFT
+                if symbol == "MSFT":
+                    logger.error(f"[CRITICAL_DEBUG] MSFT: Query response - found {len(response.data) if response.data else 0} records")
+                    if response.data and len(response.data) > 0:
+                        logger.error(f"[CRITICAL_DEBUG] MSFT: First record timestamp: {response.data[0].get('timestamp')}")
+                        logger.error(f"[CRITICAL_DEBUG] MSFT: Last record timestamp: {response.data[-1].get('timestamp')}")
                 
                 if not response.data:
                     break
@@ -280,6 +295,9 @@ class FeatureEngineering:
                 current_start = last_timestamp + timedelta(microseconds=1)
             
             if not all_data:
+                # CRITICAL DEBUG: Log when no data is found for MSFT
+                if symbol == "MSFT":
+                    logger.error(f"[CRITICAL_DEBUG] MSFT: NO MARKET DATA FOUND - This is the root cause!")
                 logger.warning(f"No market data found for {symbol} between {start_date} and {end_date}")
                 return None
             
@@ -299,10 +317,19 @@ class FeatureEngineering:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
+            # CRITICAL DEBUG: Log successful data retrieval for MSFT
+            if symbol == "MSFT":
+                logger.error(f"[CRITICAL_DEBUG] MSFT: Successfully loaded {len(df)} records from market_data table")
+                logger.error(f"[CRITICAL_DEBUG] MSFT: Data range: {df.index.min()} to {df.index.max()}")
+                logger.error(f"[CRITICAL_DEBUG] MSFT: Columns: {list(df.columns)}")
+            
             logger.info(f"Loaded {len(df)} records for {symbol} from {start_date} to {end_date}")
             return df
                 
         except Exception as e:
+            # CRITICAL DEBUG: Log exceptions for MSFT
+            if symbol == "MSFT":
+                logger.error(f"[CRITICAL_DEBUG] MSFT: Exception in _get_market_data: {type(e).__name__}: {str(e)}")
             logger.error(f"Failed to get market data for {symbol}: {e}")
             return None
     

@@ -420,27 +420,43 @@ class TradingOrchestrator:
                         else:
                             rolling_df[col] = rolling_df.get('close', 100.0)
                 
-                # Priority 2 & 3: Use engineer_features function to calculate ALL technical indicators
-                # This leverages complete OHLCV + VWAP + transactions data with rolling window calculations
-                logger.debug(f"[{symbol}] Calculating comprehensive features using engineer_features with {len(rolling_df)} data points")
+                # Priority 2 & 3: Use universal feature engineering to match training pipeline
+                # This generates comprehensive features (157+) including cross-symbol, regime, and sector features
+                logger.debug(f"[{symbol}] Calculating comprehensive universal features with {len(rolling_df)} data points")
                 
-                # Use the existing engineer_features function for comprehensive feature calculation
                 # Calculate start_date and end_date from rolling_df
                 start_date = rolling_df.index.min()
                 end_date = rolling_df.index.max()
                 
-                logger.info(f"[{symbol}] FEATURE_DEBUG: Calling engineer_features with start_date={start_date}, end_date={end_date}, data_points={len(rolling_df)}")
+                logger.info(f"[{symbol}] FEATURE_DEBUG: Calling universal feature engineering with start_date={start_date}, end_date={end_date}, data_points={len(rolling_df)}")
                 
                 try:
-                    engineered_features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+                    # Import universal feature engineering
+                    from ml.universal_feature_engineering import UniversalFeatureEngineering
                     
-                    if engineered_features is None:
-                        logger.error(f"[{symbol}] FEATURE_DEBUG: engineer_features returned None - ML feature engineering failed completely")
-                    elif not hasattr(engineered_features, 'technical_features'):
-                        logger.error(f"[{symbol}] FEATURE_DEBUG: engineer_features returned object without technical_features attribute: {type(engineered_features)}")
-                    elif engineered_features.technical_features.empty:
-                        logger.error(f"[{symbol}] FEATURE_DEBUG: engineer_features returned empty technical_features DataFrame")
-                    else:
+                    # Create universal feature engineering instance
+                    universal_feature_engineering = UniversalFeatureEngineering()
+                    
+                    # Get all trading symbols for cross-symbol and sector features (same as training)
+                    all_symbols = list(self.symbol_features.keys()) if hasattr(self, 'symbol_features') else [symbol]
+                    if len(all_symbols) < 2:
+                        # Add common symbols for cross-symbol features if only one symbol is being traded
+                        all_symbols = list(set(all_symbols + ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META']))
+                    
+                    logger.info(f"[{symbol}] Using {len(all_symbols)} symbols for universal features: {all_symbols[:5]}...")
+                    
+                    # Engineer universal features with training_mode=True (same as training pipeline)
+                    universal_features = await universal_feature_engineering.engineer_universal_features(
+                        symbols=all_symbols,
+                        start_date=start_date,
+                        end_date=end_date,
+                        training_mode=True  # Use training mode for comprehensive feature generation
+                    )
+                    
+                    # Extract features for the current symbol
+                    if symbol in universal_features.symbol_features:
+                        engineered_features = universal_features.symbol_features[symbol]
+                        
                         # Count total features across all DataFrames
                         feature_counts = {
                             'technical_features': len(engineered_features.technical_features.columns) if hasattr(engineered_features, 'technical_features') and not engineered_features.technical_features.empty else 0,
@@ -450,14 +466,33 @@ class TradingOrchestrator:
                             'cross_asset_features': len(engineered_features.cross_asset_features.columns) if hasattr(engineered_features, 'cross_asset_features') and not engineered_features.cross_asset_features.empty else 0,
                             'engineered_features': len(engineered_features.engineered_features.columns) if hasattr(engineered_features, 'engineered_features') and not engineered_features.engineered_features.empty else 0
                         }
-                        total_features = sum(feature_counts.values())
-                        logger.info(f"[{symbol}] FEATURE_DEBUG: engineer_features SUCCESS - Generated {total_features} total features: {feature_counts}")
                         
-                        if total_features < 100:
-                            logger.warning(f"[{symbol}] FEATURE_DEBUG: Low feature count ({total_features}) - Expected 150+ features")
+                        # Add universal features counts
+                        universal_feature_counts = {
+                            'cross_symbol_features': len(universal_features.cross_symbol_features.columns) if hasattr(universal_features, 'cross_symbol_features') and not universal_features.cross_symbol_features.empty else 0,
+                            'market_regime_features': len(universal_features.market_regime_features.columns) if hasattr(universal_features, 'market_regime_features') and not universal_features.market_regime_features.empty else 0,
+                            'sector_features': len(universal_features.sector_features.columns) if hasattr(universal_features, 'sector_features') and not universal_features.sector_features.empty else 0
+                        }
+                        
+                        individual_features = sum(feature_counts.values())
+                        universal_feature_total = sum(universal_feature_counts.values())
+                        total_features = individual_features + universal_feature_total
+                        
+                        logger.info(f"[{symbol}] FEATURE_DEBUG: Universal feature engineering SUCCESS")
+                        logger.info(f"[{symbol}] Individual features: {individual_features} - {feature_counts}")
+                        logger.info(f"[{symbol}] Universal features: {universal_feature_total} - {universal_feature_counts}")
+                        logger.info(f"[{symbol}] Total comprehensive features: {total_features}")
+                        
+                        if total_features < 150:
+                            logger.warning(f"[{symbol}] FEATURE_DEBUG: Low feature count ({total_features}) - Expected 157+ features")
+                        else:
+                            logger.info(f"[{symbol}] FEATURE_DEBUG: Excellent feature count ({total_features}) - Matches training pipeline")
+                    else:
+                        logger.error(f"[{symbol}] FEATURE_DEBUG: Symbol {symbol} not found in universal features")
+                        engineered_features = None
                         
                 except Exception as e:
-                    logger.error(f"[{symbol}] FEATURE_DEBUG: engineer_features FAILED with exception: {type(e).__name__}: {str(e)}")
+                    logger.error(f"[{symbol}] FEATURE_DEBUG: Universal feature engineering FAILED with exception: {type(e).__name__}: {str(e)}")
                     logger.error(f"[{symbol}] FEATURE_DEBUG: Exception traceback:", exc_info=True)
                     engineered_features = None
                 
@@ -482,21 +517,41 @@ class TradingOrchestrator:
                         }
                         total_features = sum(feature_counts.values())
                         
-                        if total_features >= 100:  # Accept if we have at least 100 features
+                        if total_features >= 150:  # Accept if we have at least 150 features (matching training)
                             valid_engineered_features = engineered_features
                             logger.info(f"[{symbol}] FEATURE_VALIDATION: Regular update - Accepted {total_features} features")
                             break
                         else:
                             logger.warning(f"[{symbol}] FEATURE_VALIDATION: Regular update - Insufficient features ({total_features}), retry {retry_count + 1}/{max_retries}")
                     
-                    # Retry feature engineering if validation failed
+                    # Retry universal feature engineering if validation failed
                     if retry_count < max_retries:
                         retry_count += 1
-                        logger.info(f"[{symbol}] FEATURE_RETRY: Regular update - Attempting retry {retry_count}/{max_retries}")
+                        logger.info(f"[{symbol}] FEATURE_RETRY: Regular update - Attempting universal feature engineering retry {retry_count}/{max_retries}")
                         
                         try:
-                            engineered_features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
-                            logger.info(f"[{symbol}] FEATURE_RETRY: Regular update - Retry {retry_count} completed")
+                            # Retry with universal feature engineering
+                            from ml.universal_feature_engineering import UniversalFeatureEngineering
+                            universal_feature_engineering = UniversalFeatureEngineering()
+                            
+                            # Get all trading symbols for cross-symbol and sector features
+                            all_symbols = list(self.symbol_features.keys()) if hasattr(self, 'symbol_features') else [symbol]
+                            if len(all_symbols) < 2:
+                                all_symbols = list(set(all_symbols + ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META']))
+                            
+                            universal_features = await universal_feature_engineering.engineer_universal_features(
+                                symbols=all_symbols,
+                                start_date=start_date,
+                                end_date=end_date,
+                                training_mode=True
+                            )
+                            
+                            if symbol in universal_features.symbol_features:
+                                engineered_features = universal_features.symbol_features[symbol]
+                                logger.info(f"[{symbol}] FEATURE_RETRY: Universal feature engineering retry {retry_count} completed")
+                            else:
+                                engineered_features = None
+                                logger.error(f"[{symbol}] FEATURE_RETRY: Symbol {symbol} not found in universal features retry")
                         except Exception as e:
                             logger.error(f"[{symbol}] FEATURE_RETRY: Regular update - Retry {retry_count} failed: {type(e).__name__}: {str(e)}")
                             engineered_features = None
@@ -582,14 +637,37 @@ class TradingOrchestrator:
                     logger.info(f"[{symbol}] FEATURE_DEBUG: Cold start - Calling engineer_features with start_date={start_date}, end_date={end_date}, data_points={len(combined_data)}")
                     
                     try:
-                        features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+                        # Use universal feature engineering for cold start as well
+                        from ml.universal_feature_engineering import UniversalFeatureEngineering
+                        universal_feature_engineering = UniversalFeatureEngineering()
+                        
+                        # Get all trading symbols for cross-symbol and sector features
+                        all_symbols = list(self.symbol_features.keys()) if hasattr(self, 'symbol_features') else [symbol]
+                        if len(all_symbols) < 2:
+                            all_symbols = list(set(all_symbols + ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META']))
+                        
+                        logger.info(f"[{symbol}] Cold start using universal feature engineering with {len(all_symbols)} symbols")
+                        
+                        universal_features = await universal_feature_engineering.engineer_universal_features(
+                            symbols=all_symbols,
+                            start_date=start_date,
+                            end_date=end_date,
+                            training_mode=True
+                        )
+                        
+                        if symbol in universal_features.symbol_features:
+                            features = universal_features.symbol_features[symbol]
+                            logger.info(f"[{symbol}] FEATURE_DEBUG: Cold start - Universal feature engineering SUCCESS")
+                        else:
+                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - Symbol {symbol} not found in universal features")
+                            features = None
                         
                         if features is None:
-                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - engineer_features returned None")
+                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - Universal feature engineering returned None")
                         elif not hasattr(features, 'technical_features'):
-                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - engineer_features returned object without technical_features: {type(features)}")
+                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - Universal features returned object without technical_features: {type(features)}")
                         elif features.technical_features.empty:
-                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - engineer_features returned empty technical_features")
+                            logger.error(f"[{symbol}] FEATURE_DEBUG: Cold start - Universal features returned empty technical_features")
                         else:
                             # Count total features across all DataFrames
                             feature_counts = {
@@ -632,23 +710,50 @@ class TradingOrchestrator:
                             }
                             total_features = sum(feature_counts.values())
                             
-                            if total_features >= 100:  # Accept if we have at least 100 features
+                            if total_features >= 150:  # Accept if we have at least 150 features (matching training)
                                 valid_features = features
                                 logger.info(f"[{symbol}] FEATURE_VALIDATION: Cold start - Accepted {total_features} features")
                                 break
                             else:
                                 logger.warning(f"[{symbol}] FEATURE_VALIDATION: Cold start - Insufficient features ({total_features}), retry {retry_count + 1}/{max_retries}")
                         
-                        # Retry feature engineering if validation failed
+                        # Retry universal feature engineering if validation failed
                         if retry_count < max_retries:
                             retry_count += 1
                             logger.info(f"[{symbol}] FEATURE_RETRY: Cold start - Attempting retry {retry_count}/{max_retries}")
                             
                             try:
-                                features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
-                                logger.info(f"[{symbol}] FEATURE_RETRY: Cold start - Retry {retry_count} completed")
+                                # Use universal feature engineering for retry
+                                from ml.universal_feature_engineering import UniversalFeatureEngineering
+                                universal_feature_engineering = UniversalFeatureEngineering()
+                                
+                                # Get all symbols for universal features
+                                all_symbols = list(self.symbol_last_update.keys())
+                                if len(all_symbols) == 1:
+                                    # Add common symbols for better universal features
+                                    common_symbols = ['SPY', 'QQQ', 'IWM', 'VIX', 'TLT', 'GLD']
+                                    all_symbols.extend([s for s in common_symbols if s not in all_symbols])
+                                
+                                logger.info(f"[{symbol}] FEATURE_RETRY: Cold start - Using universal feature engineering with {len(all_symbols)} symbols")
+                                
+                                # Generate universal features for all symbols
+                                universal_features = await universal_feature_engineering.engineer_universal_features(
+                                    symbols=all_symbols,
+                                    start_date=start_date,
+                                    end_date=end_date,
+                                    training_mode=True
+                                )
+                                
+                                # Extract features for current symbol
+                                if universal_features and symbol in universal_features:
+                                    features = universal_features[symbol]
+                                    logger.info(f"[{symbol}] FEATURE_RETRY: Cold start - Universal retry {retry_count} SUCCESS")
+                                else:
+                                    features = None
+                                    logger.error(f"[{symbol}] FEATURE_RETRY: Cold start - Universal retry {retry_count} - Symbol not found in results")
+                                    
                             except Exception as e:
-                                logger.error(f"[{symbol}] FEATURE_RETRY: Cold start - Retry {retry_count} failed: {type(e).__name__}: {str(e)}")
+                                logger.error(f"[{symbol}] FEATURE_RETRY: Cold start - Universal retry {retry_count} failed: {type(e).__name__}: {str(e)}")
                                 features = None
                         else:
                             break
@@ -690,6 +795,11 @@ class TradingOrchestrator:
                         'timestamp_weekday': current_timestamp.weekday()
                     }
                     await self.data_pipeline.store_features(symbol, current_timestamp, basic_features)
+                    
+                    # CRITICAL DEBUG: Log when MSFT falls back to basic features
+                    if symbol == "MSFT":
+                        logger.error(f"[CRITICAL_DEBUG] MSFT: Falling back to basic features only - {len(basic_features)} features: {list(basic_features.keys())}")
+                    
                     logger.debug(f"[{symbol}] Basic WebSocket features stored for {current_timestamp}")
                 
         except Exception as e:

@@ -45,7 +45,7 @@ class TemporalAggregator:
     
     def __init__(self, config: AggregationConfig = None):
         self.config = config or AggregationConfig()
-        logger.info(f"Initialized TemporalAggregator with config: {self.config}")
+        # logger.info(f"Initialized TemporalAggregator with config: {self.config}")
     
     def aggregate_3d_to_dataframe(self, 
                                 data_3d: np.ndarray, 
