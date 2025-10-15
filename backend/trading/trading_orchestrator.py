@@ -9,7 +9,7 @@ import pytz
 
 from data.polygon_websocket import RealTimeData, PolygonWebSocketManager
 from data.data_pipeline import DataPipeline
-from ml.ml_feature_engineering import FeatureEngineering as FeatureEngineer
+from ml.universal_feature_engineering import UniversalFeatureEngineering
 from trading.signal_generator import SignalGenerator
 from trading.execution_engine import ExecutionEngine, TradeSignal
 from trading.risk_manager import RiskManager
@@ -38,7 +38,7 @@ class TradingOrchestrator:
         # Core components
         self.websocket_manager: Optional[PolygonWebSocketManager] = None
         self.data_pipeline: Optional[DataPipeline] = None
-        self.feature_engineer: Optional[FeatureEngineer] = None
+        self.feature_engineer: Optional[UniversalFeatureEngineering] = None
         self.signal_generator: Optional[SignalGenerator] = None
         self.execution_engine: Optional[ExecutionEngine] = None
         self.risk_manager: Optional[RiskManager] = None
@@ -72,7 +72,7 @@ class TradingOrchestrator:
     async def initialize(self, 
                         websocket_manager: PolygonWebSocketManager,
                         data_pipeline: DataPipeline,
-                        feature_engineer: FeatureEngineer,
+                        feature_engineer: UniversalFeatureEngineering,
                         signal_generator: SignalGenerator,
                         execution_engine: ExecutionEngine,
                         risk_manager: RiskManager):
@@ -202,65 +202,75 @@ class TradingOrchestrator:
             
             logger.debug(f"Downloaded {len(historical_data)} historical bars for {symbol}")
             
-            # Step 3: Generate features for all historical data points
+            # Step 3: Generate features for all historical data points using UniversalFeatureEngineering
             # Calculate start_date and end_date from historical_data
             start_date = historical_data.index.min()
             end_date = historical_data.index.max()
             
-            features = await self.feature_engineer.engineer_features(symbol, start_date, end_date)
+            # Use UniversalFeatureEngineering to generate universal features
+            # CRITICAL FIX: Use complete ticker universe for cross-symbol features (same as training)
+            all_symbols = self.data_pipeline.get_ticker_universe() if self.data_pipeline else [symbol]
+            logger.info(f"[{symbol}] BOOTSTRAP: Using {len(all_symbols)} symbols for universal features (same as training): {all_symbols}")
             
-            # Check if FeatureSet is valid by verifying it has non-empty DataFrames
-            if (features is None or 
-                features.technical_features.empty):
-                logger.warning(f"No features generated for {symbol} during bootstrap")
+            universal_features = await self.feature_engineer.engineer_universal_features(
+                symbols=all_symbols,  # Use complete universe, not just single symbol
+                start_date=start_date,
+                end_date=end_date,
+                training_mode=True
+            )
+            
+            # Check if UniversalFeatureSet is valid
+            if (universal_features is None or 
+                universal_features.symbol_features.get(symbol) is None or
+                universal_features.symbol_features[symbol].empty):
+                logger.warning(f"No universal features generated for {symbol} during bootstrap")
                 return
             
-            # Step 4: Cache all generated features for immediate availability
-            # Properly combine all feature DataFrames from FeatureSet
-            import pandas as pd
+            # Step 4: Load selected_feature_columns from universal_metadata.json
+            import json
+            from pathlib import Path
             
-            # Collect non-empty DataFrames for concatenation
-            feature_dfs = []
+            metadata_path = Path("/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal/universal_metadata.json")
+            selected_feature_columns = []
             
-            if not features.technical_features.empty:
-                feature_dfs.append(features.technical_features)
-                logger.debug(f"Technical features: {len(features.technical_features.columns)} columns")
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                        # Load from feature_selection.selected_feature_columns
+                        if 'feature_selection' in metadata and 'selected_feature_columns' in metadata['feature_selection']:
+                            selected_feature_columns = metadata['feature_selection']['selected_feature_columns']
+                            logger.info(f"Loaded {len(selected_feature_columns)} selected feature columns from universal_metadata.json")
+                        else:
+                            logger.warning("No feature_selection.selected_feature_columns found in universal_metadata.json")
+                            selected_feature_columns = []
+                except Exception as e:
+                    logger.error(f"Error loading universal_metadata.json: {e}")
+                    selected_feature_columns = []
+            else:
+                logger.warning("universal_metadata.json not found, using all features")
             
-            if not features.market_microstructure.empty:
-                feature_dfs.append(features.market_microstructure)
-                logger.debug(f"Microstructure features: {len(features.market_microstructure.columns)} columns")
+            # Step 5: Extract and filter features for the symbol
+            symbol_features = universal_features.symbol_features[symbol]
             
-            if not features.sentiment_features.empty:
-                feature_dfs.append(features.sentiment_features)
-                logger.debug(f"Sentiment features: {len(features.sentiment_features.columns)} columns")
+            # Apply selected_feature_columns filtering if available
+            if selected_feature_columns:
+                # Filter to only include selected features that exist in the data
+                available_features = [col for col in selected_feature_columns if col in symbol_features.columns]
+                if available_features:
+                    symbol_features = symbol_features[available_features]
+                    logger.info(f"Applied feature selection: {len(available_features)}/{len(selected_feature_columns)} selected features available for {symbol}")
+                else:
+                    logger.warning(f"No selected features found in generated features for {symbol}, using all features")
             
-            if not features.macro_features.empty:
-                feature_dfs.append(features.macro_features)
-                logger.debug(f"Macro features: {len(features.macro_features.columns)} columns")
-            
-            if not features.cross_asset_features.empty:
-                feature_dfs.append(features.cross_asset_features)
-                logger.debug(f"Cross-asset features: {len(features.cross_asset_features.columns)} columns")
-            
-            if not features.engineered_features.empty:
-                feature_dfs.append(features.engineered_features)
-                logger.debug(f"Engineered features: {len(features.engineered_features.columns)} columns")
-            
-            if not feature_dfs:
-                logger.warning(f"No valid feature DataFrames found for {symbol}")
-                return
-            
-            # Combine all non-empty feature DataFrames
-            combined_features = pd.concat(feature_dfs, axis=1)
-            logger.info(f"Combined {len(combined_features.columns)} total features for {symbol} from {len(feature_dfs)} categories")
-            
+            # Step 6: Cache all filtered features for immediate availability
             cached_count = 0
-            for timestamp, feature_row in combined_features.iterrows():
+            for timestamp, feature_row in symbol_features.iterrows():
                 feature_dict = feature_row.to_dict()
                 await self.data_pipeline.store_features(symbol, timestamp, feature_dict)
                 cached_count += 1
             
-            logger.info(f"Bootstrapped and cached {cached_count} feature sets for {symbol}")
+            logger.info(f"Bootstrapped and cached {cached_count} feature sets with {len(symbol_features.columns)} selected features for {symbol}")
             
         except Exception as e:
             logger.error(f"Error bootstrapping data for {symbol}: {e}")
@@ -446,8 +456,12 @@ class TradingOrchestrator:
                     logger.info(f"[{symbol}] Using {len(all_symbols)} symbols for universal features: {all_symbols[:5]}...")
                     
                     # Engineer universal features with training_mode=True (same as training pipeline)
+                    # CRITICAL FIX: Use complete ticker universe for cross-symbol features (same as training)
+                    all_symbols = self.data_pipeline.get_ticker_universe() if self.data_pipeline else [symbol]
+                    logger.info(f"[{symbol}] FEATURE_RETRY: Using {len(all_symbols)} symbols for universal features (same as training): {all_symbols}")
+                    
                     universal_features = await universal_feature_engineering.engineer_universal_features(
-                        symbols=all_symbols,
+                        symbols=all_symbols,  # Use complete universe, not just current symbol
                         start_date=start_date,
                         end_date=end_date,
                         training_mode=True  # Use training mode for comprehensive feature generation
@@ -534,13 +548,12 @@ class TradingOrchestrator:
                             from ml.universal_feature_engineering import UniversalFeatureEngineering
                             universal_feature_engineering = UniversalFeatureEngineering()
                             
-                            # Get all trading symbols for cross-symbol and sector features
-                            all_symbols = list(self.symbol_features.keys()) if hasattr(self, 'symbol_features') else [symbol]
-                            if len(all_symbols) < 2:
-                                all_symbols = list(set(all_symbols + ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META']))
+                            # CRITICAL FIX: Use complete ticker universe for cross-symbol features (same as training)
+                            all_symbols = self.data_pipeline.get_ticker_universe() if self.data_pipeline else [symbol]
+                            logger.info(f"[{symbol}] FEATURE_RETRY: Using {len(all_symbols)} symbols for universal features (same as training): {all_symbols}")
                             
                             universal_features = await universal_feature_engineering.engineer_universal_features(
-                                symbols=all_symbols,
+                                symbols=all_symbols,  # Use complete universe for consistency
                                 start_date=start_date,
                                 end_date=end_date,
                                 training_mode=True
@@ -573,6 +586,40 @@ class TradingOrchestrator:
                         engineered_features.cross_asset_features,
                         engineered_features.engineered_features
                     ], axis=1)
+                    
+                    # Load selected_feature_columns from universal_metadata.json for filtering
+                    import json
+                    from pathlib import Path
+                    
+                    metadata_path = Path("/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal/universal_metadata.json")
+                    selected_feature_columns = []
+                    
+                    if metadata_path.exists():
+                        try:
+                            with open(metadata_path, 'r') as f:
+                                metadata = json.load(f)
+                                # Load from feature_selection.selected_feature_columns
+                                if 'feature_selection' in metadata and 'selected_feature_columns' in metadata['feature_selection']:
+                                    selected_feature_columns = metadata['feature_selection']['selected_feature_columns']
+                                    logger.debug(f"[{symbol}] Loaded {len(selected_feature_columns)} selected feature columns for WebSocket filtering")
+                                else:
+                                    logger.warning(f"[{symbol}] No feature_selection.selected_feature_columns found in universal_metadata.json")
+                                    selected_feature_columns = []
+                        except Exception as e:
+                            logger.error(f"[{symbol}] Error loading universal_metadata.json: {e}")
+                            selected_feature_columns = []
+                    else:
+                        logger.warning(f"[{symbol}] universal_metadata.json not found, using all features")
+                    
+                    # Apply selected_feature_columns filtering if available
+                    if selected_feature_columns:
+                        # Filter to only include selected features that exist in the data
+                        available_features = [col for col in selected_feature_columns if col in combined_features.columns]
+                        if available_features:
+                            combined_features = combined_features[available_features]
+                            logger.debug(f"[{symbol}] Applied WebSocket feature selection: {len(available_features)}/{len(selected_feature_columns)} selected features available")
+                        else:
+                            logger.warning(f"[{symbol}] No selected features found in WebSocket features, using all features")
                     
                     # Extract features for the current timestamp only
                     if current_timestamp in combined_features.index:
@@ -644,7 +691,7 @@ class TradingOrchestrator:
                         # Get all trading symbols for cross-symbol and sector features
                         all_symbols = list(self.symbol_features.keys()) if hasattr(self, 'symbol_features') else [symbol]
                         if len(all_symbols) < 2:
-                            all_symbols = list(set(all_symbols + ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META']))
+                            all_symbols = list(set(all_symbols + ['SPY', 'QQQ', 'IWM', 'VIX', 'TLT', 'GLD']))
                         
                         logger.info(f"[{symbol}] Cold start using universal feature engineering with {len(all_symbols)} symbols")
                         
@@ -727,14 +774,9 @@ class TradingOrchestrator:
                                 from ml.universal_feature_engineering import UniversalFeatureEngineering
                                 universal_feature_engineering = UniversalFeatureEngineering()
                                 
-                                # Get all symbols for universal features
-                                all_symbols = list(self.symbol_last_update.keys())
-                                if len(all_symbols) == 1:
-                                    # Add common symbols for better universal features
-                                    common_symbols = ['SPY', 'QQQ', 'IWM', 'VIX', 'TLT', 'GLD']
-                                    all_symbols.extend([s for s in common_symbols if s not in all_symbols])
-                                
-                                logger.info(f"[{symbol}] FEATURE_RETRY: Cold start - Using universal feature engineering with {len(all_symbols)} symbols")
+                                # CRITICAL FIX: Use complete ticker universe for cross-symbol features (same as training)
+                                all_symbols = self.data_pipeline.get_ticker_universe() if self.data_pipeline else [symbol]
+                                logger.info(f"[{symbol}] FEATURE_RETRY: Cold start - Using {len(all_symbols)} symbols for universal features (same as training): {all_symbols}")
                                 
                                 # Generate universal features for all symbols
                                 universal_features = await universal_feature_engineering.engineer_universal_features(
@@ -768,6 +810,40 @@ class TradingOrchestrator:
                             valid_features.cross_asset_features,
                             valid_features.engineered_features
                         ], axis=1)
+                        
+                        # Load selected_feature_columns from universal_metadata.json for cold start filtering
+                        import json
+                        from pathlib import Path
+                        
+                        metadata_path = Path("/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal/universal_metadata.json")
+                        selected_feature_columns = []
+                        
+                        if metadata_path.exists():
+                            try:
+                                with open(metadata_path, 'r') as f:
+                                    metadata = json.load(f)
+                                    # Load from feature_selection.selected_feature_columns
+                                    if 'feature_selection' in metadata and 'selected_feature_columns' in metadata['feature_selection']:
+                                        selected_feature_columns = metadata['feature_selection']['selected_feature_columns']
+                                        logger.debug(f"[{symbol}] Loaded {len(selected_feature_columns)} selected feature columns for cold start filtering")
+                                    else:
+                                        logger.warning(f"[{symbol}] No feature_selection.selected_feature_columns found in universal_metadata.json")
+                                        selected_feature_columns = []
+                            except Exception as e:
+                                logger.error(f"[{symbol}] Error loading universal_metadata.json: {e}")
+                                selected_feature_columns = []
+                        else:
+                            logger.warning(f"[{symbol}] universal_metadata.json not found, using all features")
+                        
+                        # Apply selected_feature_columns filtering if available
+                        if selected_feature_columns:
+                            # Filter to only include selected features that exist in the data
+                            available_features = [col for col in selected_feature_columns if col in combined_features.columns]
+                            if available_features:
+                                combined_features = combined_features[available_features]
+                                logger.debug(f"[{symbol}] Applied cold start feature selection: {len(available_features)}/{len(selected_feature_columns)} selected features available")
+                            else:
+                                logger.warning(f"[{symbol}] No selected features found in cold start features, using all features")
                         
                         # Store only features for the current timestamp
                         if current_timestamp in combined_features.index:
@@ -1131,7 +1207,7 @@ orchestrator = TradingOrchestrator()
 async def start_event_driven_trading(trading_symbols: List[str],
                                     websocket_manager: PolygonWebSocketManager,
                                     data_pipeline: DataPipeline,
-                                    feature_engineer: FeatureEngineer,
+                                    feature_engineer: UniversalFeatureEngineering,
                                     signal_generator: SignalGenerator,
                                     execution_engine: ExecutionEngine,
                                     risk_manager: RiskManager) -> bool:

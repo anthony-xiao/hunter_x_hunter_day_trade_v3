@@ -216,6 +216,21 @@ class SignalGenerator:
         
         # Load model configurations
         self._load_model_configurations()
+        
+        # Load feature selection results during initialization
+        import asyncio
+        try:
+            # Run the async method in a synchronous context
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If we're already in an async context, create a task
+                asyncio.create_task(self.load_feature_selection_results())
+            else:
+                # If not in async context, run it directly
+                loop.run_until_complete(self.load_feature_selection_results())
+        except RuntimeError:
+            # If no event loop exists, create one
+            asyncio.run(self.load_feature_selection_results())
     
     def _load_optimized_ensemble_weights(self) -> None:
         """Load optimized ensemble weights from universal training metadata or shared configuration"""
@@ -2278,183 +2293,119 @@ class SignalGenerator:
         consistent feature dimensions (446 features for 9 symbols) between training and live trading.
         """
         try:
-            logger.info(f"Preparing universal features for {symbol} in live trading")
+            logger.info(f"[UNIVERSAL_FEATURES] Preparing universal features for {symbol} in live trading")
             
-            # Step 1: Engineer individual symbol features
-            # Create FeatureEngineering instance for individual symbol features
-            # Ensure consistent data_pipeline usage with universal feature engineering
-            data_pipeline_to_use = self.data_pipeline or (self.model_trainer.data_pipeline if self.model_trainer else None)
-            
-            if not data_pipeline_to_use:
-                logger.warning(f"No data pipeline available for individual feature engineering for {symbol}")
-                logger.warning("Cross-asset features will be skipped for this symbol")
+            # Get all trading symbols for universal feature engineering
+            if self.data_pipeline:
+                all_symbols = self.data_pipeline.get_ticker_universe()
+            elif hasattr(self.universal_feature_engineering, '_symbol_mappings'):
+                all_symbols = list(self.universal_feature_engineering._symbol_mappings.keys())
             else:
-                logger.debug(f"Using data_pipeline for individual features ({symbol}): {type(data_pipeline_to_use).__name__}")
-                
-            feature_engineering = FeatureEngineering(self.supabase_client, data_pipeline_to_use)
+                # Fallback to current symbol only (this will cause feature mismatch)
+                all_symbols = [symbol]
+                logger.warning(f"[UNIVERSAL_FEATURES] Using fallback single symbol {symbol} - this may cause feature dimension mismatch")
             
-            # Use training_mode=True to ensure consistent feature generation with training
-            feature_set = await feature_engineering.engineer_features(
-                symbol=symbol,
+            logger.info(f"[UNIVERSAL_FEATURES] {symbol}: Using {len(all_symbols)} symbols for universal features: {all_symbols}")
+            
+            # Engineer universal features for all symbols (same as training)
+            # Use training_mode=True to ensure sufficient historical data for all features
+            logger.info(f"[UNIVERSAL_FEATURES] {symbol}: Calling engineer_universal_features with training_mode=True")
+            universal_features = await self.universal_feature_engineering.engineer_universal_features(
+                symbols=all_symbols,
                 start_date=market_data.index[0].to_pydatetime(),
                 end_date=market_data.index[-1].to_pydatetime(),
-                include_cross_asset=True,
-                training_mode=True  # Use training mode for consistent feature generation
+                training_mode=True  # Use training mode to ensure full feature generation
             )
             
-            if not feature_set or not hasattr(feature_set, 'technical_features') or feature_set.technical_features.empty:
-                logger.error(f"No individual features generated for {symbol}")
+            # Get the individual symbol's features from universal features
+            if symbol not in universal_features.symbol_features:
+                logger.error(f"[UNIVERSAL_FEATURES] Symbol {symbol} not found in universal features")
                 return None
             
-            # Step 2: Combine individual symbol features (same as training)
-            feature_dfs = []
-            feature_counts = {}
+            # Get individual symbol features
+            symbol_feature_set = universal_features.symbol_features[symbol]
+            
+            # Combine individual symbol features (same as training)
+            individual_feature_dfs = []
+            individual_feature_counts = {}
             
             # Add technical features
-            if hasattr(feature_set, 'technical_features') and feature_set.technical_features is not None and not feature_set.technical_features.empty:
-                feature_dfs.append(feature_set.technical_features)
-                feature_counts['technical'] = len(feature_set.technical_features.columns)
+            if hasattr(symbol_feature_set, 'technical_features') and symbol_feature_set.technical_features is not None and not symbol_feature_set.technical_features.empty:
+                individual_feature_dfs.append(symbol_feature_set.technical_features)
+                individual_feature_counts['technical'] = len(symbol_feature_set.technical_features.columns)
             
             # Add market microstructure features
-            if hasattr(feature_set, 'market_microstructure') and feature_set.market_microstructure is not None and not feature_set.market_microstructure.empty:
-                feature_dfs.append(feature_set.market_microstructure)
-                feature_counts['market_microstructure'] = len(feature_set.market_microstructure.columns)
+            if hasattr(symbol_feature_set, 'market_microstructure') and symbol_feature_set.market_microstructure is not None and not symbol_feature_set.market_microstructure.empty:
+                individual_feature_dfs.append(symbol_feature_set.market_microstructure)
+                individual_feature_counts['market_microstructure'] = len(symbol_feature_set.market_microstructure.columns)
             
             # Add sentiment features
-            if hasattr(feature_set, 'sentiment_features') and feature_set.sentiment_features is not None and not feature_set.sentiment_features.empty:
-                feature_dfs.append(feature_set.sentiment_features)
-                feature_counts['sentiment'] = len(feature_set.sentiment_features.columns)
+            if hasattr(symbol_feature_set, 'sentiment_features') and symbol_feature_set.sentiment_features is not None and not symbol_feature_set.sentiment_features.empty:
+                individual_feature_dfs.append(symbol_feature_set.sentiment_features)
+                individual_feature_counts['sentiment'] = len(symbol_feature_set.sentiment_features.columns)
             
             # Add macro features
-            if hasattr(feature_set, 'macro_features') and feature_set.macro_features is not None and not feature_set.macro_features.empty:
-                feature_dfs.append(feature_set.macro_features)
-                feature_counts['macro'] = len(feature_set.macro_features.columns)
+            if hasattr(symbol_feature_set, 'macro_features') and symbol_feature_set.macro_features is not None and not symbol_feature_set.macro_features.empty:
+                individual_feature_dfs.append(symbol_feature_set.macro_features)
+                individual_feature_counts['macro'] = len(symbol_feature_set.macro_features.columns)
             
             # Add cross-asset features
-            if hasattr(feature_set, 'cross_asset_features') and feature_set.cross_asset_features is not None and not feature_set.cross_asset_features.empty:
-                feature_dfs.append(feature_set.cross_asset_features)
-                feature_counts['cross_asset'] = len(feature_set.cross_asset_features.columns)
+            if hasattr(symbol_feature_set, 'cross_asset_features') and symbol_feature_set.cross_asset_features is not None and not symbol_feature_set.cross_asset_features.empty:
+                individual_feature_dfs.append(symbol_feature_set.cross_asset_features)
+                individual_feature_counts['cross_asset'] = len(symbol_feature_set.cross_asset_features.columns)
             
             # Add engineered features
-            if hasattr(feature_set, 'engineered_features') and feature_set.engineered_features is not None and not feature_set.engineered_features.empty:
-                feature_dfs.append(feature_set.engineered_features)
-                feature_counts['engineered'] = len(feature_set.engineered_features.columns)
+            if hasattr(symbol_feature_set, 'engineered_features') and symbol_feature_set.engineered_features is not None and not symbol_feature_set.engineered_features.empty:
+                individual_feature_dfs.append(symbol_feature_set.engineered_features)
+                individual_feature_counts['engineered'] = len(symbol_feature_set.engineered_features.columns)
             
-            if not feature_dfs:
-                logger.error(f"No valid feature DataFrames found for symbol {symbol}")
+            if not individual_feature_dfs:
+                logger.error(f"[UNIVERSAL_FEATURES] No valid individual feature DataFrames found for symbol {symbol}")
                 return None
             
             # Combine individual features
-            symbol_df = pd.concat(feature_dfs, axis=1)
-            total_individual_features = sum(feature_counts.values())
-            logger.info(f"[{symbol}] Combined individual features: {total_individual_features} columns")
+            individual_df = pd.concat(individual_feature_dfs, axis=1)
+            total_individual_features = sum(individual_feature_counts.values())
+            logger.info(f"[UNIVERSAL_FEATURES] {symbol}: Individual features: {total_individual_features} columns")
+            logger.info(f"[UNIVERSAL_FEATURES] {symbol}: Feature breakdown: {individual_feature_counts}")
             
-            # Step 3: Get universal features using the same approach as training
-            try:
-                # Get all trading symbols from data pipeline (the 9 symbols we're trading)
-                # This ensures we generate features for all symbols, matching the training data
-                if self.data_pipeline:
-                    all_symbols = self.data_pipeline.get_ticker_universe()
-                elif hasattr(self.universal_feature_engineering, '_symbol_mappings'):
-                    all_symbols = list(self.universal_feature_engineering._symbol_mappings.keys())
-                else:
-                    # Fallback to current symbol only (this will cause feature mismatch)
-                    all_symbols = [symbol]
-                    logger.warning(f"Using fallback single symbol {symbol} - this may cause feature dimension mismatch")
+            # Add cross-symbol features
+            cross_symbol_df = universal_features.cross_symbol_features
+            if not cross_symbol_df.empty:
+                # Align cross-symbol features with individual features by index
+                aligned_cross_symbol = cross_symbol_df.reindex(individual_df.index)
+                individual_df = pd.concat([individual_df, aligned_cross_symbol], axis=1)
+                logger.info(f"[UNIVERSAL_FEATURES] {symbol}: Added {len(cross_symbol_df.columns)} cross-symbol features")
                 
-                logger.info(f"[{symbol}] Using {len(all_symbols)} symbols for universal features: {all_symbols}")
-                
-                # Engineer universal features for all symbols (same as training)
-                # Use training_mode=True to ensure sufficient historical data for all features
-                universal_features = await self.universal_feature_engineering.engineer_universal_features(
-                    symbols=all_symbols,
-                    start_date=market_data.index[0].to_pydatetime(),
-                    end_date=market_data.index[-1].to_pydatetime(),
-                    training_mode=True  # Use training mode to ensure full feature generation
-                )
-                
-                # Get the individual symbol's features from universal features
-                if symbol not in universal_features.symbol_features:
-                    logger.error(f"Symbol {symbol} not found in universal features")
-                    raise ValueError(f"Symbol {symbol} not in universal features")
-                
-                # Get individual symbol features
-                symbol_feature_set = universal_features.symbol_features[symbol]
-                
-                # Combine individual symbol features (same as training)
-                individual_feature_dfs = []
-                individual_feature_counts = {}
-                
-                # Add technical features
-                if hasattr(symbol_feature_set, 'technical_features') and symbol_feature_set.technical_features is not None and not symbol_feature_set.technical_features.empty:
-                    individual_feature_dfs.append(symbol_feature_set.technical_features)
-                    individual_feature_counts['technical'] = len(symbol_feature_set.technical_features.columns)
-                
-                # Add market microstructure features
-                if hasattr(symbol_feature_set, 'market_microstructure') and symbol_feature_set.market_microstructure is not None and not symbol_feature_set.market_microstructure.empty:
-                    individual_feature_dfs.append(symbol_feature_set.market_microstructure)
-                    individual_feature_counts['market_microstructure'] = len(symbol_feature_set.market_microstructure.columns)
-                
-                # Add sentiment features
-                if hasattr(symbol_feature_set, 'sentiment_features') and symbol_feature_set.sentiment_features is not None and not symbol_feature_set.sentiment_features.empty:
-                    individual_feature_dfs.append(symbol_feature_set.sentiment_features)
-                    individual_feature_counts['sentiment'] = len(symbol_feature_set.sentiment_features.columns)
-                
-                # Add macro features
-                if hasattr(symbol_feature_set, 'macro_features') and symbol_feature_set.macro_features is not None and not symbol_feature_set.macro_features.empty:
-                    individual_feature_dfs.append(symbol_feature_set.macro_features)
-                    individual_feature_counts['macro'] = len(symbol_feature_set.macro_features.columns)
-                
-                # Add cross-asset features
-                if hasattr(symbol_feature_set, 'cross_asset_features') and symbol_feature_set.cross_asset_features is not None and not symbol_feature_set.cross_asset_features.empty:
-                    individual_feature_dfs.append(symbol_feature_set.cross_asset_features)
-                    individual_feature_counts['cross_asset'] = len(symbol_feature_set.cross_asset_features.columns)
-                
-                # Add engineered features
-                if hasattr(symbol_feature_set, 'engineered_features') and symbol_feature_set.engineered_features is not None and not symbol_feature_set.engineered_features.empty:
-                    individual_feature_dfs.append(symbol_feature_set.engineered_features)
-                    individual_feature_counts['engineered'] = len(symbol_feature_set.engineered_features.columns)
-                
-                if not individual_feature_dfs:
-                    logger.error(f"No valid individual feature DataFrames found for symbol {symbol}")
-                    raise ValueError(f"No individual features for {symbol}")
-                
-                # Combine individual features
-                individual_df = pd.concat(individual_feature_dfs, axis=1)
-                total_individual_features = sum(individual_feature_counts.values())
-                logger.info(f"[{symbol}] Individual features: {total_individual_features} columns")
-                
-                # Add cross-symbol features
-                cross_symbol_df = universal_features.cross_symbol_features
-                if not cross_symbol_df.empty:
-                    # Align cross-symbol features with individual features by index
-                    aligned_cross_symbol = cross_symbol_df.reindex(individual_df.index)
-                    individual_df = pd.concat([individual_df, aligned_cross_symbol], axis=1)
-                    logger.info(f"[{symbol}] Added {len(cross_symbol_df.columns)} cross-symbol features")
-                
-                # Add market regime features
-                regime_df = universal_features.market_regime_features
-                if not regime_df.empty:
-                    # Align regime features with individual features by index
-                    aligned_regime = regime_df.reindex(individual_df.index)
-                    individual_df = pd.concat([individual_df, aligned_regime], axis=1)
-                    logger.info(f"[{symbol}] Added {len(regime_df.columns)} market regime features")
-                
-                # Add sector features
-                sector_df = universal_features.sector_features
-                if not sector_df.empty:
-                    # Align sector features with individual features by index
-                    aligned_sector = sector_df.reindex(individual_df.index)
-                    individual_df = pd.concat([individual_df, aligned_sector], axis=1)
-                    logger.info(f"[{symbol}] Added {len(sector_df.columns)} sector features")
-                
-                # Add universal embeddings
-                embeddings_df = universal_features.universal_embeddings
-                if not embeddings_df.empty:
-                    # Align embeddings with individual features by index
-                    aligned_embeddings = embeddings_df.reindex(individual_df.index)
-                    individual_df = pd.concat([individual_df, aligned_embeddings], axis=1)
-                    logger.info(f"[{symbol}] Added {len(embeddings_df.columns)} universal embedding features")
+                # Log some cross-symbol feature names to verify they're being generated
+                cross_symbol_feature_names = list(cross_symbol_df.columns)
+                logger.info(f"[UNIVERSAL_FEATURES] {symbol}: Cross-symbol features: {cross_symbol_feature_names[:10]}... (showing first 10)")
+            else:
+                logger.warning(f"[UNIVERSAL_FEATURES] {symbol}: ⚠️  NO CROSS-SYMBOL FEATURES GENERATED - this is the root cause of missing features!")
+            
+            # Add market regime features
+            regime_df = universal_features.market_regime_features
+            if not regime_df.empty:
+                # Align regime features with individual features by index
+                aligned_regime = regime_df.reindex(individual_df.index)
+                individual_df = pd.concat([individual_df, aligned_regime], axis=1)
+                logger.info(f"[UNIVERSAL_FEATURES] {symbol}: Added {len(regime_df.columns)} market regime features")
+            
+            # Add sector features
+            sector_df = universal_features.sector_features
+            if not sector_df.empty:
+                # Align sector features with individual features by index
+                aligned_sector = sector_df.reindex(individual_df.index)
+                individual_df = pd.concat([individual_df, aligned_sector], axis=1)
+                logger.info(f"[{symbol}] Added {len(sector_df.columns)} sector features")
+            
+            # Add universal embeddings
+            embeddings_df = universal_features.universal_embeddings
+            if not embeddings_df.empty:
+                # Align embeddings with individual features by index
+                aligned_embeddings = embeddings_df.reindex(individual_df.index)
+                individual_df = pd.concat([individual_df, aligned_embeddings], axis=1)
+                logger.info(f"[{symbol}] Added {len(embeddings_df.columns)} universal embedding features")
                 
                 # Add symbol_id for the current symbol
                 symbol_mappings = universal_features.symbol_mappings
@@ -2507,9 +2458,9 @@ class SignalGenerator:
                 logger.info(f"[{symbol}] Excluded symbol embedding columns ({len(symbol_embedding_cols)}): {symbol_embedding_cols}")
                 logger.info(f"[{symbol}] Final universal feature columns: {len(feature_columns)}")
                 
-            except Exception as e:
-                logger.warning(f"Failed to get universal features for {symbol}: {e}")
-                logger.warning(f"Proceeding with individual features only for {symbol}")
+            # except Exception as e:
+            #     logger.warning(f"Failed to get universal features for {symbol}: {e}")
+            #     logger.warning(f"Proceeding with individual features only for {symbol}")
                 # Fall back to the original individual features approach
                 pass
             

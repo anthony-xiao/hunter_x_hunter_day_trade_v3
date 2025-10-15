@@ -15,7 +15,7 @@ import pytz
 from config import settings
 from database.models import init_db
 from data.data_pipeline import DataPipeline
-from ml.ml_feature_engineering import FeatureEngineering as FeatureEngineer
+from ml.universal_feature_engineering import UniversalFeatureEngineering
 from data.polygon_websocket import websocket_manager
 from ml.universal_trainer import UniversalTrainer
 from ml.universal_feature_engineering import UniversalFeatureEngineering
@@ -26,7 +26,7 @@ from trading.trading_orchestrator import orchestrator, start_event_driven_tradin
 
 # Global instances
 data_pipeline: Optional[DataPipeline] = None
-feature_engineer: Optional[FeatureEngineer] = None
+feature_engineer: Optional[UniversalFeatureEngineering] = None
 model_trainer: Optional[UniversalTrainer] = None
 signal_generator: Optional[SignalGenerator] = None
 execution_engine: Optional[ExecutionEngine] = None
@@ -129,7 +129,7 @@ async def initialize_trading_system():
         # Initialize feature engineer
         logger.info("Initializing feature engineer...")
         from database import db_manager
-        feature_engineer = FeatureEngineer(supabase_client=db_manager.get_supabase_client())
+        feature_engineer = UniversalFeatureEngineering(supabase_client=db_manager.get_supabase_client())
         
         # Initialize universal trainer
         logger.info("Initializing universal trainer...")

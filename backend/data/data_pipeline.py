@@ -1116,46 +1116,81 @@ class DataPipeline:
                 
                 logger.info(f"Downloaded {len(market_data)} market data points for {symbol} from Polygon")
                 
-                # Generate features from the downloaded market data
-                from ml.ml_feature_engineering import FeatureEngineering
+                # Generate features from the downloaded market data using universal feature engineering
+                from ml.universal_feature_engineering import UniversalFeatureEngineering
                 from database import db_manager
-                feature_engineer = FeatureEngineering(supabase_client=db_manager.get_supabase_client(), data_pipeline=self)
+                feature_engineer = UniversalFeatureEngineering(supabase_client=db_manager.get_supabase_client(), data_pipeline=self)
                 
-                # Engineer features from market data
+                # Engineer universal features for all symbols to generate cross-symbol features
                 start_date = market_data.index.min()
                 end_date = market_data.index.max()
-                feature_set = await feature_engineer.engineer_features(
-                    symbol=symbol,
+                
+                # CRITICAL FIX: Use complete ticker universe to generate cross-symbol features
+                # This matches the training process and ensures cross-symbol features are available
+                all_symbols = self.get_ticker_universe()
+                logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Using {len(all_symbols)} symbols for universal features: {all_symbols}")
+                
+                universal_feature_set = await feature_engineer.engineer_universal_features(
+                    symbols=all_symbols,
                     start_date=start_date,
-                    end_date=end_date
+                    end_date=end_date,
+                    training_mode=True  # Use training mode for comprehensive feature generation
                 )
+                
+                # Extract features for the current symbol from the universal feature set
+                if symbol not in universal_feature_set.symbol_features:
+                    logger.error(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Symbol not found in universal feature set")
+                    return 0
+                
+                feature_set = universal_feature_set.symbol_features[symbol]
                 
                 # Combine all feature categories from FeatureSet
                 feature_dfs = []
                 if hasattr(feature_set, 'technical_features') and not feature_set.technical_features.empty:
                     feature_dfs.append(feature_set.technical_features)
-                    logger.info(f"Technical features: {len(feature_set.technical_features.columns)} columns")
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Technical features: {len(feature_set.technical_features.columns)} columns")
                 if hasattr(feature_set, 'market_microstructure') and not feature_set.market_microstructure.empty:
                     feature_dfs.append(feature_set.market_microstructure)
-                    logger.info(f"Market microstructure features: {len(feature_set.market_microstructure.columns)} columns")
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Market microstructure features: {len(feature_set.market_microstructure.columns)} columns")
                 if hasattr(feature_set, 'sentiment_features') and not feature_set.sentiment_features.empty:
                     feature_dfs.append(feature_set.sentiment_features)
-                    logger.info(f"Sentiment features: {len(feature_set.sentiment_features.columns)} columns")
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Sentiment features: {len(feature_set.sentiment_features.columns)} columns")
                 if hasattr(feature_set, 'macro_features') and not feature_set.macro_features.empty:
                     feature_dfs.append(feature_set.macro_features)
-                    logger.info(f"Macro features: {len(feature_set.macro_features.columns)} columns")
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Macro features: {len(feature_set.macro_features.columns)} columns")
                 if hasattr(feature_set, 'cross_asset_features') and not feature_set.cross_asset_features.empty:
                     feature_dfs.append(feature_set.cross_asset_features)
-                    logger.info(f"Cross-asset features: {len(feature_set.cross_asset_features.columns)} columns")
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Cross-asset features: {len(feature_set.cross_asset_features.columns)} columns")
                 if hasattr(feature_set, 'engineered_features') and not feature_set.engineered_features.empty:
                     feature_dfs.append(feature_set.engineered_features)
-                    logger.info(f"Engineered features: {len(feature_set.engineered_features.columns)} columns")
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Engineered features: {len(feature_set.engineered_features.columns)} columns")
+                
+                # Add cross-symbol features from universal feature set
+                if not universal_feature_set.cross_symbol_features.empty:
+                    # Align cross-symbol features with the symbol's timestamps
+                    aligned_cross_features = universal_feature_set.cross_symbol_features.reindex(feature_set.technical_features.index)
+                    feature_dfs.append(aligned_cross_features)
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Cross-symbol features: {len(universal_feature_set.cross_symbol_features.columns)} columns")
+                
+                # Add market regime features from universal feature set
+                if not universal_feature_set.market_regime_features.empty:
+                    # Align market regime features with the symbol's timestamps
+                    aligned_regime_features = universal_feature_set.market_regime_features.reindex(feature_set.technical_features.index)
+                    feature_dfs.append(aligned_regime_features)
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Market regime features: {len(universal_feature_set.market_regime_features.columns)} columns")
+                
+                # Add sector features from universal feature set
+                if not universal_feature_set.sector_features.empty:
+                    # Align sector features with the symbol's timestamps
+                    aligned_sector_features = universal_feature_set.sector_features.reindex(feature_set.technical_features.index)
+                    feature_dfs.append(aligned_sector_features)
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Sector features: {len(universal_feature_set.sector_features.columns)} columns")
                 
                 if feature_dfs:
                     features_df = pd.concat(feature_dfs, axis=1)
-                    logger.info(f"Combined features: {len(features_df.columns)} total columns")
+                    logger.info(f"[BOOTSTRAP_UNIVERSAL] {symbol}: Combined features: {len(features_df.columns)} total columns")
                 else:
-                    logger.warning("No features generated from ML FeatureEngineering")
+                    logger.warning(f"[BOOTSTRAP_UNIVERSAL] {symbol}: No features generated from universal feature engineering")
                     features_df = pd.DataFrame()
                 
                 if features_df is None or len(features_df) == 0:
@@ -1164,16 +1199,71 @@ class DataPipeline:
                 
                 logger.info(f"Generated {len(features_df)} features for {symbol} from downloaded data")
                 
-                # Cache the newly generated features
-                # logger.info(f"[BOOTSTRAP_DEBUG] {symbol}: features_df has {len(features_df.columns)} columns: {list(features_df.columns)[:10]}...")
-                
-                for timestamp, row in features_df.iterrows():
-                    # Convert row to dictionary, excluding NaN values
-                    feature_dict = {k: v for k, v in row.to_dict().items() if pd.notna(v)}
+                # Load selected feature columns from universal metadata
+                try:
+                    import os
+                    metadata_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models', 'universal', 'universal_metadata.json')
                     
-                    # Debug: Log feature count being cached
+                    if os.path.exists(metadata_path):
+                        with open(metadata_path, 'r') as f:
+                            metadata = json.load(f)
+                        
+                        selected_feature_columns = metadata.get('feature_selection', {}).get('selected_feature_columns', [])
+                        
+                        if selected_feature_columns:
+                            # Filter features to only include selected columns
+                            available_selected_features = [col for col in selected_feature_columns if col in features_df.columns]
+                            missing_selected_features = [col for col in selected_feature_columns if col not in features_df.columns]
+                            
+                            logger.info(f"[BOOTSTRAP_FILTER] {symbol}: Found {len(selected_feature_columns)} selected features in metadata")
+                            logger.info(f"[BOOTSTRAP_FILTER] {symbol}: {len(available_selected_features)} selected features available in generated data")
+                            
+                            if missing_selected_features:
+                                logger.warning(f"[BOOTSTRAP_FILTER] {symbol}: Missing {len(missing_selected_features)} selected features: {missing_selected_features[:5]}...")
+                            
+                            if available_selected_features:
+                                # Filter to only selected features
+                                features_df = features_df[available_selected_features]
+                                logger.info(f"[BOOTSTRAP_FILTER] {symbol}: Filtered from 157 to {len(features_df.columns)} selected features for caching")
+                            else:
+                                logger.error(f"[BOOTSTRAP_FILTER] {symbol}: No selected features available in generated data")
+                                return 0
+                        else:
+                            logger.warning(f"[BOOTSTRAP_FILTER] {symbol}: No selected_feature_columns found in metadata, caching all features")
+                    else:
+                        logger.warning(f"[BOOTSTRAP_FILTER] {symbol}: Universal metadata file not found at {metadata_path}, caching all features")
+                        
+                except Exception as metadata_error:
+                    logger.error(f"[BOOTSTRAP_FILTER] {symbol}: Failed to load metadata for feature filtering: {metadata_error}")
+                    logger.warning(f"[BOOTSTRAP_FILTER] {symbol}: Proceeding to cache all generated features")
+                
+                # Cache the filtered features
+                for timestamp, row in features_df.iterrows():
+                    # Convert row to dictionary, handling NaN values appropriately
+                    row_dict = row.to_dict()
+                    feature_dict = {}
+                    nan_features = []
+                    
+                    for k, v in row_dict.items():
+                        if pd.notna(v):
+                            feature_dict[k] = v
+                        else:
+                            # Replace NaN with appropriate default (0.0 for numeric features)
+                            feature_dict[k] = 0.0
+                            nan_features.append(k)
+                    
+                    # Debug: Log feature count and NaN handling
                     if loaded_count == 0:  # Only log for first row to avoid spam
                         logger.info(f"[BOOTSTRAP_DEBUG] {symbol}: Caching {len(feature_dict)} features: {list(feature_dict.keys())[:10]}...")
+                        if nan_features:
+                            logger.info(f"[BOOTSTRAP_NAN] {symbol}: Replaced NaN with 0.0 for {len(nan_features)} features: {nan_features[:5]}{'...' if len(nan_features) > 5 else ''}")
+                        
+                        # Validate that we're caching the expected number of features
+                        expected_count = len(available_selected_features) if 'available_selected_features' in locals() else len(selected_feature_columns)
+                        if len(feature_dict) != expected_count:
+                            logger.warning(f"[BOOTSTRAP_VALIDATION] {symbol}: Expected {expected_count} features but caching {len(feature_dict)} features")
+                        else:
+                            logger.info(f"[BOOTSTRAP_VALIDATION] {symbol}: ✅ Caching expected {len(feature_dict)} features")
                     
                     # Cache the features
                     await self._cache_features(symbol, timestamp, feature_dict)
