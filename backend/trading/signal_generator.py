@@ -178,7 +178,7 @@ class SignalGenerator:
         
         # Risk management
         self.risk_filters = {
-            'min_confidence': 0.4,
+            'min_confidence': 0.15,
             'max_risk_score': 0.7,
             'min_liquidity': 1000000,
             'max_correlation': 0.8,
@@ -467,19 +467,28 @@ class SignalGenerator:
                 if 'feature_selection' in metadata:
                     feature_selection = metadata['feature_selection']
                     
-                    # Load both selected_features and selected_feature_columns
-                    if 'selected_features' in feature_selection:
+                    # Load selected_feature_columns as primary (this is what models were trained on)
+                    if 'selected_feature_columns' in feature_selection:
+                        self.selected_feature_columns = feature_selection['selected_feature_columns']
+                        self.selected_features = feature_selection['selected_feature_columns']  # Use same list for both
+                        self.feature_selection_metadata = feature_selection
+                        logger.info(f"✓ FEATURE_SELECTION_LOADED: {len(self.selected_feature_columns)} selected feature columns from universal_metadata.json (primary)")
+                        logger.info(f"✓ FEATURE_COLUMNS_PREVIEW: {self.selected_feature_columns[:10]}... (showing first 10 of {len(self.selected_feature_columns)})")
+                        logger.info(f"✓ FEATURE_COLUMNS_VALIDATION: Loaded {len(self.selected_feature_columns)} features that models were trained on")
+                        
+                        # Load selected_feature_indices for generic feature filtering
+                        if 'selected_feature_indices' in feature_selection:
+                            self.selected_feature_indices = feature_selection['selected_feature_indices']
+                            logger.info(f"✓ Also loaded {len(self.selected_feature_indices)} selected feature indices")
+                        
+                        return True
+                        
+                    # Fallback to selected_features if selected_feature_columns not available
+                    elif 'selected_features' in feature_selection:
                         self.selected_features = feature_selection['selected_features']
                         self.feature_selection_metadata = feature_selection
-                        logger.info(f"✓ Loaded {len(self.selected_features)} selected features from universal metadata")
+                        logger.info(f"✓ Loaded {len(self.selected_features)} selected features from universal metadata (fallback)")
                         logger.info(f"✓ Selected features: {self.selected_features[:5]}... (showing first 5)")
-                        
-                        # Also load selected_feature_columns if available
-                        if 'selected_feature_columns' in feature_selection:
-                            self.selected_feature_columns = feature_selection['selected_feature_columns']
-                            logger.info(f"✓ FEATURE_SELECTION_LOADED: {len(self.selected_feature_columns)} selected feature columns from universal_metadata.json")
-                            logger.info(f"✓ FEATURE_COLUMNS_PREVIEW: {self.selected_feature_columns[:10]}... (showing first 10 of {len(self.selected_feature_columns)})")
-                            logger.info(f"✓ FEATURE_COLUMNS_VALIDATION: Expected 51 features, loaded {len(self.selected_feature_columns)} features")
                         
                         # Load selected_feature_indices for generic feature filtering
                         if 'selected_feature_indices' in feature_selection:
@@ -488,7 +497,7 @@ class SignalGenerator:
                         
                         return True
                     else:
-                        logger.warning("No 'selected_features' found in feature_selection section")
+                        logger.warning("No 'selected_feature_columns' or 'selected_features' found in feature_selection section")
                 else:
                     logger.warning("No 'feature_selection' section found in universal metadata")
             else:

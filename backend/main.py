@@ -1383,7 +1383,7 @@ async def get_universal_mode_status():
             "universal_trainer_initialized": signal_generator.universal_trainer is not None,
             "universal_architectures_initialized": signal_generator.universal_architectures is not None,
             "universal_feature_engineering_initialized": signal_generator.universal_feature_engineering is not None,
-            "available_model_types": list(signal_generator.universal_models.keys()) if signal_generator.universal_models else [],
+            "available_model_types": [key.value if hasattr(key, 'value') else str(key) for key in signal_generator.universal_models.keys()] if signal_generator.universal_models else [],
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         

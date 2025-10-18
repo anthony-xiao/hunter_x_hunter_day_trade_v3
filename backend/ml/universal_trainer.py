@@ -87,10 +87,10 @@ class ModelPerformance:
 class UniversalTrainingConfig:
     """Configuration for universal statistical model training phases"""
     # Phase 1: Universal Base Model Training
-    base_training_window: int = 12  # months of training data
-    # base_training_window: int = 1  # months of training data
-    base_validation_window: int = 3  # months of validation data
-    # base_validation_window: int = 0.5  # months of validation data
+    # base_training_window: int = 12  # months of training data
+    base_training_window: int = 1  # months of training data
+    # base_validation_window: int = 3  # months of validation data
+    base_validation_window: int = 0.5  # months of validation data
     base_lookback_window: int = 30  # minutes of lookback for features
     base_validation_split: float = 0.2
     
@@ -2709,17 +2709,46 @@ class UniversalTrainer:
         logger.info(f"Total score for normalization: {total_score:.4f}")
         
         if total_score > 0:
-            self.ensemble_weights = {model: float(score / total_score) for model, score in adjusted_scores.items()}
-            logger.info("Weights calculated using profit-based normalization")
+            # CRITICAL FIX: Exclude ModelType.ENSEMBLE from ensemble_weights
+            # Ensemble weights should only contain base models (XGBoost, Random Forest, SVM)
+            # not the ensemble model itself, which would create circular dependency
+            filtered_scores = {model: score for model, score in adjusted_scores.items() 
+                             if model != ModelType.ENSEMBLE}
+            filtered_total = sum(filtered_scores.values())
+            
+            if filtered_total > 0:
+                self.ensemble_weights = {model: float(score / filtered_total) for model, score in filtered_scores.items()}
+                logger.info("Weights calculated using profit-based normalization (excluding ENSEMBLE)")
+                logger.info(f"Excluded ModelType.ENSEMBLE from ensemble weights calculation")
+            else:
+                # Fallback to base models only
+                base_models = {model: score for model, score in adjusted_scores.items() 
+                              if model in [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM]}
+                if base_models:
+                    num_base_models = len(base_models)
+                    self.ensemble_weights = {model: float(1.0 / num_base_models) for model in base_models.keys()}
+                    logger.warning(f"Using equal weights for base models only ({1.0/num_base_models:.4f})")
+                else:
+                    self.ensemble_weights = {}
+                    logger.error("No base models available for ensemble weights")
         else:
-            # Equal weights if no valid scores
-            num_models = len(model_scores)
-            self.ensemble_weights = {model: float(1.0 / num_models) for model in model_scores.keys()}
-            logger.warning(f"Using equal weights ({1.0/num_models:.4f}) because total_score={total_score}")
+            # Equal weights if no valid scores - only for base models
+            base_model_scores = {model: score for model, score in model_scores.items() 
+                               if model in [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM]}
+            if base_model_scores:
+                num_models = len(base_model_scores)
+                self.ensemble_weights = {model: float(1.0 / num_models) for model in base_model_scores.keys()}
+                logger.warning(f"Using equal weights for base models only ({1.0/num_models:.4f}) because total_score={total_score}")
+            else:
+                self.ensemble_weights = {}
+                logger.error("No base models available for ensemble weights")
         
         logger.info(f"\nFinal ensemble weights:")
         for model_type, weight in self.ensemble_weights.items():
             logger.info(f"  {model_type}: {weight:.6f}")
+        
+        # Debug logging to verify key types
+        logger.info(f"Ensemble weights key types: {[(k, type(k).__name__) for k in self.ensemble_weights.keys()]}")
         
         logger.info("=== END PHASE 3 ENSEMBLE WEIGHT CALCULATION DEBUG ===")
         
@@ -2748,9 +2777,10 @@ class UniversalTrainer:
             
             # Create ensemble configuration using optimized weights
             # Log the weights being passed to create_ensemble_model
-            xgb_weight = self.ensemble_weights.get(ModelType.XGBOOST, 0.0)
-            rf_weight = self.ensemble_weights.get(ModelType.RANDOM_FOREST, 0.0)
-            svm_weight = self.ensemble_weights.get(ModelType.SVM, 0.0)
+            # Use string keys to match how ensemble_weights are stored
+            xgb_weight = self.ensemble_weights.get('xgboost', 0.0)
+            rf_weight = self.ensemble_weights.get('random_forest', 0.0)
+            svm_weight = self.ensemble_weights.get('svm', 0.0)
             
             logger.info(f"Passing optimized weights to create_ensemble_model:")
             logger.info(f"  xgb_weight: {xgb_weight:.6f}")
@@ -2782,10 +2812,11 @@ class UniversalTrainer:
                 ensemble_model['models']['svm'] = self.base_models[ModelType.SVM]
             
             # Update ensemble weights with optimized values
+            # Use string keys to match how ensemble_weights are stored
             ensemble_model['weights'] = {
-                'xgboost': self.ensemble_weights.get(ModelType.XGBOOST, 0.0),
-                'random_forest': self.ensemble_weights.get(ModelType.RANDOM_FOREST, 0.0),
-                'svm': self.ensemble_weights.get(ModelType.SVM, 0.0)
+                'xgboost': self.ensemble_weights.get('xgboost', 0.0),
+                'random_forest': self.ensemble_weights.get('random_forest', 0.0),
+                'svm': self.ensemble_weights.get('svm', 0.0)
             }
             
             # Store the ensemble model in base_models for saving and future use
@@ -2905,6 +2936,11 @@ class UniversalTrainer:
         """
         logger.info(f"Starting universal training for {len(symbols)} symbols")
         
+        # Clear any existing base models to ensure fresh training
+        logger.debug(f"Clearing self.base_models before universal training. Previous count: {len(self.base_models)}")
+        self.base_models = {}
+        logger.debug("self.base_models cleared - starting universal training with fresh models")
+        
         # DEBUG: Check what's in self.base_models at the very start
         logger.info(f"DEBUG - START OF TRAINING: self.base_models keys: {list(self.base_models.keys())}")
         logger.info(f"DEBUG - START OF TRAINING: self.base_models empty: {len(self.base_models) == 0}")
@@ -2973,7 +3009,7 @@ class UniversalTrainer:
                 'training_date_range': {'start': start_date, 'end': end_date},
                 
                 # Add models_trained field for main.py validation check
-                'models_trained': list(self.base_models.keys()) if self.base_models else [],
+                'models_trained': [key.value if hasattr(key, 'value') else str(key) for key in self.base_models.keys()] if self.base_models else [],
                 
                 # Statistical Model Performance Metrics
                 'statistical_models': {
@@ -3031,7 +3067,7 @@ class UniversalTrainer:
                 'phase2_results': phase2_results,  # Empty as Phase 2 is disabled
                 'ensemble_weights': ensemble_weights,
                 'model_summary': {
-                    'base_models': list(self.base_models.keys()),
+                    'base_models': [key.value if hasattr(key, 'value') else str(key) for key in self.base_models.keys()],
                     'total_statistical_models': len(self.base_models),
                     'neural_network_models': 0  # No longer using neural networks
                 }
@@ -3060,6 +3096,13 @@ class UniversalTrainer:
         base_dir = save_dir / "base_models"
         base_dir.mkdir(exist_ok=True)
         
+        # Create ensemble directory for compatibility with signal_generator.py
+        ensemble_dir = base_dir / "ensemble_base_ensemble"
+        ensemble_dir.mkdir(exist_ok=True)
+        
+        # Collect scalers from models for saving
+        scalers_dict = {}
+        
         for model_type, model in self.base_models.items():
             logger.info(f"Saving base {model_type} statistical model...")
             
@@ -3086,15 +3129,63 @@ class UniversalTrainer:
                     
             except Exception as e:
                 logger.error(f"Base {model_type} - Model validation FAILED: {e}")
+            
+            # Extract scalers from models
+            if model_type == ModelType.SVM and hasattr(model, 'feature_scaler'):
+                scalers_dict['svm'] = model.feature_scaler
+                logger.info(f"✓ Extracted SVM scaler for saving")
+            elif model_type == ModelType.ENSEMBLE and isinstance(model, dict):
+                # Handle ensemble model - extract scalers from individual models
+                if 'models' in model:
+                    ensemble_models = model['models']
+                    if 'svm' in ensemble_models and hasattr(ensemble_models['svm'], 'feature_scaler'):
+                        scalers_dict['svm'] = ensemble_models['svm'].feature_scaler
+                        logger.info(f"✓ Extracted SVM scaler from ensemble for saving")
+                    
+                    # Create default scalers for XGBoost and Random Forest for consistency
+                    if 'xgboost' in ensemble_models:
+                        scalers_dict['xgboost'] = StandardScaler()
+                        logger.info(f"✓ Created default XGBoost scaler for consistency")
+                    if 'random_forest' in ensemble_models:
+                        scalers_dict['random_forest'] = StandardScaler()
+                        logger.info(f"✓ Created default Random Forest scaler for consistency")
+            else:
+                # Create default scaler for non-SVM models
+                # Handle both string and ModelType enum cases
+                model_name = model_type.value.lower() if hasattr(model_type, 'value') else model_type.lower()
+                scalers_dict[model_name] = StandardScaler()
+                logger.info(f"✓ Created default {model_type} scaler for consistency")
                 
             # Save the statistical model using joblib
             try:
-                model_path = base_dir / f"{model_type}_base.joblib"
-                self.universal_architectures.save_statistical_model(model, model_path)
+                # Handle both string and ModelType enum cases
+                model_name = model_type.value.lower() if hasattr(model_type, 'value') else model_type.lower()
+                model_path = base_dir / f"{model_name}_base.joblib"
+                joblib.dump(model, model_path)
                 logger.info(f"✓ Successfully saved base {model_type} model to {model_path}")
+                
+                # Also save to ensemble directory for signal_generator compatibility
+                ensemble_model_path = ensemble_dir / f"{model_name}.joblib"
+                joblib.dump(model, ensemble_model_path)
+                logger.info(f"✓ Successfully saved {model_type} model to ensemble directory: {ensemble_model_path}")
             except Exception as e:
                 logger.error(f"✗ Failed to save base {model_type} model: {e}")
                 raise
+        
+        # Create universal scaler if no specific scalers were found
+        if not scalers_dict:
+            scalers_dict['universal'] = StandardScaler()
+            logger.info("✓ Created universal default scaler")
+        
+        # Save scalers dictionary to ensemble directory for signal_generator.py
+        try:
+            scalers_path = ensemble_dir / "scalers.joblib"
+            joblib.dump(scalers_dict, scalers_path)
+            logger.info(f"✓ Successfully saved scalers dictionary to {scalers_path}")
+            logger.info(f"  - Scalers saved: {list(scalers_dict.keys())}")
+        except Exception as e:
+            logger.error(f"✗ Failed to save scalers: {e}")
+            raise
         
         # Save symbol-specific models (if any exist)
         symbol_dir = save_dir / "symbol_models"
@@ -3150,7 +3241,7 @@ class UniversalTrainer:
                 'symbol_to_id': self.symbol_to_id,
                 'id_to_symbol': self.id_to_symbol
             },
-            'ensemble_weights': self.ensemble_weights,
+            'ensemble_weights': {k: v for k, v in self.ensemble_weights.items() if k != 'ensemble'},
             'config': {
                 'symbol_embedding_dim': getattr(self.config, 'symbol_embedding_dim', 32),
                 'num_symbols': len(self.symbol_to_id) if hasattr(self, 'symbol_to_id') else 0,
@@ -4249,6 +4340,11 @@ class UniversalTrainer:
             Dict containing training results and model information
         """
         logger.info("Starting Phase 1: Universal Base Training with Statistical Models")
+        
+        # Clear any existing base models to ensure fresh training
+        logger.debug(f"Clearing self.base_models before Phase 1 training. Previous count: {len(self.base_models)}")
+        self.base_models = {}
+        logger.debug("self.base_models cleared - starting with fresh models")
         
         # Initialize results dictionary
         results = {

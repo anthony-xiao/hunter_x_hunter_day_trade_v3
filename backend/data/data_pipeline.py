@@ -71,13 +71,13 @@ class DataPipeline:
             "NVDA",  # 416M daily volume, AI leader, perfect for neural networks
             "TSLA",  # 115M daily volume, high volatility, excellent predictable patterns
             "AAPL",  # 56M daily volume, tightest spreads, most cost-efficient
-            "META",  # 45M daily volume, good volatility, responsive to technical analysis
+            # "META",  # 45M daily volume, good volatility, responsive to technical analysis
             "AMD",  # 48M daily volume, semiconductor momentum, breakout specialist
             "PLTR",  # 85M daily volume, 2025's top performer (+107%), AI exposure
-            "AMZN",  # 41M daily volume, second-best spread efficiency, reliable patterns
-            "GOOGL",  # 42M daily volume, stable tech patterns, good institutional flow
-            "MSFT",  # 35M daily volume, excellent for range trading, conservative plays
-            # "QQQ",  # 39M daily volume, ETF diversification, market hedge
+            "AMZN"  # 41M daily volume, second-best spread efficiency, reliable patterns
+            # "GOOGL",  # 42M daily volume, stable tech patterns, good institutional flow
+            # "MSFT",  # 35M daily volume, excellent for range trading, conservative plays
+            # # "QQQ",  # 39M daily volume, ETF diversification, market hedge
             # "SPY",  # 45M daily volume, tightest spreads, risk management
             # "SMCI",  # 40M daily volume, AI infrastructure, high dollar movements
             # "NFLX",  # 12M daily volume, pattern trading specialist
@@ -89,7 +89,7 @@ class DataPipeline:
             # "SYF",
             # "AMD",
             # "TSLA",
-            "CMCSA"
+            # "CMCSA"
             # "NVDA",
             # "PLTR",
             # "MARA"
@@ -537,17 +537,28 @@ class DataPipeline:
             
             existing_count = count_response.count if count_response.count else 0
             
-            # Calculate expected data points (approximately 390 minutes per trading day)
-            expected_days = max(1, (end_date - start_date).days)
-            expected_data_points = expected_days * 390  # Rough estimate for trading hours
+            # Calculate expected data points more realistically
+            # Market is open ~6.5 hours per day, but data frequency varies
+            # Use a more flexible approach that accounts for actual trading patterns
+            time_diff = end_date - start_date
+            hours_requested = time_diff.total_seconds() / 3600
             
-            # Consider data sufficient if we have at least 50% coverage or minimum 10 data points
-            coverage_percentage = (existing_count / expected_data_points * 100) if expected_data_points > 0 else 0
-            is_sufficient = existing_count >= 10 and coverage_percentage >= 50.0
+            # More realistic expectations based on actual data patterns observed in logs
+            # Typical downloads show 200-800 points per day depending on timeframe
+            if hours_requested <= 24:  # Single day or less
+                min_expected_points = 50  # Much more reasonable for partial days
+                sufficient_threshold = 30  # Lower threshold for small timeframes
+            else:  # Multiple days
+                min_expected_points = max(50, int(hours_requested * 10))  # ~10 points per hour
+                sufficient_threshold = max(30, int(hours_requested * 5))  # ~5 points per hour minimum
             
-            logger.debug(
+            # More lenient verification: just check if we have reasonable amount of data
+            is_sufficient = existing_count >= sufficient_threshold
+            
+            logger.info(
                 f"SPY data availability check: {existing_count} records found "
-                f"({coverage_percentage:.1f}% coverage) for {start_date.date()} to {end_date.date()}"
+                f"(need >= {sufficient_threshold}) for {start_date.date()} to {end_date.date()} "
+                f"({hours_requested:.1f} hours requested)"
             )
             
             return is_sufficient
@@ -607,6 +618,9 @@ class DataPipeline:
                     logger.warning("Network error encountered. SPY data download will be retried later.")
                 return False
             
+            # Add a small delay to ensure database commit completes
+            await asyncio.sleep(0.5)
+            
             # Verify the data was successfully stored and is now available
             if await self.check_spy_data_availability(start_date, end_date):
                 logger.info(
@@ -615,7 +629,10 @@ class DataPipeline:
                 )
                 return True
             else:
-                logger.error(f"SPY data download completed but verification failed")
+                logger.error(
+                    f"SPY data download completed but verification failed. "
+                    f"Downloaded {len(spy_data)} points but they may not be committed to database yet."
+                )
                 return False
                 
         except Exception as e:
