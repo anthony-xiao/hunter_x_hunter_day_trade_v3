@@ -1657,21 +1657,47 @@ class SignalGenerator:
                 predicted_return = -0.02  # Expect small loss to avoid larger loss
                 logger.info(f"Forced sell signal for {symbol}: {force_sell_reason}")
             else:
-                # Normal prediction-based signal generation with enhanced thresholds
+                # Normal prediction-based signal generation with tuned thresholds when available
+                # Determine dynamic buy threshold from trained models (prefer ensemble)
+                tuned_thr = None
+                try:
+                    # Prefer universal metadata thresholds
+                    meta_path = Path('/Users/anthonyxiao/Dev/hunter_x_hunter_day_trade_v3/backend/models/universal/universal_metadata.json')
+                    if meta_path.exists():
+                        with open(meta_path, 'r') as f:
+                            meta = json.load(f)
+                        opt = meta.get('optimal_thresholds', {})
+                        tuned_thr = opt.get('ensemble', None) or opt.get('xgboost', None) or opt.get('random_forest', None) or opt.get('svm', None)
+                    
+                    # Fallback to in-memory models
+                    if tuned_thr is None and self.is_universal_mode and self.universal_models:
+                        ensemble_model = self.universal_models.get(ModelType.ENSEMBLE)
+                        if isinstance(ensemble_model, dict):
+                            tuned_thr = ensemble_model.get('optimal_threshold', None)
+                        if tuned_thr is None:
+                            for mt, mdl in self.universal_models.items():
+                                if mt != ModelType.ENSEMBLE and hasattr(mdl, 'optimal_threshold'):
+                                    tuned_thr = getattr(mdl, 'optimal_threshold')
+                                    break
+                except Exception:
+                    tuned_thr = None
+                dynamic_buy_threshold = tuned_thr if tuned_thr is not None else self.signal_thresholds['buy_threshold']
+                dynamic_strong_buy_threshold = max(self.signal_thresholds['strong_buy_threshold'], dynamic_buy_threshold + 0.10)
+                
                 logger.info(f"Threshold checking for {symbol}: prediction={prediction:.4f}, "
-                           f"buy_threshold={self.signal_thresholds['buy_threshold']}, "
+                           f"buy_threshold={dynamic_buy_threshold}, "
                            f"sell_threshold={self.signal_thresholds['sell_threshold']}, "
-                           f"strong_buy_threshold={self.signal_thresholds['strong_buy_threshold']}, "
+                           f"strong_buy_threshold={dynamic_strong_buy_threshold}, "
                            f"strong_sell_threshold={self.signal_thresholds['strong_sell_threshold']}")
                 
-                if prediction >= self.signal_thresholds['strong_buy_threshold']:
+                if prediction >= dynamic_strong_buy_threshold:
                     action = SignalType.BUY.value
                     signal_strength = "strong"
-                    logger.info(f"Signal decision for {symbol}: STRONG BUY (prediction {prediction:.4f} >= {self.signal_thresholds['strong_buy_threshold']})")
-                elif prediction >= self.signal_thresholds['buy_threshold']:
+                    logger.info(f"Signal decision for {symbol}: STRONG BUY (prediction {prediction:.4f} >= {dynamic_strong_buy_threshold})")
+                elif prediction >= dynamic_buy_threshold:
                     action = SignalType.BUY.value
                     signal_strength = "moderate"
-                    logger.info(f"Signal decision for {symbol}: MODERATE BUY (prediction {prediction:.4f} >= {self.signal_thresholds['buy_threshold']})")
+                    logger.info(f"Signal decision for {symbol}: MODERATE BUY (prediction {prediction:.4f} >= {dynamic_buy_threshold})")
                 elif prediction <= self.signal_thresholds['strong_sell_threshold'] and has_long_position:
                     action = SignalType.SELL.value
                     signal_strength = "strong"

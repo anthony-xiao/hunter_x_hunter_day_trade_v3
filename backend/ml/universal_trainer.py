@@ -87,10 +87,10 @@ class ModelPerformance:
 class UniversalTrainingConfig:
     """Configuration for universal statistical model training phases"""
     # Phase 1: Universal Base Model Training
-    # base_training_window: int = 12  # months of training data
-    base_training_window: int = 1  # months of training data
-    # base_validation_window: int = 3  # months of validation data
-    base_validation_window: int = 0.5  # months of validation data
+    base_training_window: int = 12  # months of training data
+    # base_training_window: int = 1  # months of training data
+    base_validation_window: int = 3  # months of validation data
+    # base_validation_window: int = 0.5  # months of validation data
     base_lookback_window: int = 30  # minutes of lookback for features
     base_validation_split: float = 0.2
     
@@ -215,6 +215,9 @@ class UniversalTrainer:
         # Initialize class imbalance mitigation
         if self.config.imbalance_config is None:
             self.config.imbalance_config = ImbalanceConfig()
+        
+        # Disable SMOTE for minute-level trading
+        self.config.imbalance_config.enable_smote = False
         
         self.imbalance_mitigator = ClassImbalanceMitigator(self.config.imbalance_config) if self.config.enable_imbalance_mitigation else None
         
@@ -2965,7 +2968,7 @@ class UniversalTrainer:
                 symbols=symbols,
                 start_date=start_date,
                 end_date=end_date,
-                enable_smote=self.config.enable_imbalance_mitigation,
+                enable_smote=False,
                 force_2d_for_statistical=True  # Enforce 2D data pipeline for statistical models
             )
             phase1_results = await self.phase1_universal_base_training(
@@ -3298,6 +3301,12 @@ class UniversalTrainer:
                 'ensemble_profit_pct': getattr(self, 'ensemble_profit_pct', 0.0),  # Ensemble profit performance
                 'prediction_confidence_threshold': getattr(self.config, 'prediction_confidence_threshold', 0.6)
             },
+            'optimal_thresholds': {
+                'ensemble': (self.base_models.get(ModelType.ENSEMBLE).get('optimal_threshold') if (ModelType.ENSEMBLE in self.base_models and isinstance(self.base_models.get(ModelType.ENSEMBLE), dict)) else None),
+                'xgboost': (getattr(self.base_models.get(ModelType.XGBOOST), 'optimal_threshold', None) if ModelType.XGBOOST in self.base_models else None),
+                'random_forest': (getattr(self.base_models.get(ModelType.RANDOM_FOREST), 'optimal_threshold', None) if ModelType.RANDOM_FOREST in self.base_models else None),
+                'svm': (getattr(self.base_models.get(ModelType.SVM), 'optimal_threshold', None) if ModelType.SVM in self.base_models else None)
+            },
             'training_data_stats': {
                 'training_start_date': getattr(self, 'training_start_date', None),
                 'training_end_date': getattr(self, 'training_end_date', None),
@@ -3354,7 +3363,8 @@ class UniversalTrainer:
         pbar = tqdm(total=100, desc=f"CV Training {model_type.value}", unit="%")
         pbar.update(5)  # Initial setup complete
         
-        kf = KFold(n_splits=n_folds, shuffle=True, random_state=self.config.random_state)
+        from sklearn.model_selection import TimeSeriesSplit
+        tss = TimeSeriesSplit(n_splits=n_folds)
         
         cv_scores = []
         cv_models = []
@@ -3363,7 +3373,7 @@ class UniversalTrainer:
         feature_dim = X_train.shape[1]
         fold_progress_step = 60 // n_folds  # Allocate 60% of progress to CV folds
         
-        for fold, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+        for fold, (train_idx, val_idx) in enumerate(tss.split(X_train)):
             pbar.set_description(f"CV Training {model_type.value} - Fold {fold + 1}/{n_folds}")
             X_fold_train, X_fold_val = X_train[train_idx], X_train[val_idx]
             y_fold_train, y_fold_val = y_train[train_idx], y_train[val_idx]
@@ -3376,7 +3386,23 @@ class UniversalTrainer:
                     model_name=f"universal_{model_type.value}_fold_{fold}"
                 )
                 eval_set = [(X_fold_train, y_fold_train), (X_fold_val, y_fold_val)]
-                fold_model.fit(X_fold_train, y_fold_train, eval_set=eval_set, verbose=False)
+                # Imbalance handling for XGBoost per fold
+                pos = int(np.sum(y_fold_train))
+                neg = int(len(y_fold_train) - pos)
+                spw = neg / max(1, pos)
+                fold_model.set_params(scale_pos_weight=spw, eval_metric='aucpr')
+                # Robust early stopping across XGBoost versions
+                import inspect
+                import xgboost as xgb
+                fit_params = inspect.signature(fold_model.fit).parameters
+                fit_kwargs = {'eval_set': eval_set}
+                if 'callbacks' in fit_params:
+                    fit_kwargs['callbacks'] = [xgb.callback.EarlyStopping(rounds=50, save_best=True)]
+                elif 'early_stopping_rounds' in fit_params:
+                    fit_kwargs['early_stopping_rounds'] = 50
+                if 'verbose' in fit_params:
+                    fit_kwargs['verbose'] = False
+                fold_model.fit(X_fold_train, y_fold_train, **fit_kwargs)
                 
             elif model_type == ModelType.RANDOM_FOREST:
                 fold_model = self.universal_architectures.create_universal_random_forest(
@@ -3489,6 +3515,11 @@ class UniversalTrainer:
                 config=config.parameters,
                 model_name=f"universal_{model_type.value}_final"
             )
+            # Imbalance handling for final XGBoost model
+            pos = int(np.sum(y_train))
+            neg = int(len(y_train) - pos)
+            spw = neg / max(1, pos)
+            final_model.set_params(scale_pos_weight=spw, eval_metric='aucpr')
             final_model.fit(X_train, y_train, verbose=False)
             
         elif model_type == ModelType.RANDOM_FOREST:
@@ -3497,7 +3528,10 @@ class UniversalTrainer:
                 config=config.parameters,
                 model_name=f"universal_{model_type.value}_final"
             )
-            final_model.fit(X_train, y_train)
+            if hasattr(self, 'class_weights_sklearn') and self.class_weights_sklearn is not None:
+                final_model.fit(X_train, y_train, sample_weight=self.class_weights_sklearn)
+            else:
+                final_model.fit(X_train, y_train)
             
         elif model_type == ModelType.SVM:
             final_model = self.universal_architectures.create_universal_svm(
@@ -3508,7 +3542,10 @@ class UniversalTrainer:
             # Apply feature scaling for SVM - match regular training logic
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
-            final_model.fit(X_train_scaled, y_train)
+            if hasattr(self, 'class_weights_sklearn') and self.class_weights_sklearn is not None:
+                final_model.fit(X_train_scaled, y_train, sample_weight=self.class_weights_sklearn)
+            else:
+                final_model.fit(X_train_scaled, y_train)
             # Store scaler with the model for inference
             final_model.feature_scaler = scaler
             logger.info(f"Applied StandardScaler for final SVM - feature range: [{X_train_scaled.min():.3f}, {X_train_scaled.max():.3f}]")
@@ -3525,6 +3562,11 @@ class UniversalTrainer:
             models = ensemble['models']
             
             # Train XGBoost
+            # Imbalance handling for XGBoost final model
+            pos = int(np.sum(y_train))
+            neg = int(len(y_train) - pos)
+            spw = neg / max(1, pos)
+            models['xgboost'].set_params(scale_pos_weight=spw, eval_metric='aucpr')
             models['xgboost'].fit(X_train, y_train, verbose=False)
             
             # Train Random Forest  
@@ -3533,7 +3575,10 @@ class UniversalTrainer:
             # Train SVM with feature scaling
             svm_scaler = StandardScaler()
             X_train_scaled = svm_scaler.fit_transform(X_train)
-            models['svm'].fit(X_train_scaled, y_train)
+            if hasattr(self, 'class_weights_sklearn') and self.class_weights_sklearn is not None:
+                models['svm'].fit(X_train_scaled, y_train, sample_weight=self.class_weights_sklearn)
+            else:
+                models['svm'].fit(X_train_scaled, y_train)
             # Store scaler with the SVM model for inference (not in models dict to avoid prediction errors)
             models['svm'].feature_scaler = svm_scaler
             
@@ -3580,7 +3625,27 @@ class UniversalTrainer:
         pbar.update(10)  # Calibration complete
         
         # Calculate comprehensive metrics using out-of-fold predictions - match regular training logic
-        cv_predictions_binary = (cv_predictions > 0.5).astype(int)
+        # Tune decision threshold for profit maximization (CV)
+        thresholds = np.linspace(0.15, 0.5, 15)
+        best_thr = 0.5
+        best_profit = -np.inf
+        best_pm = None
+        for thr in thresholds:
+            pm = self._calculate_trading_profits(cv_predictions, y_train, prediction_threshold=float(thr))
+            if pm['total_profit_pct'] > best_profit:
+                best_profit = pm['total_profit_pct']
+                best_thr = float(thr)
+                best_pm = pm
+        # Store tuned threshold on final model
+        try:
+            if model_type == ModelType.ENSEMBLE and isinstance(final_model, dict):
+                final_model['optimal_threshold'] = best_thr
+            else:
+                setattr(final_model, 'optimal_threshold', best_thr)
+        except Exception:
+            pass
+        
+        cv_predictions_binary = (cv_predictions > best_thr).astype(int)
         
         # Basic metrics
         val_accuracy = accuracy_score(y_train, cv_predictions_binary)
@@ -3590,8 +3655,8 @@ class UniversalTrainer:
         val_roc_auc = cv_score
         val_loss = -np.mean(y_train * np.log(cv_predictions + 1e-15) + (1 - y_train) * np.log(1 - cv_predictions + 1e-15))
         
-        # PROFIT-BASED EVALUATION: Calculate trading profits using dual exit strategy
-        profit_metrics = self._calculate_trading_profits(cv_predictions, y_train, prediction_threshold=0.5)
+        # PROFIT-BASED EVALUATION: Calculate trading profits using tuned threshold
+        profit_metrics = best_pm
         
         # DEBUG: Log profit metrics to verify they are calculated correctly
         logger.info(f"DEBUG - Profit metrics calculated for {model_type.value} CV:")
@@ -3671,7 +3736,7 @@ class UniversalTrainer:
         logger.info(f"  - ROC-AUC: {val_roc_auc:.4f} ± {cv_std:.4f}, High Conf Profit Score: {high_conf_accuracy:.4f}")
         logger.info(f"  - Win Rates: 0.5-0.6: {win_rates_by_confidence.get('0.5-0.6', 0.0):.3f}, 0.7-0.8: {win_rates_by_confidence.get('0.7-0.8', 0.0):.3f}, 0.9-1.0: {win_rates_by_confidence.get('0.9-1.0', 0.0):.3f}")
         # Log profit-based metrics
-        logger.info(f"  💰 PROFIT METRICS - Total Profit: {profit_metrics['total_profit_pct']:.4f}%, Trading Win Rate: {profit_metrics['win_rate']:.4f}")
+        logger.info(f"  💰 PROFIT METRICS - Total Profit: {profit_metrics['total_profit_pct']:.4f}%, Trading Win Rate: {profit_metrics['win_rate']:.4f} (threshold={best_thr:.2f})")
         logger.info(f"  📈 Profit Factor: {profit_metrics['profit_factor']:.4f}, Sharpe Ratio: {profit_metrics['sharpe_ratio']:.4f}, Max Drawdown: {profit_metrics['max_drawdown']:.4f}%")
         logger.info(f"  🎯 Total Trades: {profit_metrics['total_trades']}, Profitable: {profit_metrics['profitable_trades']}, Max Consecutive Losses: {profit_metrics['max_consecutive_losses']}")
         
@@ -3720,11 +3785,23 @@ class UniversalTrainer:
             # Train with early stopping
             pbar.set_description(f"Training {model_type.value} model")
             eval_set = [(X_train, y_train), (X_val, y_val)]
-            model.fit(
-                X_train, y_train,
-                eval_set=eval_set,
-                verbose=False
-            )
+            # Imbalance handling and profit-oriented metric for XGBoost
+            pos = int(np.sum(y_train))
+            neg = int(len(y_train) - pos)
+            spw = neg / max(1, pos)
+            model.set_params(scale_pos_weight=spw, eval_metric='aucpr')
+            # Robust early stopping across XGBoost versions
+            import inspect
+            import xgboost as xgb
+            fit_params = inspect.signature(model.fit).parameters
+            fit_kwargs = {'eval_set': eval_set}
+            if 'callbacks' in fit_params:
+                fit_kwargs['callbacks'] = [xgb.callback.EarlyStopping(rounds=50, save_best=True)]
+            elif 'early_stopping_rounds' in fit_params:
+                fit_kwargs['early_stopping_rounds'] = 50
+            if 'verbose' in fit_params:
+                fit_kwargs['verbose'] = False
+            model.fit(X_train, y_train, **fit_kwargs)
             pbar.update(60)  # Training complete
             
         elif model_type == ModelType.RANDOM_FOREST:
@@ -3737,7 +3814,10 @@ class UniversalTrainer:
             pbar.update(20)  # Model creation complete
             
             pbar.set_description(f"Training {model_type.value} model")
-            model.fit(X_train, y_train)
+            if hasattr(self, 'class_weights_sklearn') and self.class_weights_sklearn is not None:
+                model.fit(X_train, y_train, sample_weight=self.class_weights_sklearn)
+            else:
+                model.fit(X_train, y_train)
             pbar.update(60)  # Training complete
             
         elif model_type == ModelType.SVM:
@@ -3761,7 +3841,10 @@ class UniversalTrainer:
             pbar.update(10)  # Scaling complete
             
             pbar.set_description(f"Training {model_type.value} model")
-            model.fit(X_train_scaled, y_train)
+            if hasattr(self, 'class_weights_sklearn') and self.class_weights_sklearn is not None:
+                model.fit(X_train_scaled, y_train, sample_weight=self.class_weights_sklearn)
+            else:
+                model.fit(X_train_scaled, y_train)
             pbar.update(55)  # Training complete
             
         elif model_type == ModelType.ENSEMBLE:
@@ -3780,12 +3863,31 @@ class UniversalTrainer:
             # Train XGBoost
             pbar.set_description(f"Training {model_type.value} XGBoost")
             eval_set = [(X_train, y_train), (X_val, y_val)]
-            models['xgboost'].fit(X_train, y_train, eval_set=eval_set, verbose=False)
+            # Imbalance handling and profit-oriented metric for XGBoost in ensemble
+            pos = int(np.sum(y_train))
+            neg = int(len(y_train) - pos)
+            spw = neg / max(1, pos)
+            models['xgboost'].set_params(scale_pos_weight=spw, eval_metric='aucpr')
+            # Robust early stopping across XGBoost versions
+            import inspect
+            import xgboost as xgb
+            fit_params = inspect.signature(models['xgboost'].fit).parameters
+            fit_kwargs = {'eval_set': eval_set}
+            if 'callbacks' in fit_params:
+                fit_kwargs['callbacks'] = [xgb.callback.EarlyStopping(rounds=50, save_best=True)]
+            elif 'early_stopping_rounds' in fit_params:
+                fit_kwargs['early_stopping_rounds'] = 50
+            if 'verbose' in fit_params:
+                fit_kwargs['verbose'] = False
+            models['xgboost'].fit(X_train, y_train, **fit_kwargs)
             pbar.update(20)  # XGBoost training complete
             
             # Train Random Forest  
             pbar.set_description(f"Training {model_type.value} Random Forest")
-            models['random_forest'].fit(X_train, y_train)
+            if hasattr(self, 'class_weights_sklearn') and self.class_weights_sklearn is not None:
+                models['random_forest'].fit(X_train, y_train, sample_weight=self.class_weights_sklearn)
+            else:
+                models['random_forest'].fit(X_train, y_train)
             pbar.update(20)  # Random Forest training complete
             
             # Train SVM with feature scaling
@@ -3857,8 +3959,28 @@ class UniversalTrainer:
             model = calibrated_model
         pbar.update(5)  # Calibration complete
         
-        # Calculate comprehensive metrics
-        val_predictions_binary = (val_predictions > 0.5).astype(int)
+        # Tune decision threshold for profit maximization
+        thresholds = np.linspace(0.15, 0.5, 15)
+        best_thr = 0.5
+        best_profit = -np.inf
+        best_pm = None
+        for thr in thresholds:
+            pm = self._calculate_trading_profits(val_predictions, y_val, prediction_threshold=float(thr))
+            if pm['total_profit_pct'] > best_profit:
+                best_profit = pm['total_profit_pct']
+                best_thr = float(thr)
+                best_pm = pm
+        # Store tuned threshold on model
+        try:
+            if model_type == ModelType.ENSEMBLE and isinstance(model, dict):
+                model['optimal_threshold'] = best_thr
+            else:
+                setattr(model, 'optimal_threshold', best_thr)
+        except Exception:
+            pass
+        
+        # Calculate comprehensive metrics using tuned threshold
+        val_predictions_binary = (val_predictions > best_thr).astype(int)
         
         # Basic metrics
         val_accuracy = accuracy_score(y_val, val_predictions_binary)
@@ -3868,8 +3990,8 @@ class UniversalTrainer:
         val_roc_auc = roc_auc_score(y_val, val_predictions) if len(np.unique(y_val)) > 1 else 0.0
         val_loss = -np.mean(y_val * np.log(val_predictions + 1e-15) + (1 - y_val) * np.log(1 - val_predictions + 1e-15))
         
-        # PROFIT-BASED EVALUATION: Calculate trading profits using dual exit strategy
-        profit_metrics = self._calculate_trading_profits(val_predictions, y_val, prediction_threshold=0.5)
+        # PROFIT-BASED EVALUATION: Calculate trading profits using tuned threshold
+        profit_metrics = best_pm
         
         # DEBUG: Log profit metrics to verify they are calculated correctly
         logger.info(f"DEBUG - Profit metrics calculated for {model_type.value}:")
