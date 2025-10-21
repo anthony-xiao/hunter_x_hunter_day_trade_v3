@@ -1006,18 +1006,19 @@ class TradingOrchestrator:
                     # Check if signal contains statistical model predictions
                     has_statistical_models = False
                     if hasattr(signal, 'model_predictions') and signal.model_predictions:
-                        statistical_model_types = {ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM, ModelType.ENSEMBLE}
+                        statistical_model_types = {ModelType.LIGHTGBM, ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.ENSEMBLE}
                         signal_model_types = set()
                         
                         # Extract model types from model_predictions
                         for model_name in signal.model_predictions.keys():
-                            if 'xgboost' in model_name.lower() or 'xgb' in model_name.lower():
+                            name_lower = model_name.lower()
+                            if 'lightgbm' in name_lower or 'lgb' in name_lower:
+                                signal_model_types.add(ModelType.LIGHTGBM)
+                            elif 'xgboost' in name_lower or 'xgb' in name_lower:
                                 signal_model_types.add(ModelType.XGBOOST)
-                            elif 'random_forest' in model_name.lower() or 'rf' in model_name.lower():
+                            elif 'random_forest' in name_lower or 'rf' in name_lower:
                                 signal_model_types.add(ModelType.RANDOM_FOREST)
-                            elif 'svm' in model_name.lower():
-                                signal_model_types.add(ModelType.SVM)
-                            elif 'ensemble' in model_name.lower():
+                            elif 'ensemble' in name_lower:
                                 signal_model_types.add(ModelType.ENSEMBLE)
                         
                         has_statistical_models = bool(signal_model_types.intersection(statistical_model_types))

@@ -10,12 +10,8 @@ from enum import Enum
 from .execution_engine import TradeSignal, Position
 from data.data_pipeline import DataPipeline
 
-# Statistical Model Types for Risk Management
-class ModelType(Enum):
-    XGBOOST = "xgboost"
-    RANDOM_FOREST = "random_forest"
-    SVM = "svm"
-    ENSEMBLE = "ensemble"
+# Use canonical ModelType from ml module for consistency
+from ml.model_types import ModelType
 
 class ModelConfidenceLevel(Enum):
     LOW = "low"        # 0.5-0.6 confidence
@@ -225,7 +221,8 @@ class RiskManager:
             # We can be more aggressive with high-confidence statistical predictions
             if hasattr(signal, 'model_predictions') and signal.model_predictions:
                 # Check if we have ensemble predictions
-                ensemble_consensus = len([p for p in signal.model_predictions.values() if (p > 0.6 if signal.signal_type.value == 'BUY' else p < 0.4)])
+                is_buy = (signal.action.lower() == 'buy')
+                ensemble_consensus = len([p for p in signal.model_predictions.values() if ((p > 0.6) if is_buy else (p < 0.4))])
                 total_models = len(signal.model_predictions)
                 
                 if total_models > 0:
@@ -720,9 +717,9 @@ class RiskManager:
         elif model_type == ModelType.RANDOM_FOREST:
             adjusted_confidence *= 0.98  # Small reduction for RF overconfidence
         
-        # SVM probabilities can be less reliable
-        elif model_type == ModelType.SVM:
-            adjusted_confidence *= 0.95  # Reduction for SVM probability reliability
+        # LightGBM provides stable probabilities; no reduction needed
+        elif model_type == ModelType.LIGHTGBM:
+            adjusted_confidence *= 1.00
         
         return min(0.99, max(0.01, adjusted_confidence))  # Clamp between 1% and 99%
     

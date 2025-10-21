@@ -8,8 +8,9 @@
       "AMD": 4,
       "PLTR": 5,
       "AMZN": 6,
-      "GOOGL": 7,
-      "MSFT": 8
+      "MSFT": 7,
+      "COIN": 8,
+      "F": 9
     },
     "id_to_symbol": {
       "0": "NVDA",
@@ -19,19 +20,20 @@
       "4": "AMD",
       "5": "PLTR",
       "6": "AMZN",
-      "7": "GOOGL",
-      "8": "MSFT"
+      "7": "MSFT",
+      "8": "COIN",
+      "9": "F"
     }
   },
   "ensemble_weights": {
-    "xgboost": 0.5003677936312743,
-    "random_forest": 0.00039306189601828306,
-    "svm": 0.4992391444727075
+    "lightgbm": 0.49874815817530577,
+    "xgboost": 0.5007726679205051,
+    "random_forest": 0.0004791739041891779
   },
   "config": {
     "symbol_embedding_dim": 32,
-    "num_symbols": 9,
-    "prediction_threshold": 0.55,
+    "num_symbols": 10,
+    "prediction_threshold": 0.7,
     "prediction_window": 15,
     "take_profit_pct": 0.005,
     "stop_loss_pct": 0.002,
@@ -39,26 +41,21 @@
   },
   "model_configs": {
     "xgboost": {
-      "n_estimators": 1000,
-      "max_depth": 7,
-      "learning_rate": 0.15,
-      "subsample": 0.8,
-      "colsample_bytree": 0.8,
-      "reg_alpha": 0.2,
-      "reg_lambda": 0.2
+      "n_estimators": 300,
+      "max_depth": 6,
+      "learning_rate": 0.05,
+      "subsample": 0.7,
+      "colsample_bytree": 0.7,
+      "min_child_weight": 3,
+      "reg_alpha": 0.5,
+      "reg_lambda": 0.5
     },
     "random_forest": {
-      "n_estimators": 500,
-      "max_depth": 12,
-      "min_samples_split": 10,
-      "min_samples_leaf": 5,
+      "n_estimators": 300,
+      "max_depth": 8,
+      "min_samples_split": 20,
+      "min_samples_leaf": 10,
       "max_features": "sqrt"
-    },
-    "svm": {
-      "C": 10.0,
-      "kernel": "rbf",
-      "gamma": "scale",
-      "class_weight": "balanced"
     }
   },
   "feature_selection": {
@@ -77,6 +74,7 @@
       "feature_41_min",
       "feature_41_max",
       "feature_43_max",
+      "feature_45_max",
       "feature_47_max",
       "feature_49_max",
       "feature_50_max",
@@ -97,9 +95,7 @@
       "feature_90_min",
       "feature_90_max",
       "feature_91_max",
-      "feature_92_max",
       "feature_94_min",
-      "feature_94_max",
       "feature_96_max",
       "feature_98_max",
       "feature_100_min",
@@ -111,6 +107,7 @@
       "feature_103_min",
       "feature_103_max",
       "feature_105_max",
+      "feature_106_min",
       "feature_109_max",
       "feature_110_min",
       "feature_111_max",
@@ -138,6 +135,7 @@
       "roc_3",
       "roc_5",
       "roc_10",
+      "roc_15",
       "roc_20",
       "rsi_14",
       "rsi_21",
@@ -153,7 +151,6 @@
       "vwap_trend_10",
       "avg_trade_size",
       "trade_intensity",
-      "transaction_momentum",
       "high_frequency_ratio",
       "transactions_ratio_5",
       "transactions_ratio_10",
@@ -162,6 +159,7 @@
       "volume_momentum",
       "volume_concentration",
       "price_efficiency",
+      "liquidity_proxy",
       "high_low_ratio",
       "close_to_high",
       "close_to_low",
@@ -185,6 +183,7 @@
       39,
       41,
       43,
+      45,
       47,
       49,
       50,
@@ -200,7 +199,6 @@
       88,
       90,
       91,
-      92,
       94,
       96,
       98,
@@ -209,6 +207,7 @@
       102,
       103,
       105,
+      106,
       109,
       110,
       111,
@@ -223,13 +222,13 @@
       148,
       149
     ],
-    "selected_feature_count": 45,
+    "selected_feature_count": 46,
     "feature_importance": {},
     "feature_mapping": {},
     "total_features": 65,
     "validation_metadata": {
-      "universal_metadata_feature_count": 45,
-      "feature_selection_timestamp": "2025-10-19T19:38:41.239487",
+      "universal_metadata_feature_count": 46,
+      "feature_selection_timestamp": "2025-10-21T00:41:28.256871",
       "feature_selection_method": "mutual_info_regression"
     }
   },
@@ -243,9 +242,9 @@
   },
   "optimal_thresholds": {
     "ensemble": null,
+    "lightgbm": null,
     "xgboost": null,
-    "random_forest": null,
-    "svm": null
+    "random_forest": null
   },
   "training_data_stats": {
     "training_start_date": null,
@@ -260,14 +259,15 @@
       "AMD",
       "PLTR",
       "AMZN",
-      "GOOGL",
-      "MSFT"
+      "MSFT",
+      "COIN",
+      "F"
     ]
   },
   "model_files": {
+    "lightgbm_model_path": null,
     "xgboost_model_path": null,
     "random_forest_model_path": null,
-    "svm_model_path": null,
     "ensemble_model_path": null,
     "scaler_path": null
   },
@@ -283,6 +283,6 @@
     "requires_feature_scaling": true,
     "max_prediction_latency_ms": 100
   },
-  "training_timestamp": "2025-10-19T19:38:41.239499",
+  "training_timestamp": "2025-10-21T00:41:28.256883",
   "model_type": "statistical_ensemble"
 }

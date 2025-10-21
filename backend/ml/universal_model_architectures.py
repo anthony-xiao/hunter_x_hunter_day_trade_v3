@@ -20,6 +20,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score
 import joblib
 import os
 from pathlib import Path
+import lightgbm as lgb
 
 class UniversalModelArchitectures:
     """
@@ -1019,15 +1020,16 @@ class UniversalModelArchitectures:
         
         model = xgb.XGBClassifier(
             # Core parameters
-            n_estimators=config.get('n_estimators', 1000),
-            max_depth=config.get('max_depth', 7),
-            learning_rate=config.get('learning_rate', 0.15),
+            n_estimators=config.get('n_estimators', 300),
+            max_depth=config.get('max_depth', 6),
+            learning_rate=config.get('learning_rate', 0.05),
             
             # Regularization
-            subsample=config.get('subsample', 0.8),
-            colsample_bytree=config.get('colsample_bytree', 0.8),
-            reg_alpha=config.get('reg_alpha', 0.1),
-            reg_lambda=config.get('reg_lambda', 0.1),
+            subsample=config.get('subsample', 0.7),
+            colsample_bytree=config.get('colsample_bytree', 0.7),
+            min_child_weight=config.get('min_child_weight', 3),
+            reg_alpha=config.get('reg_alpha', 0.5),
+            reg_lambda=config.get('reg_lambda', 0.5),
             
             # Performance
             n_jobs=-1,
@@ -1050,10 +1052,10 @@ class UniversalModelArchitectures:
         logger.info(f"Creating Random Forest model with {feature_dim} aggregated features")
         
         model = RandomForestClassifier(
-            n_estimators=config.get('n_estimators', 500),
-            max_depth=config.get('max_depth', 12),
-            min_samples_split=config.get('min_samples_split', 10),
-            min_samples_leaf=config.get('min_samples_leaf', 5),
+            n_estimators=config.get('n_estimators', 300),
+            max_depth=config.get('max_depth', 8),
+            min_samples_split=config.get('min_samples_split', 20),
+            min_samples_leaf=config.get('min_samples_leaf', 10),
             max_features=config.get('max_features', 'sqrt'),
             bootstrap=config.get('bootstrap', True),
             
@@ -1094,27 +1096,66 @@ class UniversalModelArchitectures:
         logger.info(f"Created SVM: kernel={model.kernel}, C={model.C}, max_iter={model.max_iter}")
         return model
 
+    def create_universal_lightgbm(self, feature_dim: int, config: Dict, model_name: str = "universal_lightgbm") -> Any:
+        """
+        Create LightGBM model optimized for minute-to-minute day trading.
+        Uses the optimal configuration specified in documentation.
+        """
+        logger.info(f"Creating LightGBM model with {feature_dim} aggregated features")
+
+        default_params = {
+            'boosting_type': 'gbdt',
+            'objective': 'binary',
+            'metric': ['binary_logloss', 'auc'],
+            'num_leaves': 31,
+            'max_depth': 6,
+            'min_data_in_leaf': 75,
+            'min_sum_hessian_in_leaf': 1e-3,
+            'learning_rate': 0.05,
+            'n_estimators': 400,
+            'bagging_fraction': 0.7,
+            'bagging_freq': 5,
+            'feature_fraction': 0.7,
+            'reg_alpha': 0.5,
+            'reg_lambda': 0.5,
+            'min_gain_to_split': 0.01,
+            'path_smooth': 0.1,
+            'is_unbalance': True,
+            'n_jobs': -1,
+            'verbose': -1,
+            'max_bin': 255,
+            'random_state': 42
+        }
+
+        # Override defaults with provided config
+        if config:
+            default_params.update(config)
+
+        model = lgb.LGBMClassifier(**default_params)
+        logger.info(f"Created LightGBM model: {default_params['n_estimators']} trees @ lr={default_params['learning_rate']}")
+        return model
+
     def create_ensemble_model(self, feature_dim: int, config: Dict, model_name: str = "universal_ensemble") -> Dict:
         """
-        Create ensemble combining XGBoost, Random Forest, and SVM.
+        Create ensemble combining XGBoost, Random Forest, and LightGBM.
         """
         logger.info(f"Creating ensemble model with {feature_dim} aggregated features")
         
         # Create individual models
         xgb_model = self.create_universal_xgboost(feature_dim, config.get('xgboost', {}))
         rf_model = self.create_universal_random_forest(feature_dim, config.get('random_forest', {}))
-        svm_model = self.create_universal_svm(feature_dim, config.get('svm', {}))
+        lgbm_model = self.create_universal_lightgbm(feature_dim, config.get('lightgbm', {}))
         
         ensemble = {
             'models': {
                 'xgboost': xgb_model,
                 'random_forest': rf_model,
-                'svm': svm_model
+                'lightgbm': lgbm_model
             },
             'weights': {
-                'xgboost': config.get('xgb_weight', 0.45),
-                'random_forest': config.get('rf_weight', 0.35),
-                'svm': config.get('svm_weight', 0.20)
+                'lightgbm': config.get('lightgbm_weight', 0.40),
+                'xgboost': config.get('xgb_weight', 0.35),
+                'random_forest': config.get('rf_weight', 0.25)
             },
             'feature_dim': feature_dim,
             'name': model_name

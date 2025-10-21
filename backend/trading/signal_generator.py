@@ -158,9 +158,9 @@ class SignalGenerator:
         # Initialize ensemble weights - will be loaded from optimization results
         self.ensemble_weights: Dict[str, Dict[ModelType, float]] = {}  # symbol -> model_type -> weight
         self.default_ensemble_weights = {
+            ModelType.LIGHTGBM: 0.40,
             ModelType.XGBOOST: 0.35,
-            ModelType.RANDOM_FOREST: 0.30,
-            ModelType.SVM: 0.35
+            ModelType.RANDOM_FOREST: 0.25
         }
         
         # Initialize ensemble configuration manager with absolute path
@@ -288,7 +288,7 @@ class SignalGenerator:
             
             # Convert string keys to ModelType enum for internal use
             # Filter out unsupported model types (legacy neural network models)
-            supported_models = {'xgboost', 'random_forest', 'svm', 'ensemble'}
+            supported_models = {'lightgbm', 'xgboost', 'random_forest', 'ensemble'}
             converted_weights = {}
             filtered_models = []
             
@@ -315,9 +315,9 @@ class SignalGenerator:
             logger.error(f"❌ Error loading optimized ensemble weights: {e}")
             # Fallback to default equal weights
             self.default_ensemble_weights = {
-                ModelType.XGBOOST: 0.33,
-                ModelType.RANDOM_FOREST: 0.33,
-                ModelType.SVM: 0.34
+                ModelType.LIGHTGBM: 0.40,
+                ModelType.XGBOOST: 0.35,
+                ModelType.RANDOM_FOREST: 0.25
             }
             logger.info("⚠️  Using default equal ensemble weights as fallback:")
             logger.info("📊 Default ensemble weights:")
@@ -366,6 +366,10 @@ class SignalGenerator:
             'market_stress_threshold': 0.7,     # Market stress level
             'volume_spike_threshold': 2.0       # 2x average volume
         }
+        
+        # Market stress calibration for minute-level day trading
+        self.market_stress_window_minutes = 120  # Volatility window for stress calculation
+        self.market_stress_divisor = 0.6         # Divisor to map annual vol -> stress (0-1)
         
         # Time-based sell signal parameters
         self.time_sell_conditions = {
@@ -445,9 +449,9 @@ class SignalGenerator:
         # Use 2D aggregated features for statistical models
         default_feature_count = 150  # Expected feature count from training metadata
         self.model_configs = {
+            'lightgbm': {'feature_count': default_feature_count},
             'xgboost': {'feature_count': default_feature_count},
             'random_forest': {'feature_count': default_feature_count},
-            'svm': {'feature_count': default_feature_count},
             'ensemble': {'feature_count': default_feature_count}
         }
         logger.info(f"Using default model configurations with {default_feature_count} features for statistical models")
@@ -582,9 +586,9 @@ class SignalGenerator:
                 
                 # Initialize ensemble weights (equal weights initially)
                 self.ensemble_weights[symbol] = {
-                    ModelType.XGBOOST: 0.33,
-                    ModelType.RANDOM_FOREST: 0.33,
-                    ModelType.SVM: 0.34
+                    ModelType.LIGHTGBM: 0.40,
+                    ModelType.XGBOOST: 0.35,
+                    ModelType.RANDOM_FOREST: 0.25
                 }
                 
                 # Load or create symbol-specific models (as fallback or primary)
@@ -625,9 +629,9 @@ class SignalGenerator:
                 
                 # Map statistical model types to file names
                 model_mapping = {
+                    ModelType.LIGHTGBM: 'lightgbm.joblib',
                     ModelType.XGBOOST: 'xgboost.joblib',
                     ModelType.RANDOM_FOREST: 'random_forest.joblib', 
-                    ModelType.SVM: 'svm.joblib',
                     ModelType.ENSEMBLE: 'ensemble_config.json'  # Ensemble uses config file, not joblib
                 }
                 
@@ -684,7 +688,7 @@ class SignalGenerator:
                 logger.info(f"Initializing with None models for {symbol}")
                 
                 # Fallback: set models to None if loading fails
-                for model_type in [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM, ModelType.ENSEMBLE]:
+                for model_type in [ModelType.LIGHTGBM, ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.ENSEMBLE]:
                     self.models[symbol][model_type] = None
                 
                 # Create default scaler
@@ -1018,15 +1022,15 @@ class SignalGenerator:
                 else:
                     confidence = 0.55 + abs(prediction) * 0.35
                 
-            elif model_type == ModelType.SVM:
-                # SVM expects 2D input (n_samples, n_features)
+            elif model_type == ModelType.LIGHTGBM:
+                # LightGBM expects 2D input (n_samples, n_features)
                 prediction = model.predict(features_2d)[0]
                 
                 # Get raw probability prediction
                 if hasattr(model, 'predict_proba'):
                     try:
                         proba = model.predict_proba(features_2d)[0]
-                        raw_confidence = proba[1]  # Probability of positive class
+                        raw_confidence = proba[1]
                         
                         # Apply calibration if available
                         if hasattr(model, 'confidence_calibrator'):
@@ -1038,18 +1042,10 @@ class SignalGenerator:
                         else:
                             confidence = raw_confidence
                     except Exception as e:
-                        logger.warning(f"Error getting SVM probability: {e}")
-                        # Fallback to decision function
-                        if hasattr(model, 'decision_function'):
-                            try:
-                                decision_score = model.decision_function(features_2d)[0]
-                                confidence = min(0.8, 0.5 + abs(decision_score) * 0.1)
-                            except:
-                                confidence = 0.5 + abs(prediction) * 0.3
-                        else:
-                            confidence = 0.5 + abs(prediction) * 0.3
+                        logger.warning(f"Error getting LightGBM probability: {e}")
+                        confidence = 0.6 + abs(prediction) * 0.3
                 else:
-                    confidence = 0.5 + abs(prediction) * 0.3
+                    confidence = 0.6 + abs(prediction) * 0.3
                 
             elif model_type == ModelType.ENSEMBLE:
                 # Ensemble model combines multiple statistical models
@@ -1059,14 +1055,14 @@ class SignalGenerator:
                     weights = model['weights']
                     
                     # Get predictions from individual models
+                    lgb_pred = models['lightgbm'].predict_proba(features_2d)[0, 1] if 'lightgbm' in models else 0.5
                     xgb_pred = models['xgboost'].predict_proba(features_2d)[0, 1] if 'xgboost' in models else 0.5
                     rf_pred = models['random_forest'].predict_proba(features_2d)[0, 1] if 'random_forest' in models else 0.5
-                    svm_pred = models['svm'].predict_proba(features_2d)[0, 1] if 'svm' in models else 0.5
                     
                     # Calculate weighted ensemble prediction
-                    prediction = (weights.get('xgboost', 0.33) * xgb_pred + 
-                                weights.get('random_forest', 0.33) * rf_pred + 
-                                weights.get('svm', 0.34) * svm_pred)
+                    prediction = (weights.get('lightgbm', 0.40) * lgb_pred + 
+                                weights.get('xgboost', 0.35) * xgb_pred + 
+                                weights.get('random_forest', 0.25) * rf_pred)
                     
                     # Apply ensemble calibration if available
                     if 'confidence_calibrator' in model:
@@ -1301,27 +1297,48 @@ class SignalGenerator:
         try:
             # Use SPY or first available symbol for market regime analysis
             spy_data = features_data.get('SPY')
-            if spy_data is None and features_data:
-                # Use first available symbol as proxy
-                spy_data = list(features_data.values())[0]
+            source = 'SPY'
+            close_prices = None
+            market_df = None
             
-            if spy_data is None or len(spy_data) < 20:
-                logger.debug("Insufficient data for market regime update from cached features")
-                return
-            
-            # Use cached features for regime analysis
-            if 'close' in spy_data.columns:
+            # Prefer SPY; if unavailable, use market average across cached feature frames
+            if spy_data is None or 'close' not in spy_data.columns or len(spy_data) < 20:
+                close_series_list = [df['close'] for df in features_data.values() if isinstance(df, pd.DataFrame) and 'close' in df.columns]
+                if close_series_list:
+                    market_df = pd.concat(close_series_list, axis=1)
+                    market_avg = market_df.mean(axis=1, skipna=True)
+                    if len(market_avg) >= 50:
+                        close_prices = market_avg.tail(50).values
+                        source = 'market_avg'
+                    else:
+                        logger.debug("Insufficient data for market regime update from cached features")
+                        return
+                else:
+                    logger.debug("No 'close' columns available in cached features for regime update")
+                    return
+            else:
                 close_prices = spy_data['close'].tail(50).values
-                returns = np.diff(np.log(close_prices))
+            
+            returns = np.diff(np.log(close_prices))
+            
+            # Calculate regime indicators with sampling-aware annualization
+            try:
+                idx = spy_data.index if source == 'SPY' else (market_df.index if market_df is not None else None)
+                deltas = pd.Series(idx).diff().dropna() if idx is not None else pd.Series([pd.Timedelta(seconds=60)])
+                median_delta = deltas.median() if len(deltas) > 0 else pd.Timedelta(seconds=60)
+                median_delta_seconds = median_delta.total_seconds() if hasattr(median_delta, 'total_seconds') else float(median_delta / np.timedelta64(1, 's'))
+            except Exception:
+                median_delta_seconds = 60.0  # Fallback to 1-minute sampling
                 
-                # Calculate regime indicators
-                volatility = np.std(returns) * np.sqrt(252)
-                trend_strength = abs(np.mean(returns)) * np.sqrt(252)
+                samples_per_day = 390 if median_delta_seconds <= 120 else 1  # minute vs daily sampling
+                vol_daily = np.std(returns) * np.sqrt(samples_per_day)
+                volatility_annual = vol_daily * np.sqrt(252)
+                trend_strength = abs(np.mean(returns)) * (np.sqrt(samples_per_day) * np.sqrt(252))
                 
-                # Determine regime type
-                if volatility > 0.3:
+                # Determine regime type based on annualized volatility
+                if volatility_annual > 0.3:
                     regime_type = "volatile"
-                elif volatility < 0.15:
+                elif volatility_annual < 0.15:
                     regime_type = "calm"
                 elif trend_strength > 0.1:
                     regime_type = "trending"
@@ -1329,20 +1346,20 @@ class SignalGenerator:
                     regime_type = "ranging"
                 
                 # Calculate market stress and confidence
-                market_stress = min(1.0, volatility / 0.4)
-                confidence = 1.0 - min(0.5, abs(volatility - 0.2) / 0.3)
+                market_stress = min(1.0, max(0.0, volatility_annual / getattr(self, 'market_stress_divisor', 0.6)))
+                confidence = 1.0 - min(0.5, abs(volatility_annual - 0.2) / 0.3)
                 
                 self.current_market_regime = MarketRegime(
                     regime_type=regime_type,
                     confidence=confidence,
-                    volatility_level=volatility,
+                    volatility_level=volatility_annual,
                     trend_strength=trend_strength,
                     market_stress=market_stress,
                     timestamp=datetime.now(timezone.utc)
                 )
                 
                 self.regime_history.append(self.current_market_regime)
-                logger.debug(f"Updated market regime from cached features: {regime_type} (volatility: {volatility:.3f})")
+                logger.debug(f"Updated market regime [{source}]: type={regime_type}, vol_annual={volatility_annual:.3f}, stress={market_stress:.2f}")
             
         except Exception as e:
             logger.error(f"Error updating market regime from cached features: {e}")
@@ -1466,30 +1483,33 @@ class SignalGenerator:
                 # FEATURE COUNT DEBUG: Log when no feature selection is applied
                 logger.info(f"[FEATURE_DEBUG] {symbol}: _prepare_features - No feature selection applied, using all {features_array.shape[1]} features")
             
-            # Create model-specific scaler key
-            scaler_key = f"{symbol}_{model_type if model_type else 'default'}"
-            
-            # Initialize scaler if not exists
-            if scaler_key not in self.scalers:
-                self.scalers[scaler_key] = StandardScaler()
-            
-            # Normalize features using the model-specific scaler
-            if features_array.size > 0:
-                current_feature_count = features_array.shape[1]
-                scaler_fitted = hasattr(self.scalers[scaler_key], 'scale_') and self.scalers[scaler_key].scale_ is not None
+            # Skip scaling for tree-based models (LightGBM, XGBoost, RandomForest)
+            tree_models = {ModelType.LIGHTGBM, ModelType.XGBOOST, ModelType.RANDOM_FOREST}
+            if model_type not in tree_models:
+                # Create model-specific scaler key
+                scaler_key = f"{symbol}_{model_type if model_type else 'default'}"
                 
-                if not scaler_fitted:
-                    # First time fitting the scaler
-                    logger.debug(f"Fitting scaler for {scaler_key} with {current_feature_count} features")
-                    self.scalers[scaler_key].fit(features_array)
-                elif scaler_fitted and len(self.scalers[scaler_key].scale_) != current_feature_count:
-                    # Feature count changed, need to refit the scaler
-                    logger.warning(f"Feature count changed for {scaler_key}: {len(self.scalers[scaler_key].scale_)} -> {current_feature_count}. Refitting scaler.")
-                    self.scalers[scaler_key] = StandardScaler()  # Create new scaler
-                    self.scalers[scaler_key].fit(features_array)
+                # Initialize scaler if not exists
+                if scaler_key not in self.scalers:
+                    self.scalers[scaler_key] = StandardScaler()
                 
-                # Transform features using the fitted scaler
-                features_array = self.scalers[scaler_key].transform(features_array)
+                # Normalize features using the model-specific scaler
+                if features_array.size > 0:
+                    current_feature_count = features_array.shape[1]
+                    scaler_fitted = hasattr(self.scalers[scaler_key], 'scale_') and self.scalers[scaler_key].scale_ is not None
+                    
+                    if not scaler_fitted:
+                        # First time fitting the scaler
+                        logger.debug(f"Fitting scaler for {scaler_key} with {current_feature_count} features")
+                        self.scalers[scaler_key].fit(features_array)
+                    elif scaler_fitted and len(self.scalers[scaler_key].scale_) != current_feature_count:
+                        # Feature count changed, need to refit the scaler
+                        logger.warning(f"Feature count changed for {scaler_key}: {len(self.scalers[scaler_key].scale_)} -> {current_feature_count}. Refitting scaler.")
+                        self.scalers[scaler_key] = StandardScaler()  # Create new scaler
+                        self.scalers[scaler_key].fit(features_array)
+                    
+                    # Transform features using the fitted scaler
+                    features_array = self.scalers[scaler_key].transform(features_array)
             
             logger.debug(f"Prepared features for {symbol} ({model_type if model_type else 'default'}): shape {features_array.shape}")
             return features_array
@@ -1581,42 +1601,71 @@ class SignalGenerator:
         try:
             # Use SPY or a broad market index to determine regime
             spy_data = market_data.get('SPY')
-            if spy_data is None or len(spy_data) < 50:
-                return
+            source = 'SPY'
+            close_prices = None
+            market_df = None
             
-            close_prices = spy_data['close'].tail(50).values
+            # Prefer SPY; if unavailable, use market average of available symbols
+            if spy_data is None or len(spy_data) < 50 or 'close' not in spy_data.columns:
+                close_series_list = [df['close'] for df in market_data.values() if isinstance(df, pd.DataFrame) and 'close' in df.columns]
+                if close_series_list:
+                    market_df = pd.concat(close_series_list, axis=1)
+                    market_avg = market_df.mean(axis=1, skipna=True)
+                    if len(market_avg) >= 50:
+                        close_prices = market_avg.tail(50).values
+                        source = 'market_avg'
+                    else:
+                        return
+                else:
+                    return
+            else:
+                close_prices = spy_data['close'].tail(50).values
             returns = np.diff(np.log(close_prices))
             
-            # Calculate regime indicators
-            volatility = np.std(returns) * np.sqrt(252)
-            trend_strength = abs(np.mean(returns)) * np.sqrt(252)
+            # Calculate regime indicators with sampling-aware annualization
+            try:
+                idx = spy_data.index if source == 'SPY' else (market_df.index if market_df is not None else None)
+                deltas = pd.Series(idx).diff().dropna() if idx is not None else pd.Series([pd.Timedelta(seconds=60)])
+                median_delta = deltas.median() if len(deltas) > 0 else pd.Timedelta(seconds=60)
+                median_delta_seconds = median_delta.total_seconds() if hasattr(median_delta, 'total_seconds') else float(median_delta / np.timedelta64(1, 's'))
+            except Exception:
+                median_delta_seconds = 60.0  # Fallback to 1-minute sampling
             
-            # Determine regime type
-            if volatility > 0.3:
+            samples_per_day = 390 if median_delta_seconds <= 120 else 1  # minute vs daily sampling
+            window_samples = max(30, min(len(returns), int((getattr(self, 'market_stress_window_minutes', 120) * 60) / max(median_delta_seconds, 1))))
+            returns_window = returns[-window_samples:] if len(returns) >= window_samples else returns
+            vol_minute = np.std(returns_window) if len(returns_window) > 1 else np.std(returns)
+            vol_daily = vol_minute * np.sqrt(samples_per_day)
+            volatility_annual = vol_daily * np.sqrt(252)
+            trend_strength = abs(np.mean(returns_window)) * (np.sqrt(samples_per_day) * np.sqrt(252))
+            
+            # Determine regime type based on annualized volatility
+            if volatility_annual > 0.3:
                 regime_type = "volatile"
-            elif volatility < 0.15:
+            elif volatility_annual < 0.15:
                 regime_type = "calm"
             elif trend_strength > 0.1:
                 regime_type = "trending"
             else:
                 regime_type = "ranging"
             
-            # Calculate market stress (VIX-like measure)
-            market_stress = min(1.0, volatility / 0.4)
+            # Calculate market stress (VIX-like measure) using annualized volatility
+            market_stress = min(1.0, max(0.0, volatility_annual / getattr(self, 'market_stress_divisor', 0.6)))
             
             # Calculate confidence in regime classification
-            confidence = 1.0 - min(0.5, abs(volatility - 0.2) / 0.3)
+            confidence = 1.0 - min(0.5, abs(volatility_annual - 0.2) / 0.3)
             
             self.current_market_regime = MarketRegime(
                 regime_type=regime_type,
                 confidence=confidence,
-                volatility_level=volatility,
+                volatility_level=volatility_annual,
                 trend_strength=trend_strength,
                 market_stress=market_stress,
                 timestamp=datetime.now(timezone.utc)
             )
             
             self.regime_history.append(self.current_market_regime)
+            logger.debug(f"Updated market regime [{source}]: type={regime_type}, vol_annual={volatility_annual:.3f}, stress={market_stress:.2f}")
             
         except Exception as e:
             logger.error(f"Error updating market regime: {e}")
@@ -1667,7 +1716,7 @@ class SignalGenerator:
                         with open(meta_path, 'r') as f:
                             meta = json.load(f)
                         opt = meta.get('optimal_thresholds', {})
-                        tuned_thr = opt.get('ensemble', None) or opt.get('xgboost', None) or opt.get('random_forest', None) or opt.get('svm', None)
+                        tuned_thr = opt.get('ensemble', None) or opt.get('lightgbm', None) or opt.get('xgboost', None) or opt.get('random_forest', None)
                     
                     # Fallback to in-memory models
                     if tuned_thr is None and self.is_universal_mode and self.universal_models:
@@ -2563,7 +2612,7 @@ class SignalGenerator:
             return None
     
     async def _generate_universal_prediction(self, symbol: str, market_data: pd.DataFrame) -> Optional[EnsemblePrediction]:
-        """Generate prediction using universal statistical models (XGBoost, Random Forest, SVM, Ensemble)"""
+        """Generate prediction using universal statistical models (LightGBM, XGBoost, Random Forest, Ensemble)"""
         try:
             if not self.is_universal_mode or not self.universal_models:
                 return None
@@ -2588,8 +2637,8 @@ class SignalGenerator:
                         logger.error(f"Invalid model type: {model_type} (type: {type(model_type)})")
                         continue
                     
-                    # Only handle statistical models (XGBoost, Random Forest, SVM, Ensemble)
-                    if model_type in [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM, ModelType.ENSEMBLE]:
+                    # Only handle statistical models (LightGBM, XGBoost, Random Forest, Ensemble)
+                    if model_type in [ModelType.LIGHTGBM, ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.ENSEMBLE]:
                         if model_type == ModelType.ENSEMBLE:
                             # Handle ensemble model (dictionary with individual models)
                             if isinstance(model, dict) and 'models' in model:
@@ -2597,14 +2646,14 @@ class SignalGenerator:
                                 weights = model['weights']
                                 
                                 # Get predictions from each model in ensemble
+                                lgb_pred = models['lightgbm'].predict_proba(universal_features)[0, 1] if 'lightgbm' in models else 0.5
                                 xgb_pred = models['xgboost'].predict_proba(universal_features)[0, 1] if 'xgboost' in models else 0.5
                                 rf_pred = models['random_forest'].predict_proba(universal_features)[0, 1] if 'random_forest' in models else 0.5
-                                svm_pred = models['svm'].predict_proba(universal_features)[0, 1] if 'svm' in models else 0.5
                                 
                                 # Calculate weighted ensemble prediction
-                                pred_value = (weights.get('xgboost', 0.33) * xgb_pred + 
-                                            weights.get('random_forest', 0.33) * rf_pred + 
-                                            weights.get('svm', 0.34) * svm_pred)
+                                pred_value = (weights.get('lightgbm', 0.40) * lgb_pred + 
+                                            weights.get('xgboost', 0.35) * xgb_pred + 
+                                            weights.get('random_forest', 0.25) * rf_pred)
                                 
                                 # Use calibrated confidence if available
                                 if hasattr(model, 'confidence_calibrator') and model['confidence_calibrator'] is not None:

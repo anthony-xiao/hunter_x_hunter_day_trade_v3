@@ -357,7 +357,7 @@ async def trading_loop():
                                     # Check if signal contains statistical model predictions
                                     has_statistical_models = False
                                     if hasattr(signal, 'model_predictions') and signal.model_predictions:
-                                        statistical_model_types = {'xgboost', 'random_forest', 'svm', 'ensemble'}
+                                        statistical_model_types = {'lightgbm', 'xgboost', 'random_forest', 'ensemble'}
                                         has_statistical_models = any(
                                             model_type.lower() in statistical_model_types 
                                             for model_type in signal.model_predictions.keys()
@@ -1635,11 +1635,11 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
             logger.warning(f"Error with load_universal_data, using pre-verified data: {e}")
             universal_data = all_data
         
-        # Phase 3: Statistical Model Training (XGBoost, RandomForest, SVM, Ensemble)
+        # Phase 3: Statistical Model Training (LightGBM, XGBoost, RandomForest, Ensemble)
         job_status["phase"] = "statistical_model_training"
         job_status["progress"] = 0.7
         
-        logger.info(f"Universal training job {job_id}: Starting STATISTICAL MODEL training (XGBoost, RandomForest, SVM, Ensemble)")
+        logger.info(f"Universal training job {job_id}: Starting STATISTICAL MODEL training (LightGBM, XGBoost, RandomForest, Ensemble)")
         
         # Train statistical models using phase1_universal_base_training
         from ml.universal_trainer import UniversalTrainingConfig
@@ -1669,7 +1669,7 @@ async def train_universal_models_background(job_id: str, symbols: list[str], con
             "feature_importance": training_result.get('feature_importance', {}) if training_result else {},
             "model_configs": training_result.get('model_configs', {}) if training_result else {},
             "training_time": training_result.get('training_time', 0) if training_result else 0,
-            "model_types": ["XGBoost", "RandomForest", "SVM", "Ensemble"]
+            "model_types": ["LightGBM", "XGBoost", "RandomForest", "Ensemble"]
         }
         
         # Phase 4: Statistical Model validation and saving

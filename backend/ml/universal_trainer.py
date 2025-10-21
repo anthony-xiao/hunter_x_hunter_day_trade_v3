@@ -64,7 +64,7 @@ class ModelConfig:
     feature_count: int
     train_test_split: float = 0.8
     learning_rate: float = 0.001
-    prediction_threshold: float = 0.5
+    prediction_threshold: float = 0.7
 
 @dataclass
 class ModelPerformance:
@@ -87,7 +87,7 @@ class ModelPerformance:
 class UniversalTrainingConfig:
     """Configuration for universal statistical model training phases"""
     # Phase 1: Universal Base Model Training
-    base_training_window: int = 12  # months of training data
+    base_training_window: int = 18  # months of training data
     # base_training_window: int = 1  # months of training data
     base_validation_window: int = 3  # months of validation data
     # base_validation_window: int = 0.5  # months of validation data
@@ -118,31 +118,37 @@ class UniversalTrainingConfig:
     ensemble_cross_validation_folds: int = 5
     
     # XGBoost Configuration
-    xgboost_n_estimators: int = 1000
-    xgboost_max_depth: int = 7
-    xgboost_learning_rate: float = 0.15
-    xgboost_subsample: float = 0.8
-    xgboost_colsample_bytree: float = 0.8
-    xgboost_reg_alpha: float = 0.2
-    xgboost_reg_lambda: float = 0.2
+    xgboost_learning_rate: float = 0.05      # Changed from 0.15 → 70% REDUCTION
+    xgboost_n_estimators: int = 300          # Changed from 1000 → 70% REDUCTION
+    xgboost_max_depth: int = 6               # Changed from 7 → MORE CONSERVATIVE
+    xgboost_reg_alpha: float = 0.5           # Changed from 0.2 → STRONGER L1
+    xgboost_reg_lambda: float = 0.5          # Changed from 0.2 → STRONGER L2
+    xgboost_subsample: float = 0.7           # Changed from 0.8 → MORE RANDOMNESS
+    xgboost_colsample_bytree: float = 0.7    # Changed from 0.8 → MORE RANDOMNESS
+
+    # ADD NEW PARAMETER:
+    xgboost_min_child_weight: int = 3        # NEW → Prevents tiny leaf nodes
     
     # Random Forest Configuration
-    rf_n_estimators: int = 500
-    rf_max_depth: int = 12
-    rf_min_samples_split: int = 10
-    rf_min_samples_leaf: int = 5
-    rf_max_features: str = 'sqrt'
+    rf_n_estimators: int = 300            # Changed from 500 → FASTER + LESS OVERFIT
+    rf_max_depth: int = 8                 # Changed from 12 → 33% REDUCTION (CRITICAL)
+    rf_min_samples_split: int = 20        # Changed from 10 → 2X MORE CONSERVATIVE
+    rf_min_samples_leaf: int = 10         # Changed from 5 → 2X MORE CONSERVATIVE
+    rf_max_features: str = 'sqrt'         # Keep as is - good default
     
-    # SVM Configuration
-    svm_kernel: str = 'rbf'
-    svm_C: float = 10.0
-    svm_gamma: str = 'scale'
-    svm_class_weight: str = 'balanced'
+    # LightGBM Configuration (optimized for minute-level day trading)
+    lightgbm_n_estimators: int = 400         # Changed from 500 → SLIGHTLY REDUCED 
+    lightgbm_learning_rate: float = 0.05     # Keep as is - already optimal 
+    lightgbm_num_leaves: int = 31            # Changed from 63 → SIMPLER TREES 
+    lightgbm_max_depth: int = 6
+    lightgbm_min_data_in_leaf: int = 75      # Changed from 50 → MORE CONSERVATIVE 
+    lightgbm_bagging_fraction: float = 0.7   # NEW → More randomness 
+    lightgbm_feature_fraction: float = 0.7   # NEW → More randomness
     
-    # Ensemble Configuration
-    ensemble_xgb_weight: float = 0.45
-    ensemble_rf_weight: float = 0.35
-    ensemble_svm_weight: float = 0.20
+    # Ensemble Configuration (LightGBM, XGBoost, RandomForest)
+    ensemble_lgb_weight: float = 0.40
+    ensemble_xgb_weight: float = 0.35
+    ensemble_rf_weight: float = 0.25
     
     # Dual Exit Target Configuration
     prediction_window: int = 15  # Maximum prediction window in minutes (periods) - increased for better balance
@@ -159,7 +165,7 @@ class UniversalTrainingConfig:
     temporal_aggregation_config: AggregationConfig = None
     
     # General settings
-    prediction_threshold: float = 0.55
+    prediction_threshold: float = 0.7
     min_samples_per_symbol: int = 100
     # min_samples_per_symbol: int = 1000
     max_symbols_per_batch: int = 50
@@ -171,12 +177,12 @@ class UniversalTrainingConfig:
     
     def __post_init__(self):
         # Validate ensemble weights sum to 1.0
-        total_weight = self.ensemble_xgb_weight + self.ensemble_rf_weight + self.ensemble_svm_weight
+        total_weight = self.ensemble_lgb_weight + self.ensemble_xgb_weight + self.ensemble_rf_weight
         if abs(total_weight - 1.0) > 0.01:
             logger.warning(f"Ensemble weights sum to {total_weight}, normalizing to 1.0")
+            self.ensemble_lgb_weight /= total_weight
             self.ensemble_xgb_weight /= total_weight
             self.ensemble_rf_weight /= total_weight
-            self.ensemble_svm_weight /= total_weight
 
 @dataclass
 class UniversalTrainingResult:
@@ -254,6 +260,7 @@ class UniversalTrainer:
                     'learning_rate': self.config.xgboost_learning_rate,
                     'subsample': self.config.xgboost_subsample,
                     'colsample_bytree': self.config.xgboost_colsample_bytree,
+                    'min_child_weight': self.config.xgboost_min_child_weight,
                     'reg_alpha': self.config.xgboost_reg_alpha,
                     'reg_lambda': self.config.xgboost_reg_lambda,
                     'random_state': self.config.random_state,
@@ -289,32 +296,34 @@ class UniversalTrainer:
                 learning_rate=None,
                 prediction_threshold=self.config.prediction_threshold
             ),
-            ModelType.SVM: ModelConfig(
-                name='svm',
+            ModelType.LIGHTGBM: ModelConfig(
+                name='lightgbm',
                 model_type='statistical',
                 parameters={
-                    'C': self.config.svm_C,
-                    'kernel': self.config.svm_kernel,
-                    'gamma': self.config.svm_gamma,
-                    'probability': True,
+                    'n_estimators': self.config.lightgbm_n_estimators,
+                    'learning_rate': self.config.lightgbm_learning_rate,
+                    'num_leaves': self.config.lightgbm_num_leaves,
+                    'max_depth': self.config.lightgbm_max_depth,
+                    'min_data_in_leaf': self.config.lightgbm_min_data_in_leaf,
+                    'bagging_fraction': self.config.lightgbm_bagging_fraction,
+                    'feature_fraction': self.config.lightgbm_feature_fraction,
+                    'is_unbalance': True,
                     'random_state': self.config.random_state,
-                    'class_weight': self.config.svm_class_weight,
-                    'cache_size': 1000
                 },
                 training_window=self.config.base_training_window,
                 validation_window=self.config.base_validation_window,
                 lookback_window=self.config.base_lookback_window,
                 feature_count=None,
-                learning_rate=None,
+                learning_rate=self.config.lightgbm_learning_rate,
                 prediction_threshold=self.config.prediction_threshold
             ),
             ModelType.ENSEMBLE: ModelConfig(
                 name='ensemble',
                 model_type='ensemble',
                 parameters={
-                    'base_models': [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM],
+                    'base_models': [ModelType.LIGHTGBM, ModelType.XGBOOST, ModelType.RANDOM_FOREST],
                     'voting': 'soft',
-                    'weights': [self.config.ensemble_xgb_weight, self.config.ensemble_rf_weight, self.config.ensemble_svm_weight],
+                    'weights': [self.config.ensemble_lgb_weight, self.config.ensemble_xgb_weight, self.config.ensemble_rf_weight],
                     'n_jobs': self.config.n_jobs
                 },
                 training_window=self.config.base_training_window,
@@ -911,7 +920,7 @@ class UniversalTrainer:
         return targets
     
     def _calculate_trading_profits(self, predictions: np.ndarray, targets: np.ndarray, 
-                                 prediction_threshold: float = 0.5) -> Dict[str, float]:
+                                 prediction_threshold: float = 0.7) -> Dict[str, float]:
         """
         Calculate actual trading profits based on model predictions and dual exit targets.
         
@@ -2497,31 +2506,16 @@ class UniversalTrainer:
                         for component_name, component_model in ensemble_models.items():
                             logger.info(f"Getting predictions from ensemble component: {component_name}")
                             
-                            # Handle SVM with feature scaling
-                            if component_name == 'svm' and hasattr(component_model, 'feature_scaler') and component_model.feature_scaler is not None:
-                                X_features_scaled = component_model.feature_scaler.transform(X_features)
-                                if hasattr(component_model, 'predict_proba'):
-                                    comp_predictions_proba = component_model.predict_proba(X_features_scaled)
-                                    if comp_predictions_proba.shape[1] > 1:
-                                        comp_predictions = comp_predictions_proba[:, 1]  # Probability of positive class
-                                    else:
-                                        comp_predictions = comp_predictions_proba.flatten()
+                            # Tree-based models (LightGBM, XGBoost, RandomForest) use raw features without scaling
+                            if hasattr(component_model, 'predict_proba'):
+                                comp_predictions_proba = component_model.predict_proba(X_features)
+                                if comp_predictions_proba.shape[1] > 1:
+                                    comp_predictions = comp_predictions_proba[:, 1]
                                 else:
-                                    comp_predictions_binary = component_model.predict(X_features_scaled)
-                                    comp_predictions = comp_predictions_binary.astype(float)
+                                    comp_predictions = comp_predictions_proba.flatten()
                             else:
-                                # For other models (XGBoost, Random Forest) or SVM without scaling
-                                if hasattr(component_model, 'predict_proba'):
-                                    # For models that support probability prediction
-                                    comp_predictions_proba = component_model.predict_proba(X_features)
-                                    if comp_predictions_proba.shape[1] > 1:
-                                        comp_predictions = comp_predictions_proba[:, 1]  # Probability of positive class
-                                    else:
-                                        comp_predictions = comp_predictions_proba.flatten()
-                                else:
-                                    # For models that only support binary prediction
-                                    comp_predictions_binary = component_model.predict(X_features)
-                                    comp_predictions = comp_predictions_binary.astype(float)
+                                comp_predictions_binary = component_model.predict(X_features)
+                                comp_predictions = comp_predictions_binary.astype(float)
                             
                             component_predictions.append(comp_predictions)
                             logger.info(f"Component {component_name} predictions shape: {comp_predictions.shape}")
@@ -2726,7 +2720,7 @@ class UniversalTrainer:
             else:
                 # Fallback to base models only
                 base_models = {model: score for model, score in adjusted_scores.items() 
-                              if model in [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM]}
+                              if model in [ModelType.LIGHTGBM, ModelType.XGBOOST, ModelType.RANDOM_FOREST]}
                 if base_models:
                     num_base_models = len(base_models)
                     self.ensemble_weights = {model: float(1.0 / num_base_models) for model in base_models.keys()}
@@ -2737,7 +2731,7 @@ class UniversalTrainer:
         else:
             # Equal weights if no valid scores - only for base models
             base_model_scores = {model: score for model, score in model_scores.items() 
-                               if model in [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM]}
+                               if model in [ModelType.LIGHTGBM, ModelType.XGBOOST, ModelType.RANDOM_FOREST]}
             if base_model_scores:
                 num_models = len(base_model_scores)
                 self.ensemble_weights = {model: float(1.0 / num_models) for model in base_model_scores.keys()}
@@ -2783,20 +2777,20 @@ class UniversalTrainer:
             # Use string keys to match how ensemble_weights are stored
             xgb_weight = self.ensemble_weights.get('xgboost', 0.0)
             rf_weight = self.ensemble_weights.get('random_forest', 0.0)
-            svm_weight = self.ensemble_weights.get('svm', 0.0)
+            lgb_weight = self.ensemble_weights.get('lightgbm', 0.0)
             
             logger.info(f"Passing optimized weights to create_ensemble_model:")
+            logger.info(f"  lgb_weight: {lgb_weight:.6f}")
             logger.info(f"  xgb_weight: {xgb_weight:.6f}")
             logger.info(f"  rf_weight: {rf_weight:.6f}")
-            logger.info(f"  svm_weight: {svm_weight:.6f}")
             
             ensemble_config = {
+                'lightgbm_weight': lgb_weight,
                 'xgb_weight': xgb_weight,
                 'rf_weight': rf_weight,
-                'svm_weight': svm_weight,
+                'lightgbm': {},
                 'xgboost': {},
-                'random_forest': {},
-                'svm': {}
+                'random_forest': {}
             }
             
             # Create the ensemble model using the optimized weights
@@ -2811,15 +2805,15 @@ class UniversalTrainer:
                 ensemble_model['models']['xgboost'] = self.base_models[ModelType.XGBOOST]
             if ModelType.RANDOM_FOREST in self.base_models:
                 ensemble_model['models']['random_forest'] = self.base_models[ModelType.RANDOM_FOREST]
-            if ModelType.SVM in self.base_models:
-                ensemble_model['models']['svm'] = self.base_models[ModelType.SVM]
+            if ModelType.LIGHTGBM in self.base_models:
+                ensemble_model['models']['lightgbm'] = self.base_models[ModelType.LIGHTGBM]
             
             # Update ensemble weights with optimized values
             # Use string keys to match how ensemble_weights are stored
             ensemble_model['weights'] = {
+                'lightgbm': self.ensemble_weights.get('lightgbm', 0.0),
                 'xgboost': self.ensemble_weights.get('xgboost', 0.0),
-                'random_forest': self.ensemble_weights.get('random_forest', 0.0),
-                'svm': self.ensemble_weights.get('svm', 0.0)
+                'random_forest': self.ensemble_weights.get('random_forest', 0.0)
             }
             
             # Store the ensemble model in base_models for saving and future use
@@ -3133,25 +3127,15 @@ class UniversalTrainer:
             except Exception as e:
                 logger.error(f"Base {model_type} - Model validation FAILED: {e}")
             
-            # Extract scalers from models
-            if model_type == ModelType.SVM and hasattr(model, 'feature_scaler'):
-                scalers_dict['svm'] = model.feature_scaler
-                logger.info(f"✓ Extracted SVM scaler for saving")
-            elif model_type == ModelType.ENSEMBLE and isinstance(model, dict):
-                # Handle ensemble model - extract scalers from individual models
+            # Extract scalers from models (no scaling needed for tree-based models)
+            if model_type == ModelType.ENSEMBLE and isinstance(model, dict):
+                # Provide default scalers for consistency keys if needed
                 if 'models' in model:
                     ensemble_models = model['models']
-                    if 'svm' in ensemble_models and hasattr(ensemble_models['svm'], 'feature_scaler'):
-                        scalers_dict['svm'] = ensemble_models['svm'].feature_scaler
-                        logger.info(f"✓ Extracted SVM scaler from ensemble for saving")
-                    
-                    # Create default scalers for XGBoost and Random Forest for consistency
                     if 'xgboost' in ensemble_models:
                         scalers_dict['xgboost'] = StandardScaler()
-                        logger.info(f"✓ Created default XGBoost scaler for consistency")
                     if 'random_forest' in ensemble_models:
                         scalers_dict['random_forest'] = StandardScaler()
-                        logger.info(f"✓ Created default Random Forest scaler for consistency")
             else:
                 # Create default scaler for non-SVM models
                 # Handle both string and ModelType enum cases
@@ -3248,7 +3232,7 @@ class UniversalTrainer:
             'config': {
                 'symbol_embedding_dim': getattr(self.config, 'symbol_embedding_dim', 32),
                 'num_symbols': len(self.symbol_to_id) if hasattr(self, 'symbol_to_id') else 0,
-                'prediction_threshold': getattr(self.config, 'prediction_threshold', 0.55),
+                'prediction_threshold': getattr(self.config, 'prediction_threshold', 0.7),
                 'prediction_window': getattr(self.config, 'prediction_window', 15),
                 'take_profit_pct': getattr(self.config, 'take_profit_pct', 0.005),
                 'stop_loss_pct': getattr(self.config, 'stop_loss_pct', 0.002),
@@ -3256,26 +3240,21 @@ class UniversalTrainer:
             },
             'model_configs': {
                 'xgboost': {
-                    'n_estimators': getattr(self.config, 'xgboost_n_estimators', 1000),
-                    'max_depth': getattr(self.config, 'xgboost_max_depth', 7),
-                    'learning_rate': getattr(self.config, 'xgboost_learning_rate', 0.15),
-                    'subsample': getattr(self.config, 'xgboost_subsample', 0.8),
-                    'colsample_bytree': getattr(self.config, 'xgboost_colsample_bytree', 0.8),
-                    'reg_alpha': getattr(self.config, 'xgboost_reg_alpha', 0.2),
-                    'reg_lambda': getattr(self.config, 'xgboost_reg_lambda', 0.2)
-                },
+    'n_estimators': getattr(self.config, 'xgboost_n_estimators', 300),
+    'max_depth': getattr(self.config, 'xgboost_max_depth', 6),
+    'learning_rate': getattr(self.config, 'xgboost_learning_rate', 0.05),
+    'subsample': getattr(self.config, 'xgboost_subsample', 0.7),
+    'colsample_bytree': getattr(self.config, 'xgboost_colsample_bytree', 0.7),
+    'min_child_weight': getattr(self.config, 'xgboost_min_child_weight', 3),
+    'reg_alpha': getattr(self.config, 'xgboost_reg_alpha', 0.5),
+    'reg_lambda': getattr(self.config, 'xgboost_reg_lambda', 0.5)
+},
                 'random_forest': {
-                    'n_estimators': getattr(self.config, 'rf_n_estimators', 500),
-                    'max_depth': getattr(self.config, 'rf_max_depth', 12),
-                    'min_samples_split': getattr(self.config, 'rf_min_samples_split', 10),
-                    'min_samples_leaf': getattr(self.config, 'rf_min_samples_leaf', 5),
+                    'n_estimators': getattr(self.config, 'rf_n_estimators', 300),
+                    'max_depth': getattr(self.config, 'rf_max_depth', 8),
+                    'min_samples_split': getattr(self.config, 'rf_min_samples_split', 20),
+                    'min_samples_leaf': getattr(self.config, 'rf_min_samples_leaf', 10),
                     'max_features': getattr(self.config, 'rf_max_features', 'sqrt')
-                },
-                'svm': {
-                    'C': getattr(self.config, 'svm_C', 10.0),
-                    'kernel': getattr(self.config, 'svm_kernel', 'rbf'),
-                    'gamma': getattr(self.config, 'svm_gamma', 'scale'),
-                    'class_weight': getattr(self.config, 'svm_class_weight', 'balanced')
                 }
             },
             'feature_selection': {
@@ -3303,9 +3282,9 @@ class UniversalTrainer:
             },
             'optimal_thresholds': {
                 'ensemble': (self.base_models.get(ModelType.ENSEMBLE).get('optimal_threshold') if (ModelType.ENSEMBLE in self.base_models and isinstance(self.base_models.get(ModelType.ENSEMBLE), dict)) else None),
+                'lightgbm': (getattr(self.base_models.get(ModelType.LIGHTGBM), 'optimal_threshold', None) if ModelType.LIGHTGBM in self.base_models else None),
                 'xgboost': (getattr(self.base_models.get(ModelType.XGBOOST), 'optimal_threshold', None) if ModelType.XGBOOST in self.base_models else None),
-                'random_forest': (getattr(self.base_models.get(ModelType.RANDOM_FOREST), 'optimal_threshold', None) if ModelType.RANDOM_FOREST in self.base_models else None),
-                'svm': (getattr(self.base_models.get(ModelType.SVM), 'optimal_threshold', None) if ModelType.SVM in self.base_models else None)
+                'random_forest': (getattr(self.base_models.get(ModelType.RANDOM_FOREST), 'optimal_threshold', None) if ModelType.RANDOM_FOREST in self.base_models else None)
             },
             'training_data_stats': {
                 'training_start_date': getattr(self, 'training_start_date', None),
@@ -3315,9 +3294,9 @@ class UniversalTrainer:
                 'symbols_trained': list(self.symbol_to_id.keys()) if hasattr(self, 'symbol_to_id') else []
             },
             'model_files': {
+                'lightgbm_model_path': getattr(self, 'lgb_model_path', None),
                 'xgboost_model_path': getattr(self, 'xgb_model_path', None),
                 'random_forest_model_path': getattr(self, 'rf_model_path', None),
-                'svm_model_path': getattr(self, 'svm_model_path', None),
                 'ensemble_model_path': getattr(self, 'ensemble_model_path', None),
                 'scaler_path': getattr(self, 'scaler_path', None)
             },
@@ -3412,20 +3391,20 @@ class UniversalTrainer:
                 )
                 fold_model.fit(X_fold_train, y_fold_train)
                 
-            elif model_type == ModelType.SVM:
-                fold_model = self.universal_architectures.create_universal_svm(
+            elif model_type == ModelType.LIGHTGBM:
+                fold_model = self.universal_architectures.create_universal_lightgbm(
                     feature_dim=feature_dim,
                     config=config.parameters,
                     model_name=f"universal_{model_type.value}_fold_{fold}"
                 )
-                # Apply feature scaling for SVM - match regular training logic
-                scaler = StandardScaler()
-                X_fold_train_scaled = scaler.fit_transform(X_fold_train)
-                X_fold_val_scaled = scaler.transform(X_fold_val)
-                fold_model.fit(X_fold_train_scaled, y_fold_train)
-                # Store scaler with the model for inference
-                fold_model.feature_scaler = scaler
-                logger.info(f"Fold {fold + 1} - Applied StandardScaler for SVM - feature range: [{X_fold_train_scaled.min():.3f}, {X_fold_train_scaled.max():.3f}]")
+                import lightgbm as lgb
+                fold_model.fit(
+                    X_fold_train,
+                    y_fold_train,
+                    eval_set=[(X_fold_val, y_fold_val)],
+                    eval_metric=['binary_logloss', 'auc'],
+                    callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
+                )
                 
             elif model_type == ModelType.ENSEMBLE:
                 # Create ensemble for this fold - match regular training logic
@@ -3445,13 +3424,15 @@ class UniversalTrainer:
                 # Train Random Forest  
                 models['random_forest'].fit(X_fold_train, y_fold_train)
                 
-                # Train SVM with feature scaling
-                svm_scaler = StandardScaler()
-                X_fold_train_scaled = svm_scaler.fit_transform(X_fold_train)
-                X_fold_val_scaled = svm_scaler.transform(X_fold_val)
-                models['svm'].fit(X_fold_train_scaled, y_fold_train)
-                # Store scaler with the SVM model for inference (not in models dict to avoid prediction errors)
-                models['svm'].feature_scaler = svm_scaler
+                # Train LightGBM with early stopping
+                import lightgbm as lgb
+                models['lightgbm'].fit(
+                    X_fold_train,
+                    y_fold_train,
+                    eval_set=[(X_fold_val, y_fold_val)],
+                    eval_metric=['binary_logloss', 'auc'],
+                    callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
+                )
                 
                 # Optimize ensemble weights using validation loss minimization
                 optimized_weights = self._optimize_ensemble_weights(models, X_fold_val, y_fold_val)
@@ -3475,19 +3456,13 @@ class UniversalTrainer:
                 
                 xgb_pred = models['xgboost'].predict_proba(X_fold_val)[:, 1]
                 rf_pred = models['random_forest'].predict_proba(X_fold_val)[:, 1]
-                # Use scaled data for SVM predictions
-                if hasattr(models['svm'], 'feature_scaler'):
-                    X_fold_val_scaled = models['svm'].feature_scaler.transform(X_fold_val)
-                    svm_pred = models['svm'].predict_proba(X_fold_val_scaled)[:, 1]
-                else:
-                    svm_pred = models['svm'].predict_proba(X_fold_val)[:, 1]
+                lgb_pred = models['lightgbm'].predict_proba(X_fold_val)[:, 1]
                 
-                fold_predictions = (weights['xgboost'] * xgb_pred + 
-                                  weights['random_forest'] * rf_pred + 
-                                  weights['svm'] * svm_pred)
-            elif model_type == ModelType.SVM and hasattr(fold_model, 'feature_scaler'):
-                X_fold_val_scaled = fold_model.feature_scaler.transform(X_fold_val)
-                fold_predictions = fold_model.predict_proba(X_fold_val_scaled)[:, 1]
+                fold_predictions = (weights.get('lightgbm', 0.0) * lgb_pred +
+                                  weights.get('xgboost', 0.0) * xgb_pred + 
+                                  weights.get('random_forest', 0.0) * rf_pred)
+            elif model_type == ModelType.LIGHTGBM:
+                fold_predictions = fold_model.predict_proba(X_fold_val)[:, 1]
             else:
                 fold_predictions = fold_model.predict_proba(X_fold_val)[:, 1]
             
@@ -3533,22 +3508,18 @@ class UniversalTrainer:
             else:
                 final_model.fit(X_train, y_train)
             
-        elif model_type == ModelType.SVM:
-            final_model = self.universal_architectures.create_universal_svm(
+        elif model_type == ModelType.LIGHTGBM:
+            final_model = self.universal_architectures.create_universal_lightgbm(
                 feature_dim=feature_dim,
                 config=config.parameters,
                 model_name=f"universal_{model_type.value}_final"
             )
-            # Apply feature scaling for SVM - match regular training logic
-            scaler = StandardScaler()
-            X_train_scaled = scaler.fit_transform(X_train)
-            if hasattr(self, 'class_weights_sklearn') and self.class_weights_sklearn is not None:
-                final_model.fit(X_train_scaled, y_train, sample_weight=self.class_weights_sklearn)
-            else:
-                final_model.fit(X_train_scaled, y_train)
-            # Store scaler with the model for inference
-            final_model.feature_scaler = scaler
-            logger.info(f"Applied StandardScaler for final SVM - feature range: [{X_train_scaled.min():.3f}, {X_train_scaled.max():.3f}]")
+            import lightgbm as lgb
+            final_model.fit(
+                X_train,
+                y_train,
+                eval_metric=['binary_logloss', 'auc']
+            )
             
         elif model_type == ModelType.ENSEMBLE:
             # Create final ensemble - match regular training logic exactly
@@ -3595,7 +3566,7 @@ class UniversalTrainer:
                 logger.info(f"Using averaged CV weights for final ensemble: {avg_weights}")
             else:
                 # Fallback to equal weights if no CV weights available
-                ensemble['weights'] = {'xgboost': 1/3, 'random_forest': 1/3, 'svm': 1/3}
+                ensemble['weights'] = {'lightgbm': 0.40, 'xgboost': 0.35, 'random_forest': 0.25}
             
             # Add selected feature information to ensemble model
             if hasattr(self, 'selected_feature_columns') and self.selected_feature_columns:
@@ -3820,32 +3791,21 @@ class UniversalTrainer:
                 model.fit(X_train, y_train)
             pbar.update(60)  # Training complete
             
-        elif model_type == ModelType.SVM:
+        elif model_type == ModelType.LIGHTGBM:
             pbar.set_description(f"Creating {model_type.value} model")
-            model = self.universal_architectures.create_universal_svm(
+            model = self.universal_architectures.create_universal_lightgbm(
                 feature_dim=feature_dim,
                 config=config.parameters,
                 model_name=f"universal_{model_type.value}"
             )
             pbar.update(15)  # Model creation complete
-            
-            # Add feature scaling for SVM to resolve identical predictions issue
-            pbar.set_description(f"Scaling features for {model_type.value}")
-            scaler = StandardScaler()
-            X_train_scaled = scaler.fit_transform(X_train)
-            X_val_scaled = scaler.transform(X_val)
-            
-            # Store scaler with the model for inference
-            model.feature_scaler = scaler
-            logger.info(f"Applied StandardScaler for SVM - feature range: [{X_train_scaled.min():.3f}, {X_train_scaled.max():.3f}]")
-            pbar.update(10)  # Scaling complete
-            
             pbar.set_description(f"Training {model_type.value} model")
-            if hasattr(self, 'class_weights_sklearn') and self.class_weights_sklearn is not None:
-                model.fit(X_train_scaled, y_train, sample_weight=self.class_weights_sklearn)
-            else:
-                model.fit(X_train_scaled, y_train)
-            pbar.update(55)  # Training complete
+            model.fit(
+                X_train,
+                y_train,
+                eval_metric=['binary_logloss', 'auc']
+            )
+            pbar.update(65)  # Training complete
             
         elif model_type == ModelType.ENSEMBLE:
             pbar.set_description(f"Creating {model_type.value} model")
@@ -3890,15 +3850,20 @@ class UniversalTrainer:
                 models['random_forest'].fit(X_train, y_train)
             pbar.update(20)  # Random Forest training complete
             
-            # Train SVM with feature scaling
-            pbar.set_description(f"Training {model_type.value} SVM")
-            svm_scaler = StandardScaler()
-            X_train_scaled = svm_scaler.fit_transform(X_train)
-            X_val_scaled = svm_scaler.transform(X_val)
-            models['svm'].fit(X_train_scaled, y_train)
-            # Store scaler with the SVM model for inference (not in models dict to avoid prediction errors)
-            models['svm'].feature_scaler = svm_scaler
-            pbar.update(20)  # SVM training complete
+            # Train LightGBM
+            pbar.set_description(f"Training {model_type.value} LightGBM")
+            import lightgbm as lgb
+            models['lightgbm'].fit(
+                X_train,
+                y_train,
+                eval_set=[(X_val, y_val)],
+                eval_metric=['binary_logloss', 'auc'],
+                callbacks=[
+                    lgb.early_stopping(stopping_rounds=50, verbose=False),
+                    lgb.log_evaluation(period=100)
+                ]
+            )
+            pbar.update(20)  # LightGBM training complete
             
             # Optimize ensemble weights using validation loss minimization
             pbar.set_description(f"Optimizing {model_type.value} weights")
@@ -3937,20 +3902,13 @@ class UniversalTrainer:
             
             xgb_pred = models['xgboost'].predict_proba(X_val)[:, 1]
             rf_pred = models['random_forest'].predict_proba(X_val)[:, 1]
-            # Use scaled data for SVM predictions
-            X_val_scaled = models['svm'].feature_scaler.transform(X_val)
-            svm_pred = models['svm'].predict_proba(X_val_scaled)[:, 1]
+            lgb_pred = models['lightgbm'].predict_proba(X_val)[:, 1]
             
-            val_predictions = (weights['xgboost'] * xgb_pred + 
-                              weights['random_forest'] * rf_pred + 
-                              weights['svm'] * svm_pred)
+            val_predictions = (weights.get('lightgbm', 0.0) * lgb_pred +
+                              weights.get('xgboost', 0.0) * xgb_pred + 
+                              weights.get('random_forest', 0.0) * rf_pred)
         else:
-            # Handle SVM with feature scaling
-            if model_type == ModelType.SVM and hasattr(model, 'feature_scaler'):
-                X_val_scaled = model.feature_scaler.transform(X_val)
-                val_predictions = model.predict_proba(X_val_scaled)[:, 1]
-            else:
-                val_predictions = model.predict_proba(X_val)[:, 1]
+            val_predictions = model.predict_proba(X_val)[:, 1]
         
         # Add confidence calibration after training
         pbar.set_description(f"Calibrating {model_type.value} confidence")
@@ -4209,7 +4167,7 @@ class UniversalTrainer:
                 ensemble_pred = np.dot(predictions, weights)
                 
                 # Calculate profit using dual exit strategy
-                profit_metrics = self._calculate_trading_profits(ensemble_pred, y_val, prediction_threshold=0.5)
+                profit_metrics = self._calculate_trading_profits(ensemble_pred, y_val, prediction_threshold=0.7)
                 
                 # Return negative profit percentage (since minimize function minimizes)
                 return -profit_metrics['total_profit_pct']
@@ -4239,7 +4197,7 @@ class UniversalTrainer:
                 
                 # Calculate final profit with optimized weights
                 final_ensemble_pred = np.dot(predictions, optimized_weights)
-                final_profit_metrics = self._calculate_trading_profits(final_ensemble_pred, y_val, prediction_threshold=0.5)
+                final_profit_metrics = self._calculate_trading_profits(final_ensemble_pred, y_val, prediction_threshold=0.7)
                 
                 logger.info(f"Profit-based weight optimization successful:")
                 logger.info(f"  💰 Optimized Total Profit: {final_profit_metrics['total_profit_pct']:.4f}%")
@@ -4527,7 +4485,7 @@ class UniversalTrainer:
             # CRITICAL FIX: Remove ENSEMBLE from Phase 1 base model training
             # Ensemble should only be created during Phase 3 using optimized weights from base models
             # Training ensemble as a base model creates circular dependency in Phase 3 optimization
-            statistical_models = [ModelType.XGBOOST, ModelType.RANDOM_FOREST, ModelType.SVM]
+            statistical_models = [ModelType.LIGHTGBM, ModelType.XGBOOST, ModelType.RANDOM_FOREST]
             
             for model_type in statistical_models:
                 try:

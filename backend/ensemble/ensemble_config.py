@@ -32,11 +32,9 @@ class EnsembleConfigManager:
         
         # Default weights for all models
         self.default_weights = {
-            "lstm": 0.2,
-            "cnn": 0.2,
             "random_forest": 0.2,
-            "xgboost": 0.2,
-            "transformer": 0.2
+            "xgboost": 0.4,
+            "lightgbm": 0.4
         }
     
     def save_optimized_weights(self, 
