@@ -178,7 +178,7 @@ class SignalGenerator:
         
         # Risk management
         self.risk_filters = {
-            'min_confidence': 0.15,
+            'min_confidence': 0.4,
             'max_risk_score': 0.7,
             'min_liquidity': 1000000,
             'max_correlation': 0.8,
@@ -371,6 +371,8 @@ class SignalGenerator:
         self.market_stress_window_minutes = 120  # Volatility window for stress calculation
         self.market_stress_divisor = 0.6         # Divisor to map annual vol -> stress (0-1)
         
+        # Toggle to enable/disable market stress filter in _apply_risk_filters
+        self.enable_market_stress_filter = False        
         # Time-based sell signal parameters
         self.time_sell_conditions = {
             'max_holding_hours': 4,              # Maximum 4 hours for intraday
@@ -1827,10 +1829,12 @@ class SignalGenerator:
                 logger.info(f"❌ Signal filtered: high risk {ensemble_pred.risk_score:.3f} > {self.risk_filters['max_risk_score']} for {ensemble_pred.symbol}")
                 return False
             
-            # Market regime filter
-            if self.current_market_regime and self.current_market_regime.market_stress > 0.8:
-                logger.info(f"❌ Signal filtered: high market stress {self.current_market_regime.market_stress:.2f} for {ensemble_pred.symbol}")
-                return False
+            # Market regime filter (disabled by default; enable via self.enable_market_stress_filter)
+            if getattr(self, 'enable_market_stress_filter', False):
+                threshold = self.market_sell_conditions.get('market_stress_threshold', 0.7)
+                if self.current_market_regime and self.current_market_regime.market_stress > threshold:
+                    logger.info(f"❌ Signal filtered: high market stress {self.current_market_regime.market_stress:.2f} > {threshold:.2f} for {ensemble_pred.symbol}")
+                    return False
             
             # Model agreement filter (check if models agree)
             predictions = [pred.prediction for pred in ensemble_pred.individual_predictions]
