@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     # Alpaca Trading Configuration
     alpaca_paper_api_key: Optional[str] = None
     alpaca_paper_secret_key: Optional[str] = None
-    alpaca_paper_base_url: str = "https://paper-api.alpaca.markets/v2"
+    # alpaca_paper_base_url: str = "https://paper-api.alpaca.markets/v2"
+    alpaca_paper_base_url: str = "https://api.alpaca.markets"
     alpaca_live_api_key: Optional[str] = None
     alpaca_live_secret_key: Optional[str] = None
     alpaca_live_base_url: str = "https://api.alpaca.markets"

@@ -178,7 +178,7 @@ class SignalGenerator:
         
         # Risk management
         self.risk_filters = {
-            'min_confidence': 0.4,
+            'min_confidence': 0.38,
             'max_risk_score': 0.7,
             'min_liquidity': 1000000,
             'max_correlation': 0.8,

@@ -141,7 +141,8 @@ class ExecutionEngine:
         self.trading_client = TradingClient(
             api_key=api_key,
             secret_key=secret_key,
-            paper=settings.trading_mode == "paper"
+            # paper=settings.trading_mode == "paper"
+            paper=False
         )
         
         # Initialize Polygon client for market data
@@ -177,7 +178,8 @@ class ExecutionEngine:
         self.max_drawdown = 0.0
         
         # Risk management parameters (as per requirements)
-        self.max_position_size = 0.02      # 2% of portfolio per position
+        # Increase per-position cap to use more buying power
+        self.max_position_size = 0.10      # 10% of portfolio per position
         self.max_daily_loss = 0.03         # 3% daily loss limit
         self.max_portfolio_risk = 0.10     # 10% total portfolio risk
         self.max_correlation = 0.7         # Maximum correlation between positions
@@ -185,13 +187,14 @@ class ExecutionEngine:
         self.min_liquidity = 1000000       # Minimum $1M daily volume
         
         # Position sizing parameters
-        self.base_position_size = 0.015    # 1.5% base position
-        self.volatility_target = 0.15      # 15% volatility target
-        self.confidence_multiplier = 2.0   # Confidence scaling factor
+        # Increase base sizing and scaling to make buys larger
+        self.base_position_size = 0.03     # 3% base position
+        self.volatility_target = 0.18      # 18% volatility target
+        self.confidence_multiplier = 2.5   # Confidence scaling factor
         
         # Stop loss and take profit
-        self.default_take_profit = 0.005   # 0.5% take profit
-        self.default_stop_loss =  0.002    # 0.2% stop loss
+        self.default_take_profit = 0.0023   # 0.23% take profit
+        self.default_stop_loss =  0.00115  # 0.115% stop loss
         # Removed trailing_stop_distance - only using bracket orders
         
         # Market data cache
@@ -947,7 +950,12 @@ class ExecutionEngine:
         """Get current portfolio value"""
         try:
             account = self.trading_client.get_account()
-            return float(account.equity)
+            # Use buying power to size positions for cash accounts
+            try:
+                return float(account.buying_power)
+            except Exception:
+                # Fallback to equity if buying_power is unavailable
+                return float(account.equity)
         except Exception as e:
             logger.error(f"Error getting portfolio value: {e}")
             return 100000.0  # Fallback value
@@ -1625,7 +1633,7 @@ class ExecutionEngine:
             logger.error(f"Failed to get market clock: {e}")
             return None
     
-    def is_market_near_close(self, minutes_before_close: int = 10) -> bool:
+    def is_market_near_close(self, minutes_before_close: int = 30) -> bool:
         """Check if market closes within specified minutes"""
         try:
             market_clock = self.get_market_clock()
@@ -1658,7 +1666,7 @@ class ExecutionEngine:
     
     def should_prevent_new_positions(self) -> bool:
         """Check if new positions should be prevented (15 minutes before market close)"""
-        return self.is_market_near_close(minutes_before_close=15)
+        return self.is_market_near_close(minutes_before_close=30)
     
     async def get_system_status(self) -> Dict[str, Any]:
         """Get comprehensive system status"""

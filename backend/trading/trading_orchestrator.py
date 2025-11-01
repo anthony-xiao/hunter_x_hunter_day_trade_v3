@@ -67,7 +67,7 @@ class TradingOrchestrator:
         
         # End-of-day liquidation settings
         self.eod_liquidation_enabled = True
-        self.eod_liquidation_minutes_before_close = 10  # Close positions 10 minutes before market close
+        self.eod_liquidation_minutes_before_close = 30  # Close positions 30 minutes before market close
         
     async def initialize(self, 
                         websocket_manager: PolygonWebSocketManager,

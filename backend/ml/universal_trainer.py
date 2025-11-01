@@ -153,8 +153,8 @@ class UniversalTrainingConfig:
     # Dual Exit Target Configuration
     prediction_window: int = 15  # Maximum prediction window in minutes (periods) - increased for better balance
 
-    take_profit_pct: float = 0.005  # 0.5% take profit - increased for realistic market movements
-    stop_loss_pct: float = 0.002    # 0.2% stop loss - increased proportionally
+    take_profit_pct: float = 0.0023  # 0.23% take profit
+    stop_loss_pct: float = 0.00115  # 0.115% stop loss
     
     # Class Imbalance Mitigation Configuration
     enable_imbalance_mitigation: bool = True
@@ -3234,8 +3234,8 @@ class UniversalTrainer:
                 'num_symbols': len(self.symbol_to_id) if hasattr(self, 'symbol_to_id') else 0,
                 'prediction_threshold': getattr(self.config, 'prediction_threshold', 0.7),
                 'prediction_window': getattr(self.config, 'prediction_window', 15),
-                'take_profit_pct': getattr(self.config, 'take_profit_pct', 0.005),
-                'stop_loss_pct': getattr(self.config, 'stop_loss_pct', 0.002),
+                'take_profit_pct': getattr(self.config, 'take_profit_pct', 0.0023),
+                'stop_loss_pct': getattr(self.config, 'stop_loss_pct', 0.00115),
                 'random_state': getattr(self.config, 'random_state', 42)
             },
             'model_configs': {

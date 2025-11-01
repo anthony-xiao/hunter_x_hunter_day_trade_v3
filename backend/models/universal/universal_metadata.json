@@ -8,9 +8,9 @@
       "AMD": 4,
       "PLTR": 5,
       "AMZN": 6,
-      "MSFT": 7,
-      "COIN": 8,
-      "F": 9
+      "GOOGL": 7,
+      "MSFT": 8,
+      "COIN": 9
     },
     "id_to_symbol": {
       "0": "NVDA",
@@ -20,23 +20,23 @@
       "4": "AMD",
       "5": "PLTR",
       "6": "AMZN",
-      "7": "MSFT",
-      "8": "COIN",
-      "9": "F"
+      "7": "GOOGL",
+      "8": "MSFT",
+      "9": "COIN"
     }
   },
   "ensemble_weights": {
-    "lightgbm": 0.49874815817530577,
-    "xgboost": 0.5007726679205051,
-    "random_forest": 0.0004791739041891779
+    "lightgbm": 0.4989058142376876,
+    "xgboost": 0.4997992913690433,
+    "random_forest": 0.001294894393269139
   },
   "config": {
     "symbol_embedding_dim": 32,
     "num_symbols": 10,
     "prediction_threshold": 0.7,
     "prediction_window": 15,
-    "take_profit_pct": 0.005,
-    "stop_loss_pct": 0.002,
+    "take_profit_pct": 0.0023,
+    "stop_loss_pct": 0.00115,
     "random_state": 42
   },
   "model_configs": {
@@ -60,11 +60,11 @@
   },
   "feature_selection": {
     "selected_features": [
+      "feature_4_max",
       "feature_5_min",
       "feature_5_max",
       "feature_6_min",
       "feature_6_max",
-      "feature_9_min",
       "feature_31_min",
       "feature_31_max",
       "feature_32_min",
@@ -78,7 +78,9 @@
       "feature_47_max",
       "feature_49_max",
       "feature_50_max",
+      "feature_51_max",
       "feature_58_max",
+      "feature_62_max",
       "feature_68_max",
       "feature_72_max",
       "feature_74_min",
@@ -92,13 +94,13 @@
       "feature_87_min",
       "feature_87_max",
       "feature_88_max",
-      "feature_90_min",
+      "feature_89_max",
       "feature_90_max",
+      "feature_91_min",
       "feature_91_max",
       "feature_94_min",
       "feature_96_max",
       "feature_98_max",
-      "feature_100_min",
       "feature_100_max",
       "feature_101_min",
       "feature_101_max",
@@ -108,9 +110,7 @@
       "feature_103_max",
       "feature_105_max",
       "feature_106_min",
-      "feature_109_max",
       "feature_110_min",
-      "feature_111_max",
       "feature_112_min",
       "feature_112_max",
       "feature_113_max",
@@ -127,9 +127,9 @@
       "feature_149_max"
     ],
     "selected_feature_columns": [
+      "volume",
       "returns",
       "log_returns",
-      "price_to_sma_5",
       "volatility_5",
       "realized_vol_5",
       "roc_3",
@@ -139,7 +139,9 @@
       "roc_20",
       "rsi_14",
       "rsi_21",
+      "rsi_30",
       "bb_position_20",
+      "bb_position_50",
       "cci",
       "ultimate_oscillator",
       "volume_ratio",
@@ -149,6 +151,7 @@
       "vwap_momentum",
       "vwap_trend_5",
       "vwap_trend_10",
+      "vwap_trend_20",
       "avg_trade_size",
       "trade_intensity",
       "high_frequency_ratio",
@@ -160,9 +163,7 @@
       "volume_concentration",
       "price_efficiency",
       "liquidity_proxy",
-      "high_low_ratio",
       "close_to_high",
-      "close_to_low",
       "open_to_close",
       "high_to_close",
       "low_to_close",
@@ -175,9 +176,9 @@
       "volume_price_divergence"
     ],
     "selected_feature_indices": [
+      4,
       5,
       6,
-      9,
       31,
       32,
       39,
@@ -187,7 +188,9 @@
       47,
       49,
       50,
+      51,
       58,
+      62,
       68,
       72,
       74,
@@ -197,6 +200,7 @@
       86,
       87,
       88,
+      89,
       90,
       91,
       94,
@@ -208,9 +212,7 @@
       103,
       105,
       106,
-      109,
       110,
-      111,
       112,
       113,
       114,
@@ -222,13 +224,13 @@
       148,
       149
     ],
-    "selected_feature_count": 46,
+    "selected_feature_count": 47,
     "feature_importance": {},
     "feature_mapping": {},
     "total_features": 65,
     "validation_metadata": {
-      "universal_metadata_feature_count": 46,
-      "feature_selection_timestamp": "2025-10-21T00:41:28.256871",
+      "universal_metadata_feature_count": 47,
+      "feature_selection_timestamp": "2025-10-30T16:51:46.254970",
       "feature_selection_method": "mutual_info_regression"
     }
   },
@@ -259,9 +261,9 @@
       "AMD",
       "PLTR",
       "AMZN",
+      "GOOGL",
       "MSFT",
-      "COIN",
-      "F"
+      "COIN"
     ]
   },
   "model_files": {
@@ -283,6 +285,6 @@
     "requires_feature_scaling": true,
     "max_prediction_latency_ms": 100
   },
-  "training_timestamp": "2025-10-21T00:41:28.256883",
+  "training_timestamp": "2025-10-30T16:51:46.254995",
   "model_type": "statistical_ensemble"
 }
