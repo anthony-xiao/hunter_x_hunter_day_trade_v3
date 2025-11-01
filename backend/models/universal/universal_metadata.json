@@ -26,9 +26,9 @@
     }
   },
   "ensemble_weights": {
-    "lightgbm": 0.4989058142376876,
-    "xgboost": 0.4997992913690433,
-    "random_forest": 0.001294894393269139
+    "lightgbm": 0.40,
+    "xgboost": 0.35,
+    "catboost": 0.25
   },
   "config": {
     "symbol_embedding_dim": 32,

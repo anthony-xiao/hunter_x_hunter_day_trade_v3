@@ -1068,6 +1068,40 @@ class UniversalModelArchitectures:
         logger.info(f"Created Random Forest: {model.n_estimators} trees")
         return model
 
+    def create_universal_catboost(self, feature_dim: int, config: Dict, model_name: str = "universal_catboost") -> Any:
+        """
+        Create CatBoost model optimized for trading aggregated features.
+        Uses conservative defaults for stability and fast inference.
+        """
+        try:
+            from catboost import CatBoostClassifier
+        except Exception as e:
+            logger.warning(f"CatBoost not installed or failed to import ({e}); please add 'catboost' to requirements.")
+            from catboost import CatBoostClassifier  # will raise if truly unavailable
+
+        logger.info(f"Creating CatBoost model with {feature_dim} aggregated features")
+
+        params = {
+            'iterations': config.get('iterations', 500),
+            'depth': config.get('depth', 6),
+            'learning_rate': config.get('learning_rate', 0.05),
+            'l2_leaf_reg': config.get('l2_leaf_reg', 3.0),
+            'bootstrap_type': config.get('bootstrap_type', 'Bernoulli'),
+            'subsample': config.get('subsample', 0.8),
+            'random_strength': config.get('random_strength', 1.0),
+            'one_hot_max_size': config.get('one_hot_max_size', 10),
+            'leaf_estimation_method': config.get('leaf_estimation_method', 'Newton'),
+            'loss_function': config.get('loss_function', 'Logloss'),
+            'eval_metric': config.get('eval_metric', 'AUC'),
+            'thread_count': config.get('thread_count', -1),
+            'verbose': config.get('verbose', False),
+            'random_seed': config.get('random_state', 42)
+        }
+
+        model = CatBoostClassifier(**params)
+        logger.info(f"Created CatBoost model: iterations={params['iterations']}, depth={params['depth']}, lr={params['learning_rate']}")
+        return model
+
     def create_universal_svm(self, feature_dim: int, config: Dict, model_name: str = "universal_svm") -> Any:
         """
         Create SVM model optimized for trading aggregated features.
@@ -1137,25 +1171,25 @@ class UniversalModelArchitectures:
 
     def create_ensemble_model(self, feature_dim: int, config: Dict, model_name: str = "universal_ensemble") -> Dict:
         """
-        Create ensemble combining XGBoost, Random Forest, and LightGBM.
+        Create ensemble combining LightGBM, XGBoost, and CatBoost.
         """
         logger.info(f"Creating ensemble model with {feature_dim} aggregated features")
         
         # Create individual models
         xgb_model = self.create_universal_xgboost(feature_dim, config.get('xgboost', {}))
-        rf_model = self.create_universal_random_forest(feature_dim, config.get('random_forest', {}))
+        cb_model = self.create_universal_catboost(feature_dim, config.get('catboost', {}))
         lgbm_model = self.create_universal_lightgbm(feature_dim, config.get('lightgbm', {}))
         
         ensemble = {
             'models': {
                 'xgboost': xgb_model,
-                'random_forest': rf_model,
+                'catboost': cb_model,
                 'lightgbm': lgbm_model
             },
             'weights': {
                 'lightgbm': config.get('lightgbm_weight', 0.40),
                 'xgboost': config.get('xgb_weight', 0.35),
-                'random_forest': config.get('rf_weight', 0.25)
+                'catboost': config.get('catboost_weight', 0.25)
             },
             'feature_dim': feature_dim,
             'name': model_name

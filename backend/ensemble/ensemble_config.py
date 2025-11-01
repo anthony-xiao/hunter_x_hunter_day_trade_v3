@@ -32,9 +32,9 @@ class EnsembleConfigManager:
         
         # Default weights for all models
         self.default_weights = {
-            "random_forest": 0.2,
-            "xgboost": 0.4,
-            "lightgbm": 0.4
+            "catboost": 0.25,
+            "xgboost": 0.35,
+            "lightgbm": 0.40
         }
     
     def save_optimized_weights(self, 
@@ -197,7 +197,7 @@ class EnsembleConfigManager:
     def get_model_loading_config(self) -> Dict[str, Any]:
         """Get configuration for consistent model loading"""
         return {
-            'model_types': ['lstm', 'cnn', 'random_forest', 'xgboost', 'transformer'],
+            'model_types': ['lstm', 'cnn', 'catboost', 'xgboost', 'transformer', 'lightgbm'],
             'model_dir': 'models',
             'scaler_dir': 'models/scalers',
             'metadata_file': 'models/training_metadata.json',

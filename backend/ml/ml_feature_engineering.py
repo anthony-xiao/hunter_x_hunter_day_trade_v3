@@ -397,6 +397,9 @@ class FeatureEngineering:
             for window in self.volatility_windows:
                 features[f'volatility_{window}'] = features['returns'].rolling(window).std()
                 features[f'realized_vol_{window}'] = features['log_returns'].rolling(window).std() * np.sqrt(252)
+            # Volatility-adjusted scaling helper (example for 5-min window)
+            if 'realized_vol_5' in features.columns:
+                features['rv_scaled_5'] = features['realized_vol_5'] / (features['atr_pct'] + 1e-8) if 'atr_pct' in features.columns else features['realized_vol_5']
             
             # Momentum indicators
             for period in self.momentum_periods:
@@ -499,11 +502,29 @@ class FeatureEngineering:
                 features['price_vwap_ratio'] = data['close'] / (data['vwap'] + 1e-8)
                 features['vwap_deviation'] = (data['close'] - data['vwap']) / (data['vwap'] + 1e-8)
                 features['vwap_momentum'] = data['vwap'].pct_change()
+                features['vwap_momentum_5'] = data['vwap'].pct_change(5)
+                # VWAP deviation bands (±1σ, ±2σ)
+                dev_std = features['vwap_deviation'].rolling(20).std()
+                features['vwap_band_upper_1'] = data['vwap'] * (1 + dev_std.fillna(0))
+                features['vwap_band_lower_1'] = data['vwap'] * (1 - dev_std.fillna(0))
+                features['vwap_band_upper_2'] = data['vwap'] * (1 + 2 * dev_std.fillna(0))
+                features['vwap_band_lower_2'] = data['vwap'] * (1 - 2 * dev_std.fillna(0))
                 
                 # VWAP trend strength
                 for period in [5, 10, 20]:
                     vwap_sma = data['vwap'].rolling(period).mean()
                     features[f'vwap_trend_{period}'] = (data['vwap'] - vwap_sma) / (vwap_sma + 1e-8)
+                # Anchored VWAPs
+                df_tmp = data.copy()
+                df_tmp['date'] = pd.to_datetime(df_tmp.index.date)
+                pv = (df_tmp['close'] * df_tmp['volume']).astype(float)
+                cum_pv = pv.groupby(df_tmp['date']).cumsum()
+                cum_vol = df_tmp['volume'].groupby(df_tmp['date']).cumsum().astype(float)
+                anchored_session = (cum_pv / (cum_vol + 1e-8))
+                features['anchored_vwap_session'] = anchored_session.values
+                session_last = anchored_session.groupby(df_tmp['date']).transform('last')
+                prev_session_last = session_last.shift(1)
+                features['anchored_vwap_prevday'] = prev_session_last.groupby(df_tmp['date']).transform('first').values
             
             # Transaction-based microstructure indicators
             if 'transactions' in data.columns:
@@ -558,6 +579,29 @@ class FeatureEngineering:
             features['open_to_close'] = (data['close'] - data['open']) / data['open']
             features['high_to_close'] = (data['high'] - data['close']) / data['close']
             features['low_to_close'] = (data['close'] - data['low']) / data['close']
+            # Opening Range Breakout features (first 15 minutes per session)
+            try:
+                df_orb = data.copy()
+                df_orb['date'] = pd.to_datetime(df_orb.index.date)
+                orb_high = pd.Series(index=df_orb.index, dtype=float)
+                orb_low = pd.Series(index=df_orb.index, dtype=float)
+                for d, grp in df_orb.groupby('date'):
+                    start = grp.index.min()
+                    end = start + pd.Timedelta(minutes=15)
+                    mask = grp.index <= end
+                    oh = grp.loc[mask, 'high'].max()
+                    ol = grp.loc[mask, 'low'].min()
+                    orb_high.loc[grp.index] = oh
+                    orb_low.loc[grp.index] = ol
+                features['orb_high'] = orb_high.values
+                features['orb_low'] = orb_low.values
+                features['orb_range'] = (features['orb_high'] - features['orb_low']).clip(lower=1e-8)
+                features['orb_breakout_up'] = (data['close'] > features['orb_high']).astype(int)
+                features['orb_breakout_down'] = (data['close'] < features['orb_low']).astype(int)
+                curr_range = (data['high'].rolling(15).max() - data['low'].rolling(15).min())
+                features['orb_range_expansion'] = (curr_range / features['orb_range']).replace([np.inf, -np.inf], np.nan).fillna(0)
+            except Exception as e:
+                logger.warning(f"ORB feature engineering failed: {e}")
             # Custom Volume Price Trend calculation (VPT = previous_VPT + volume * ((close - previous_close) / previous_close))
             vpt = np.zeros(len(data))
             for i in range(1, len(data)):
